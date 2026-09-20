@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "io.gutapk"
-version = "0.1.0"
+version = "0.1.1"
 
 kotlin {
     jvmToolchain(21)
@@ -13,7 +13,10 @@ kotlin {
 
 dependencies {
     implementation(compose.desktop.currentOs)
-    implementation(compose.material3)
+    // Declared by coordinates and not through the compose extension: the
+    // compose.material3 accessor is deprecated and pins 1.9.0, which drags a
+    // second Compose version into the graph and breaks resolution.
+    implementation(libs.compose.material3)
     testImplementation(kotlin("test"))
 }
 
