@@ -1,49 +1,116 @@
-name: build
+# Builds on every push and pull request, publishes a release for every green
+# build on main. Action versions are the ones already running green on the
+# other project: checkout v7, setup-java v6, upload-artifact v7, gradle v6.
+name: Build
 
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: write
 
-jobs:
-  appimage:
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
-      - uses: actions/setup-java@v4
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
 
-      - uses: gradle/actions/setup-gradle@v4
+      # No wrapper in this repository, on purpose: a wrapper ships a binary jar
+      # that cannot be reviewed as text. Gradle is installed instead, pinned to
+      # the version Kotlin 2.4.10 is tested against.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
         with:
-          gradle-version: '9.5.0'
+          gradle-version: 9.5.0
 
-      - name: test
-        run: gradle --no-daemon test
+      - name: Read the version
+        run: |
+          VERSION="$(grep -oP '^version = "\K[^"]+' build.gradle.kts)"
+          echo "version $VERSION"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
-      - name: app image
-        run: gradle --no-daemon createDistributable
+      # One command, so a failing test stops the release like a failing compile
+      # does.
+      - name: Build and test
+        run: gradle --stacktrace test createDistributable
 
-      - name: appimage
+      - name: Assemble the AppImage
         run: bash packaging/make-appimage.sh
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: GutapK-x86_64
-          path: |
-            dist/GutapK-x86_64.AppImage
-            dist/GutapK-x86_64.AppImage.sha256
+      # An AppImage that does not start is the failure this project is most
+      # likely to ship, because the jpackage launcher is bypassed. Running it
+      # headless proves the runtime resolves and the classpath is complete.
+      - name: Check the AppImage starts
+        run: |
+          chmod +x dist/GutapK-x86_64.AppImage
+          ./dist/GutapK-x86_64.AppImage --appimage-extract > /dev/null
+          if ! squashfs-root/usr/lib/runtime/bin/java -version 2>&1 | head -1
+          then
+            echo "::error::The bundled runtime does not run"
+            exit 1
+          fi
+          rm -rf squashfs-root
 
-      - uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Write the summary
+        run: |
+          {
+            echo "## GutapK $VERSION"
+            echo
+            echo "| File | Size | SHA-256 |"
+            echo "| --- | --- | --- |"
+            for f in dist/GutapK-x86_64.AppImage
+            do
+              echo "| $(basename "$f") | $(du -h "$f" | cut -f1) | \`$(sha256sum "$f" | cut -d' ' -f1)\` |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the AppImage
+        uses: actions/upload-artifact@v7
         with:
-          files: |
-            dist/GutapK-x86_64.AppImage
-            dist/GutapK-x86_64.AppImage.sha256
+          name: gutapk-appimage
+          path: dist/*
+          if-no-files-found: error
+
+      # One release per green build on main. The first build of a version takes
+      # the plain tag, the next ones carry the run number, so a release is never
+      # overwritten and the history stays readable.
+      - name: Publish the release
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v$VERSION"
+          TITLE="GutapK $VERSION"
+          if gh release view "$TAG" > /dev/null 2>&1
+          then
+            TAG="v$VERSION-b$GITHUB_RUN_NUMBER"
+            TITLE="GutapK $VERSION (build $GITHUB_RUN_NUMBER)"
+          fi
+          {
+            echo '```'
+            cat dist/GutapK-x86_64.AppImage.sha256
+            echo '```'
+          } > notes.md
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TITLE" \
+            --target "$GITHUB_SHA" \
+            --notes-file notes.md \
+            --generate-notes
+          echo "published $TAG"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url
