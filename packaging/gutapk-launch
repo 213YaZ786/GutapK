@@ -1,0 +1,55 @@
+#!/bin/sh
+# The jpackage native launcher segfaults on glibc 2.42 and later. This script
+# reads the same .cfg the launcher would and calls the bundled java directly.
+set -eu
+
+HERE=$(dirname "$(readlink -f "$0")")
+ROOT=$(cd "$HERE/.." && pwd)
+APP="$ROOT/lib/app"
+JAVA="$ROOT/lib/runtime/bin/java"
+
+CFG=""
+for f in "$APP"/*.cfg; do
+    [ -f "$f" ] || continue
+    CFG="$f"
+    break
+done
+[ -n "$CFG" ] || { echo "gutapk: no .cfg under $APP" >&2; exit 1; }
+[ -x "$JAVA" ] || { echo "gutapk: no runtime at $JAVA" >&2; exit 1; }
+
+MAIN=""
+MODULE=""
+CP=""
+OPTS=""
+
+expand() {
+    printf '%s' "$1" | sed -e "s|\$APPDIR|$APP|g" -e "s|\$ROOTDIR|$ROOT|g"
+}
+
+while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+        \[*\]|'') continue ;;
+        *=*) ;;
+        *) continue ;;
+    esac
+    key=${line%%=*}
+    val=${line#*=}
+    case "$key" in
+        app.mainclass) MAIN=$(expand "$val") ;;
+        app.mainmodule) MODULE=$(expand "$val") ;;
+        app.classpath)
+            val=$(expand "$val")
+            case "$val" in /*) ;; *) val="$APP/$val" ;; esac
+            if [ -z "$CP" ]; then CP="$val"; else CP="$CP:$val"; fi
+            ;;
+        java-options) OPTS="$OPTS $(expand "$val")" ;;
+    esac
+done < "$CFG"
+
+if [ -n "$MODULE" ]; then
+    # shellcheck disable=SC2086
+    exec "$JAVA" $OPTS -p "$CP" -m "$MODULE" "$@"
+fi
+[ -n "$MAIN" ] || { echo "gutapk: no main class in $CFG" >&2; exit 1; }
+# shellcheck disable=SC2086
+exec "$JAVA" $OPTS -cp "$CP" "$MAIN" "$@"
