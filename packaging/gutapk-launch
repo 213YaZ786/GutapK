@@ -1,21 +1,48 @@
 #!/bin/sh
 # The jpackage native launcher segfaults on glibc 2.42 and later. This script
 # reads the same .cfg the launcher would and calls the bundled java directly.
+#
+# Nothing here assumes where jpackage puts the runtime: the expected paths are
+# tried first, then the whole tree is searched. A wrong guess cost a release.
 set -eu
 
 HERE=$(dirname "$(readlink -f "$0")")
 ROOT=$(cd "$HERE/.." && pwd)
-APP="$ROOT/lib/app"
-JAVA="$ROOT/lib/runtime/bin/java"
+
+find_first() {
+    find "$ROOT" -type f -name "$1" -perm -u+x 2>/dev/null | head -n 1
+}
+
+JAVA=""
+for c in "$ROOT/lib/runtime/bin/java" "$ROOT/runtime/bin/java" \
+         "$ROOT/lib/app/runtime/bin/java" "$ROOT/lib/jvm/bin/java"
+do
+    if [ -x "$c" ]; then JAVA="$c"; break; fi
+done
+[ -n "$JAVA" ] || JAVA=$(find_first java)
+if [ -z "$JAVA" ]; then
+    echo "gutapk: no java runtime under $ROOT" >&2
+    find "$ROOT" -maxdepth 3 >&2
+    exit 1
+fi
 
 CFG=""
-for f in "$APP"/*.cfg; do
-    [ -f "$f" ] || continue
-    CFG="$f"
-    break
+for f in "$ROOT"/lib/app/*.cfg "$ROOT"/lib/*.cfg "$ROOT"/app/*.cfg
+do
+    if [ -f "$f" ]; then CFG="$f"; break; fi
 done
-[ -n "$CFG" ] || { echo "gutapk: no .cfg under $APP" >&2; exit 1; }
-[ -x "$JAVA" ] || { echo "gutapk: no runtime at $JAVA" >&2; exit 1; }
+if [ -z "$CFG" ]; then
+    CFG=$(find "$ROOT" -type f -name '*.cfg' 2>/dev/null | head -n 1)
+fi
+if [ -z "$CFG" ]; then
+    echo "gutapk: no .cfg under $ROOT" >&2
+    find "$ROOT" -maxdepth 3 >&2
+    exit 1
+fi
+
+# $APPDIR inside a .cfg means the directory holding the cfg, not the AppImage
+# mount point. Same name, different thing.
+APP=$(dirname "$CFG")
 
 MAIN=""
 MODULE=""

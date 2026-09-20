@@ -8,6 +8,9 @@ DIST="$ROOT/dist"
 SRC=$(find "$ROOT/build/compose/binaries/main/app" -mindepth 1 -maxdepth 1 -type d | head -n 1)
 [ -n "$SRC" ] || { echo "no app image, run createDistributable first" >&2; exit 1; }
 
+echo "--- jpackage output ---"
+find "$SRC" -maxdepth 3 | sed "s|^$SRC|.|" | sort
+
 rm -rf "$APPDIR" "$DIST"
 mkdir -p "$APPDIR/usr" "$DIST"
 cp -a "$SRC/." "$APPDIR/usr/"
@@ -21,6 +24,20 @@ mkdir -p "$APPDIR/usr/share/applications" "$APPDIR/usr/share/icons/hicolor/256x2
 cp "$APPDIR/gutapk.desktop" "$APPDIR/usr/share/applications/"
 cp "$APPDIR/gutapk.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/"
 
+# An AppDir without a runtime produces an AppImage that builds and never starts.
+# It shipped once. It fails here now, with the listing that explains why.
+JAVA=$(find "$APPDIR/usr" -type f -name java -perm -u+x | head -n 1)
+if [ -z "$JAVA" ]; then
+    echo "no java runtime in the AppDir" >&2
+    find "$APPDIR/usr" -maxdepth 4 >&2
+    exit 1
+fi
+echo "runtime at ${JAVA#"$APPDIR/"}"
+
+CFG=$(find "$APPDIR/usr" -type f -name '*.cfg' | head -n 1)
+[ -n "$CFG" ] || { echo "no .cfg in the AppDir" >&2; exit 1; }
+echo "cfg at ${CFG#"$APPDIR/"}"
+
 TOOL="$ROOT/build/appimagetool"
 if [ ! -x "$TOOL" ]; then
     curl -fsSL -o "$TOOL" \
@@ -31,4 +48,5 @@ if [ ! -x "$TOOL" ]; then
 fi
 
 ARCH=x86_64 "$TOOL" --appimage-extract-and-run "$APPDIR" "$DIST/GutapK-x86_64.AppImage"
-sha256sum "$DIST/GutapK-x86_64.AppImage" | tee "$DIST/GutapK-x86_64.AppImage.sha256"
+( cd "$DIST" && sha256sum GutapK-x86_64.AppImage > GutapK-x86_64.AppImage.sha256 )
+cat "$DIST/GutapK-x86_64.AppImage.sha256"
