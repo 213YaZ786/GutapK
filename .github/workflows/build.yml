@@ -55,15 +55,23 @@ jobs:
       # An AppImage that does not start is the failure this project is most
       # likely to ship, because the jpackage launcher is bypassed. Running it
       # headless proves the runtime resolves and the classpath is complete.
+      # The previous form ended with a pipe, so the exit status was head's and
+      # always zero. An AppImage with no runtime passed this check and shipped.
       - name: Check the AppImage starts
         run: |
+          set -o pipefail
           chmod +x dist/GutapK-x86_64.AppImage
           ./dist/GutapK-x86_64.AppImage --appimage-extract > /dev/null
-          if ! squashfs-root/usr/lib/runtime/bin/java -version 2>&1 | head -1
+          echo "--- AppImage contents ---"
+          find squashfs-root -maxdepth 3 | sort
+          JAVA="$(find squashfs-root -type f -name java -perm -u+x | head -n 1)"
+          if [ -z "$JAVA" ]
           then
-            echo "::error::The bundled runtime does not run"
+            echo "::error::No java runtime inside the AppImage"
             exit 1
           fi
+          echo "runtime at ${JAVA#squashfs-root/}"
+          "$JAVA" -version
           rm -rf squashfs-root
 
       - name: Write the summary
