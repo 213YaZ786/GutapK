@@ -15,6 +15,22 @@ rm -rf "$APPDIR" "$DIST"
 mkdir -p "$APPDIR/usr" "$DIST"
 cp -a "$SRC/." "$APPDIR/usr/"
 
+# jpackage strips bin/ from the runtime, and its native launcher is the one we
+# bypass. The java binary is taken from the JDK that produced this runtime, so
+# the versions are compared first and a mismatch stops the build.
+RT="$APPDIR/usr/lib/runtime"
+if [ -d "$RT" ] && [ ! -x "$RT/bin/java" ]; then
+    : "${JAVA_HOME:?JAVA_HOME is required to complete the runtime}"
+    want=$(grep -oP '^JAVA_VERSION="\K[^"]+' "$RT/release")
+    have=$(grep -oP '^JAVA_VERSION="\K[^"]+' "$JAVA_HOME/release")
+    if [ "$want" != "$have" ]; then
+        echo "runtime is $want but JAVA_HOME is $have" >&2
+        exit 1
+    fi
+    install -D -m 755 "$JAVA_HOME/bin/java" "$RT/bin/java"
+    echo "java $have copied into the runtime"
+fi
+
 install -m 755 "$ROOT/packaging/gutapk-launch" "$APPDIR/usr/bin/gutapk-launch"
 install -m 755 "$ROOT/packaging/AppRun" "$APPDIR/AppRun"
 install -m 644 "$ROOT/packaging/gutapk.desktop" "$APPDIR/gutapk.desktop"
