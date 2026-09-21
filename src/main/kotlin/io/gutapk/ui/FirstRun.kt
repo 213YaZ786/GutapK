@@ -26,9 +26,20 @@ import java.nio.file.Files
 import java.nio.file.Path
 import javax.swing.JFileChooser
 
+// Where the user is in the first run, or null when a screen is reopened
+// from Settings.
+data class StepProgress(val labels: List<String>, val current: Int)
+
+// First-run screens are a narrow card centred in the window. Settings reuses
+// the same screens at reading width, with a back button instead.
+private val SetupWidth = 640.dp
+
+private fun progressHeader(p: StepProgress?): (@Composable () -> Unit)? =
+    if (p == null) null else { { Stepper(p.labels, p.current) } }
+
 @Composable
-fun LanguageStep(subtitle: String?, onPick: (Lang) -> Unit) {
-    Page(title = t("lang_title"), subtitle = subtitle) {
+fun LanguageStep(progress: StepProgress?, onPick: (Lang) -> Unit) {
+    Page(title = t("lang_title"), width = SetupWidth, centered = true, header = progressHeader(progress)) {
         Zone(t("lang_title")) {
             Lang.entries.forEach { lang ->
                 ZoneRow(title = lang.native, detail = lang.english, onClick = { onPick(lang) })
@@ -38,13 +49,20 @@ fun LanguageStep(subtitle: String?, onPick: (Lang) -> Unit) {
 }
 
 @Composable
-fun LicenceScreen(subtitle: String?, onBack: (() -> Unit)?, onContinue: (() -> Unit)?) {
+fun LicenceScreen(progress: StepProgress?, onBack: (() -> Unit)?, onContinue: (() -> Unit)?) {
     val actions: (@Composable () -> Unit)? = if (onContinue != null) {
         { TextButton(onClick = onContinue) { Text(t("continue")) } }
     } else {
         null
     }
-    Page(title = t("lic_title"), subtitle = subtitle, onBack = onBack, actions = actions) {
+    Page(
+        title = t("lic_title"),
+        width = if (progress != null) SetupWidth else ContentMaxWidth,
+        centered = progress != null,
+        header = progressHeader(progress),
+        onBack = onBack,
+        actions = actions,
+    ) {
         Zone(t("lic_title")) {
             Text(
                 LICENCE_TEXT,
@@ -58,7 +76,7 @@ fun LicenceScreen(subtitle: String?, onBack: (() -> Unit)?, onContinue: (() -> U
 
 @Composable
 fun LegalScreen(
-    subtitle: String?,
+    progress: StepProgress?,
     onBack: (() -> Unit)?,
     onAccept: (() -> Unit)?,
     onDecline: (() -> Unit)?,
@@ -71,14 +89,21 @@ fun LegalScreen(
     } else {
         null
     }
-    Page(title = t("legal_title"), subtitle = subtitle, onBack = onBack, actions = actions) {
+    Page(
+        title = t("legal_title"),
+        width = if (progress != null) 720.dp else ContentMaxWidth,
+        centered = progress != null,
+        header = progressHeader(progress),
+        onBack = onBack,
+        actions = actions,
+    ) {
         Zone(t("legal_title")) { BodyText(t("legal_body")) }
     }
 }
 
 @Composable
 fun RootScreen(
-    subtitle: String?,
+    progress: StepProgress?,
     initial: String,
     note: String?,
     onBack: (() -> Unit)?,
@@ -99,7 +124,9 @@ fun RootScreen(
 
     Page(
         title = t("root_title"),
-        subtitle = subtitle,
+        width = if (progress != null) SetupWidth else ContentMaxWidth,
+        centered = progress != null,
+        header = progressHeader(progress),
         onBack = onBack,
         actions = { TextButton(onClick = { submit() }) { Text(t("continue")) } },
     ) {

@@ -47,7 +47,8 @@ object Strings {
         "browse" to "Browse",
         "accept" to "Understood, continue",
         "decline" to "Decline and quit",
-        "step" to "Step %s of %s",
+        "step_legal" to "Legal",
+        "step_root" to "Folder",
 
         "lang_title" to "Language",
 
@@ -117,7 +118,8 @@ This is a plain-language summary, not legal advice.""",
         "browse" to "Parcourir",
         "accept" to "Compris, continuer",
         "decline" to "Refuser et quitter",
-        "step" to "Étape %s sur %s",
+        "step_legal" to "Mentions",
+        "step_root" to "Dossier",
 
         "lang_title" to "Langue",
 

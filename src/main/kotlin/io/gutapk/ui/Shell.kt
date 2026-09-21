@@ -32,6 +32,13 @@ private fun firstSteps(s: Settings): List<FirstStep> = buildList {
     if (s.root == null) add(FirstStep.ROOT)
 }
 
+private fun stepLabelKey(step: FirstStep): String = when (step) {
+    FirstStep.LANGUAGE -> "lang_title"
+    FirstStep.LICENCE -> "lic_title"
+    FirstStep.LEGAL -> "step_legal"
+    FirstStep.ROOT -> "step_root"
+}
+
 @Composable
 fun Shell(
     settings: Settings,
@@ -55,7 +62,7 @@ fun Shell(
         GutapkTheme(theme, detected) {
             Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
                 if (stepIndex < steps.size) {
-                    val sub = t("step", stepIndex + 1, steps.size)
+                    val sub = StepProgress(steps.map { t(stepLabelKey(it)) }, stepIndex)
                     val next = { stepIndex += 1 }
                     when (steps[stepIndex]) {
                         FirstStep.LANGUAGE -> LanguageStep(sub) {
@@ -64,7 +71,7 @@ fun Shell(
                         }
                         FirstStep.LICENCE -> LicenceScreen(sub, onBack = null, onContinue = next)
                         FirstStep.LEGAL -> LegalScreen(
-                            subtitle = sub,
+                            progress = sub,
                             onBack = null,
                             onAccept = {
                                 onChange(settings.copy(legalRev = SettingsStore.LEGAL_REV))
@@ -73,7 +80,7 @@ fun Shell(
                             onDecline = onExit,
                         )
                         FirstStep.ROOT -> RootScreen(
-                            subtitle = sub,
+                            progress = sub,
                             initial = settings.root ?: Storage.defaultRoot(),
                             note = null,
                             onBack = null,
@@ -103,7 +110,7 @@ fun Shell(
                             onLegal = { screen = Screen.LEGAL },
                         )
                         Screen.ROOT -> RootScreen(
-                            subtitle = null,
+                            progress = null,
                             initial = settings.root ?: Storage.defaultRoot(),
                             note = t("root_next_launch"),
                             onBack = { screen = Screen.SETTINGS },

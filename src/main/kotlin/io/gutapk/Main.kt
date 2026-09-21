@@ -30,7 +30,7 @@ fun main() {
             settings.root?.let { RunSession.start(Paths.get(it), version) }
         }
 
-        val state = rememberWindowState(size = DpSize(1100.dp, 720.dp))
+        val state = rememberWindowState(size = DpSize(1280.dp, 820.dp))
         Window(onCloseRequest = ::exitApplication, title = "GutapK", state = state) {
             Shell(
                 settings = settings,

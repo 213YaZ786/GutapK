@@ -1,5 +1,10 @@
 package io.gutapk.ui
 
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -7,6 +12,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import io.gutapk.settings.Settings
 import io.gutapk.settings.SettingsStore
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+
+// Two columns from this width, one below it.
+private val TwoColumnsFrom = 900.dp
 
 @Composable
 fun SettingsScreen(
@@ -23,21 +34,51 @@ fun SettingsScreen(
 ) {
     var dialog by remember { mutableStateOf<String?>(null) }
 
-    Page(title = t("settings"), onBack = onBack) {
+    val general: @Composable () -> Unit = {
         Zone(t("set_general")) {
             ZoneRow(t("set_language"), lang.native, onClick = { dialog = "lang" })
             ZoneRow(t("set_theme"), themeLabel(theme, detected), onClick = { dialog = "theme" })
         }
+    }
+    val storage: @Composable () -> Unit = {
         Zone(t("set_storage")) {
             ZoneRow(t("set_root"), settings.root ?: "", onClick = onRoot)
         }
+    }
+    val legal: @Composable () -> Unit = {
         Zone(t("set_legal")) {
             ZoneRow(t("lic_title"), t("set_licence_d"), onClick = onLicence)
             ZoneRow(t("legal_title"), t("legal_accepted", settings.legalRev), onClick = onLegal)
         }
+    }
+    val about: @Composable () -> Unit = {
         Zone(t("set_about")) {
             ZoneRow(t("about_version"), version)
             ZoneRow(t("about_config"), SettingsStore.dir.toString())
+        }
+    }
+
+    Page(title = t("settings"), width = 1120.dp, onBack = onBack) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            if (maxWidth >= TwoColumnsFrom) {
+                Row(horizontalArrangement = Arrangement.spacedBy(24.dp), verticalAlignment = Alignment.Top) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(24.dp)) {
+                        general()
+                        storage()
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(24.dp)) {
+                        legal()
+                        about()
+                    }
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(24.dp)) {
+                    general()
+                    storage()
+                    legal()
+                    about()
+                }
+            }
         }
     }
 
