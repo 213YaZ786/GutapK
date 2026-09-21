@@ -14,6 +14,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import io.gutapk.settings.Settings
 import io.gutapk.settings.SettingsStore
+import io.gutapk.tools.RunSession
 import io.gutapk.tools.Storage
 
 private enum class Screen { HOME, SETTINGS, ROOT, LICENCE, LEGAL }
@@ -103,6 +104,7 @@ fun Shell(
                             theme = theme,
                             detected = detected,
                             version = version,
+                            root = RunSession.root,
                             onChange = onChange,
                             onBack = { screen = Screen.HOME },
                             onRoot = { screen = Screen.ROOT },

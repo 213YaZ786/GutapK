@@ -26,6 +26,7 @@ fun SettingsScreen(
     theme: ThemeChoice,
     detected: SystemMode,
     version: String,
+    root: java.nio.file.Path?,
     onChange: (Settings) -> Unit,
     onBack: () -> Unit,
     onRoot: () -> Unit,
@@ -44,6 +45,7 @@ fun SettingsScreen(
         Zone(t("set_storage")) {
             ZoneRow(t("set_root"), settings.root ?: "", onClick = onRoot)
         }
+        ToolsZone(root)
     }
     val legal: @Composable () -> Unit = {
         Zone(t("set_legal")) {
@@ -58,7 +60,7 @@ fun SettingsScreen(
         }
     }
 
-    Page(title = t("settings"), width = 1120.dp, onBack = onBack) {
+    Page(title = t("settings"), width = 1120.dp, onBack = onBack, actions = jobPill(currentJobView())) {
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             if (maxWidth >= TwoColumnsFrom) {
                 Row(horizontalArrangement = Arrangement.spacedBy(24.dp), verticalAlignment = Alignment.Top) {

@@ -131,6 +131,11 @@ object RunSession {
     var workDir: Path? = null
         private set
 
+    // The root this run writes under. Settings may name another one, which
+    // only takes effect at the next launch.
+    var root: Path? = null
+        private set
+
     // Once per process. A root changed in Settings applies at next launch,
     // so one run never writes under two roots.
     @Synchronized
@@ -145,6 +150,7 @@ object RunSession {
         val dir = workRoot.resolve(Storage.runDirName(self.pid(), startMs))
         Files.createDirectories(dir)
         workDir = dir
+        this.root = root
 
         // Runs on normal exit, on SIGINT and on SIGTERM. SIGKILL skips it,
         // and the sweep at the next start covers that case.
