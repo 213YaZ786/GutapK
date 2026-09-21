@@ -65,11 +65,11 @@ private val GutapkShapes = Shapes(
 )
 
 @Composable
-fun GutapkTheme(choice: ThemeChoice, content: @Composable () -> Unit) {
+fun GutapkTheme(choice: ThemeChoice, detected: SystemMode, content: @Composable () -> Unit) {
     val dark = when (choice) {
         ThemeChoice.LIGHT -> false
         ThemeChoice.DARK -> true
-        ThemeChoice.SYSTEM -> when (readSystemMode()) {
+        ThemeChoice.SYSTEM -> when (detected) {
             SystemMode.DARK -> true
             SystemMode.LIGHT -> false
             SystemMode.UNKNOWN -> isSystemInDarkTheme()
