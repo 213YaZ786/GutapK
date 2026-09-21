@@ -81,7 +81,7 @@ object Storage {
                 val m = runName.matchEntire(dir.fileName.toString()) ?: return@forEach
                 val pid = m.groupValues[1].toLongOrNull() ?: return@forEach
                 val start = m.groupValues[2].toLongOrNull() ?: return@forEach
-                if (!alive(pid, start) && deleteTree(dir, work)) removed += dir
+                if (!alive(pid, start) && deleteTree(dir, work)) removed.add(dir)
             }
         }
         return removed
