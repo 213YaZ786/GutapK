@@ -49,6 +49,14 @@ object Fingerprints {
     }
 
     @Synchronized
+    fun all(root: Path): Properties {
+        val f = file(root)
+        val p = Properties()
+        if (Files.isRegularFile(f)) Files.newBufferedReader(f).use { p.load(it) }
+        return p
+    }
+
+    @Synchronized
     fun put(root: Path, values: Map<String, String>) {
         val f = file(root)
         val p = Properties()
@@ -62,50 +70,76 @@ object Fingerprints {
 
 sealed interface ToolStatus {
     data object Missing : ToolStatus
-    data class Installed(val location: Path, val archiveSha256: String, val entrySha256: String) : ToolStatus
+    data class Installed(
+        val version: String,
+        val location: Path,
+        val archiveSha256: String,
+        val entrySha256: String,
+    ) : ToolStatus
 }
 
+// One folder per installed version, `dependencies/<id>-<version>/`, holding
+// the archive and `content/`. `<id>.version` in the fingerprints names the
+// one in use. Fingerprints are per version, so an update is held to what was
+// seen the first time that exact version was downloaded.
 object Installer {
-    fun dir(root: Path, spec: ToolSpec): Path = root.resolve("dependencies").resolve(spec.key)
-    fun content(root: Path, spec: ToolSpec): Path = dir(root, spec).resolve("content")
-    fun entry(root: Path, spec: ToolSpec): Path = content(root, spec).resolve(spec.entry)
+    private fun key(spec: ToolSpec, version: String) = "${spec.id}-$version"
+
+    fun dir(root: Path, spec: ToolSpec, version: String): Path = root.resolve("dependencies").resolve(key(spec, version))
+    fun content(root: Path, spec: ToolSpec, version: String): Path = dir(root, spec, version).resolve("content")
+    fun entry(root: Path, spec: ToolSpec, version: String): Path = content(root, spec, version).resolve(spec.entry)
+
+    // Installs made before versions were recorded carry no `<id>.version`.
+    // The newest version with both prints and its program on disk is taken.
+    private fun installedVersion(root: Path, spec: ToolSpec, p: java.util.Properties): String? {
+        p.getProperty("${spec.id}.version")?.let { return it }
+        val prefix = "${spec.id}-"
+        return p.stringPropertyNames()
+            .filter { it.startsWith(prefix) && it.endsWith(".entry.sha256") }
+            .map { it.removePrefix(prefix).removeSuffix(".entry.sha256") }
+            .filter { Files.isRegularFile(entry(root, spec, it)) }
+            .maxWithOrNull { a, b -> Releases.compare(a, b) }
+    }
 
     fun status(root: Path, spec: ToolSpec): ToolStatus {
-        val archive = Fingerprints.get(root, "${spec.key}.archive.sha256")
-        val entry = Fingerprints.get(root, "${spec.key}.entry.sha256")
-        return if (archive != null && entry != null && Files.isRegularFile(entry(root, spec))) {
-            ToolStatus.Installed(content(root, spec), archive, entry)
+        val p = Fingerprints.all(root)
+        val version = installedVersion(root, spec, p) ?: return ToolStatus.Missing
+        val archive = p.getProperty("${key(spec, version)}.archive.sha256")
+        val entry = p.getProperty("${key(spec, version)}.entry.sha256")
+        return if (archive != null && entry != null && Files.isRegularFile(entry(root, spec, version))) {
+            ToolStatus.Installed(version, content(root, spec, version), archive, entry)
         } else {
             ToolStatus.Missing
         }
     }
 
-    // Rehashes the entry. Anything but the recorded value means the file was
-    // changed after install, and the tool must not run.
+    // Rehashes the program. Anything but the recorded value means the file
+    // was changed after install, and the tool must not run.
     fun verify(root: Path, spec: ToolSpec): Boolean {
         val s = status(root, spec) as? ToolStatus.Installed ?: return false
-        return Hash.of(entry(root, spec), "SHA-256") == s.entrySha256
+        return Hash.of(entry(root, spec, s.version), "SHA-256") == s.entrySha256
     }
 
-    fun install(root: Path, spec: ToolSpec, sink: JobSink, cancelled: () -> Boolean) {
-        val dir = dir(root, spec)
+    fun install(root: Path, spec: ToolSpec, release: Release, sink: JobSink, cancelled: () -> Boolean) {
+        val version = release.version
+        val dir = dir(root, spec, version)
         Files.createDirectories(dir)
-        val archive = dir.resolve(spec.fileName)
-        val part = dir.resolve(spec.fileName + ".part")
+        val archive = dir.resolve(release.fileName)
+        val part = dir.resolve(release.fileName + ".part")
 
         if (!Files.isRegularFile(archive)) {
             sink.emit(JobEvent.Step("download", 1, 3))
-            sink.emit(JobEvent.Line("from ${spec.url}"))
-            fetch(spec, part, sink, cancelled)
+            sink.emit(JobEvent.Line("${spec.id} $version from ${release.url}"))
+            fetch(release, part, sink, cancelled)
             Files.move(part, archive, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
         }
 
         sink.emit(JobEvent.Step("check", 2, 3))
-        val sha256 = check(root, spec, archive)
+        val sha256 = check(root, spec, release, archive)
         sink.emit(JobEvent.Line("sha256 $sha256"))
 
         sink.emit(JobEvent.Step("extract", 3, 3))
-        val content = content(root, spec)
+        val content = content(root, spec, version)
         val staging = dir.resolve("content.part")
         Storage.deleteTree(staging, dir)
         Storage.deleteTree(content, dir)
@@ -117,33 +151,56 @@ object Installer {
             Storage.deleteTree(staging, dir)
         }
 
-        val entry = entry(root, spec)
+        val entry = entry(root, spec, version)
         if (!Files.isRegularFile(entry)) throw CheckFailed("${spec.entry} missing from the archive")
         val entrySha = Hash.of(entry, "SHA-256")
         Fingerprints.put(
             root,
-            mapOf("${spec.key}.archive.sha256" to sha256, "${spec.key}.entry.sha256" to entrySha),
+            mapOf(
+                "${key(spec, version)}.archive.sha256" to sha256,
+                "${key(spec, version)}.entry.sha256" to entrySha,
+                "${spec.id}.version" to version,
+            ),
         )
-        sink.emit(JobEvent.Line("installed ${spec.key} at $content"))
+        sink.emit(JobEvent.Line("installed ${key(spec, version)} at $content"))
+        removeOthers(root, spec, version, sink)
+    }
+
+    // Only once the new version is verified and recorded. An update that
+    // fails halfway leaves the old version in place and working.
+    private fun removeOthers(root: Path, spec: ToolSpec, keep: String, sink: JobSink) {
+        val deps = root.resolve("dependencies")
+        if (!Files.isDirectory(deps)) return
+        val prefix = "${spec.id}-"
+        val versionLike = Regex("""^\d+(\.\d+)*$""")
+        Files.list(deps).use { it.toList() }
+            .filter { Files.isDirectory(it) }
+            .filter { d ->
+                val n = d.fileName.toString()
+                n.startsWith(prefix) && n != key(spec, keep) && versionLike.matches(n.removePrefix(prefix))
+            }
+            .forEach { d ->
+                if (Storage.deleteTree(d, deps)) sink.emit(JobEvent.Line("removed old ${d.fileName}"))
+            }
     }
 
     // A bad archive is deleted, not kept. Resuming onto it would only grow a
     // file that can never pass.
-    private fun check(root: Path, spec: ToolSpec, archive: Path): String {
+    private fun check(root: Path, spec: ToolSpec, release: Release, archive: Path): String {
         val size = Files.size(archive)
         val sha1 = Hash.of(archive, "SHA-1")
         val sha256 = Hash.of(archive, "SHA-256")
-        val recorded = Fingerprints.get(root, "${spec.key}.archive.sha256")
+        val recorded = Fingerprints.get(root, "${key(spec, release.version)}.archive.sha256")
         val problem = when {
-            size != spec.size -> "size is $size, expected ${spec.size}"
-            sha1 != spec.sha1 -> "sha1 is $sha1, expected ${spec.sha1}"
-            spec.sha256 != null && sha256 != spec.sha256 -> "sha256 is $sha256, expected ${spec.sha256}"
+            size != release.size -> "size is $size, the publisher says ${release.size}"
+            release.sha1 != null && sha1 != release.sha1 -> "sha1 is $sha1, the publisher says ${release.sha1}"
+            release.sha256 != null && sha256 != release.sha256 -> "sha256 is $sha256, the publisher says ${release.sha256}"
             recorded != null && sha256 != recorded -> "sha256 is $sha256, recorded $recorded"
             else -> null
         }
         if (problem != null) {
             Files.deleteIfExists(archive)
-            throw CheckFailed("${spec.key}: $problem. The download was deleted.")
+            throw CheckFailed("${key(spec, release.version)}: $problem. The download was deleted.")
         }
         return sha256
     }
@@ -151,13 +208,13 @@ object Installer {
     // Resumes from the .part when the server honours the range, restarts it
     // otherwise. HttpURLConnection because java.net.http is not in the
     // bundled runtime.
-    private fun fetch(spec: ToolSpec, part: Path, sink: JobSink, cancelled: () -> Boolean) {
+    private fun fetch(release: Release, part: Path, sink: JobSink, cancelled: () -> Boolean) {
         val have = if (Files.isRegularFile(part)) Files.size(part) else 0L
-        val conn = URI(spec.url).toURL().openConnection() as HttpURLConnection
+        val conn = URI(release.url).toURL().openConnection() as HttpURLConnection
         conn.connectTimeout = 20_000
         conn.readTimeout = 30_000
         conn.instanceFollowRedirects = true
-        if (have in 1 until spec.size) conn.setRequestProperty("Range", "bytes=$have-")
+        if (have in 1 until release.size) conn.setRequestProperty("Range", "bytes=$have-")
         try {
             val code = conn.responseCode
             val append = code == HttpURLConnection.HTTP_PARTIAL && have > 0
@@ -172,7 +229,7 @@ object Installer {
             val start = if (append) have else 0L
             conn.inputStream.use { input ->
                 Files.newOutputStream(part, *opts).use { out ->
-                    copy(input, out, spec.size, start, sink, cancelled)
+                    copy(input, out, release.size, start, sink, cancelled)
                 }
             }
         } finally {

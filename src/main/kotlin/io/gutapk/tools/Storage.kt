@@ -104,10 +104,15 @@ object Storage {
 object RunLog {
     private var out: BufferedWriter? = null
 
+    // Known so the disk screen can refuse to delete the log being written.
+    var file: Path? = null
+        private set
+
     @Synchronized
     fun open(file: Path) {
         if (out != null) return
         out = Files.newBufferedWriter(file)
+        this.file = file
     }
 
     @Synchronized

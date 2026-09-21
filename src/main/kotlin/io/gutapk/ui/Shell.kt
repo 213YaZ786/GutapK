@@ -5,6 +5,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -16,8 +17,12 @@ import io.gutapk.settings.Settings
 import io.gutapk.settings.SettingsStore
 import io.gutapk.tools.RunSession
 import io.gutapk.tools.Storage
+import io.gutapk.tools.Update
+import io.gutapk.tools.Updates
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
-private enum class Screen { HOME, SETTINGS, ROOT, LICENCE, LEGAL }
+private enum class Screen { HOME, SETTINGS, ROOT, DISK, LICENCE, LEGAL }
 
 private enum class FirstStep { LANGUAGE, LICENCE, LEGAL, ROOT }
 
@@ -54,6 +59,18 @@ fun Shell(
     val steps = remember { firstSteps(settings) }
     var stepIndex by remember { mutableStateOf(0) }
     var screen by remember { mutableStateOf(Screen.HOME) }
+    var updates by remember { mutableStateOf<List<Update>>(emptyList()) }
+    val setupDone = stepIndex >= steps.size
+
+    // Once per launch, after the first run, when the user allows it. The
+    // app lives longer than any tool release, so it asks the publishers
+    // instead of carrying versions. Only installed tools are looked up.
+    val root = RunSession.root
+    LaunchedEffect(setupDone, root, settings.checkUpdates) {
+        if (setupDone && root != null && settings.checkUpdates) {
+            updates = withContext(Dispatchers.IO) { runCatching { Updates.check(root) }.getOrDefault(emptyList()) }
+        }
+    }
 
     val lang = langOf(settings.lang) ?: detectLang()
     val theme = ThemeChoice.entries.firstOrNull { it.name == settings.theme } ?: ThemeChoice.SYSTEM
@@ -108,6 +125,7 @@ fun Shell(
                             onChange = onChange,
                             onBack = { screen = Screen.HOME },
                             onRoot = { screen = Screen.ROOT },
+                            onDisk = { screen = Screen.DISK },
                             onLicence = { screen = Screen.LICENCE },
                             onLegal = { screen = Screen.LEGAL },
                         )
@@ -121,8 +139,12 @@ fun Shell(
                                 screen = Screen.SETTINGS
                             },
                         )
+                        Screen.DISK -> DiskScreen(RunSession.root, onBack = { screen = Screen.SETTINGS })
                         Screen.LICENCE -> LicenceScreen(null, onBack = { screen = Screen.SETTINGS }, onContinue = null)
                         Screen.LEGAL -> LegalScreen(null, onBack = { screen = Screen.SETTINGS }, onAccept = null, onDecline = null)
+                    }
+                    if (updates.isNotEmpty() && root != null) {
+                        UpdateDialog(root, updates, onClose = { updates = emptyList() })
                     }
                 }
             }

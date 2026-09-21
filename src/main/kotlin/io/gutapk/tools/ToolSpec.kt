@@ -1,22 +1,34 @@
 package io.gutapk.tools
 
+enum class ToolSource(val tag: String) {
+    GOOGLE_REPO("google-repo"),
+}
+
+// What a tool is and where its publisher lists releases. Never a version:
+// that is looked up, so the app keeps working as tools move on.
 data class ToolSpec(
     val id: String,
-    val version: String,
-    val url: String,
-    val size: Long,
-    val sha1: String,
-    // Null until CI has printed it and it is pinned in the table. Until then
-    // the publisher's sha1 is checked and the sha256 is recorded on first
-    // download, then enforced.
-    val sha256: String?,
+    val source: ToolSource,
+    val index: String,
+    val pkg: String,
     val entry: String,
     val execDir: String,
     val licence: String,
     val licenceUrl: String,
     val what: String,
 ) {
-    val key: String get() = "$id-$version"
+    val host: String get() = runCatching { java.net.URI(index).host }.getOrNull() ?: index
+}
+
+// One release as the publisher states it. The checksums are the
+// publisher's, null when it publishes none.
+data class Release(
+    val version: String,
+    val url: String,
+    val size: Long,
+    val sha1: String?,
+    val sha256: String?,
+) {
     val fileName: String get() = url.substringAfterLast('/')
 }
 
@@ -34,19 +46,19 @@ object Tools {
         .filter { it.isNotBlank() && !it.startsWith("#") }
         .map { line ->
             val f = line.split('\t')
-            require(f.size == 11) { "tool table line has ${f.size} fields, expected 11: $line" }
+            require(f.size == 9) { "tool table line has ${f.size} fields, expected 9: $line" }
+            val source = ToolSource.entries.firstOrNull { it.tag == f[1] }
+                ?: throw IllegalArgumentException("unknown source ${f[1]}")
             ToolSpec(
                 id = f[0],
-                version = f[1],
-                url = f[2],
-                size = f[3].toLong(),
-                sha1 = f[4],
-                sha256 = f[5].takeIf { it != "-" },
-                entry = f[6],
-                execDir = f[7],
-                licence = f[8],
-                licenceUrl = f[9],
-                what = f[10],
+                source = source,
+                index = f[2],
+                pkg = f[3],
+                entry = f[4],
+                execDir = f[5],
+                licence = f[6],
+                licenceUrl = f[7],
+                what = f[8],
             )
         }
 

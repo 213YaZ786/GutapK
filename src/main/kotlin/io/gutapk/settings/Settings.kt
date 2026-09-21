@@ -14,6 +14,9 @@ data class Settings(
     val theme: String = "SYSTEM",
     val legalRev: Int = 0,
     val root: String? = null,
+    // Asks the publishers of installed tools for newer releases at launch.
+    // A lookup, never a download: an update still waits for the user's OK.
+    val checkUpdates: Boolean = true,
 )
 
 object SettingsStore {
@@ -33,6 +36,7 @@ object SettingsStore {
             theme = p.getProperty("theme") ?: "SYSTEM",
             legalRev = p.getProperty("legal")?.toIntOrNull() ?: 0,
             root = p.getProperty("root")?.takeIf { it.isNotBlank() },
+            checkUpdates = p.getProperty("updates") != "false",
         )
     }
 
@@ -43,6 +47,7 @@ object SettingsStore {
         p.setProperty("theme", s.theme)
         p.setProperty("legal", s.legalRev.toString())
         s.root?.let { p.setProperty("root", it) }
+        p.setProperty("updates", s.checkUpdates.toString())
         // Written next to the target, then moved. A crash mid-write leaves
         // the old file intact, and the temporary never touches /tmp.
         val part = dir.resolve("settings.properties.part")

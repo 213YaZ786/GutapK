@@ -33,6 +33,8 @@ fun HomeScreen(version: String, onSettings: () -> Unit, onLicence: () -> Unit) {
         width = HomeWidth,
         large = true,
         topEnd = { CornerButton(GIcons.Settings, t("settings"), onSettings) },
+        // An update accepted from the launch popup runs while Home is shown.
+        actions = jobPill(currentJobView()),
         footer = {
             // The GPL asks an interactive program to show this notice. A line
             // that is always there does it without blocking every launch.

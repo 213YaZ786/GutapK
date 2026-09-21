@@ -30,6 +30,7 @@ fun SettingsScreen(
     onChange: (Settings) -> Unit,
     onBack: () -> Unit,
     onRoot: () -> Unit,
+    onDisk: () -> Unit,
     onLicence: () -> Unit,
     onLegal: () -> Unit,
 ) {
@@ -44,8 +45,13 @@ fun SettingsScreen(
     val storage: @Composable () -> Unit = {
         Zone(t("set_storage")) {
             ZoneRow(t("set_root"), settings.root ?: "", onClick = onRoot)
+            ZoneRow(t("disk_title"), t("disk_row"), onClick = onDisk)
         }
-        ToolsZone(root)
+        ToolsZone(
+            root = root,
+            checkUpdates = settings.checkUpdates,
+            onCheckUpdates = { onChange(settings.copy(checkUpdates = it)) },
+        )
     }
     val legal: @Composable () -> Unit = {
         Zone(t("set_legal")) {

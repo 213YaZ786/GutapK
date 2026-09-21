@@ -1,8 +1,11 @@
 # One tool per line, fields separated by a tab. Read by tools/ToolSpec.kt and
 # by scripts/check-tools.sh, so the app and CI can never disagree.
 #
-# sha1 is what the publisher states. sha256 is ours: "-" until CI has
-# downloaded the file once and printed it, then pinned here.
+# No version here. The latest one is read from the publisher's index at
+# the moment the user asks, so a new release needs no new GutapK.
 #
-# id	version	url	size	sha1	sha256	entry	execDir	licence	licenceUrl	what
-platform-tools	37.0.1	https://dl.google.com/android/repository/platform-tools_r37.0.1-linux.zip	9054187	477254aa5f903c15cf51001717bdf347fb6b53e0	-	platform-tools/adb	platform-tools	Android Software Development Kit License Agreement	https://developer.android.com/studio/terms	adb and fastboot
+# source       google-repo: Google's SDK repository XML, index is its URL,
+#              package is the remotePackage path.
+#
+# id	source	index	package	entry	execDir	licence	licenceUrl	what
+platform-tools	google-repo	https://dl.google.com/android/repository/repository2-3.xml	platform-tools	platform-tools/adb	platform-tools	Android Software Development Kit License Agreement	https://developer.android.com/studio/terms	adb and fastboot

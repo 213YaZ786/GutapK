@@ -20,6 +20,10 @@ fun main() {
     // Set by the build through jvmArgs, so the AppImage and the jar agree.
     val version = System.getProperty("gutapk.version") ?: "dev"
     val initial = SettingsStore.load()
+    // Started before the window so every screen, and the update check at
+    // launch, sees the root of this run from the first frame. A first run
+    // has no root yet and starts it once the root step is done.
+    initial.root?.let { RunSession.start(Paths.get(it), version) }
 
     application {
         var settings by remember { mutableStateOf(initial) }
