@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "io.gutapk"
-version = "0.1.5"
+version = "0.1.6"
 
 kotlin {
     jvmToolchain(21)
@@ -27,6 +27,9 @@ tasks.test {
 compose.desktop {
     application {
         mainClass = "io.gutapk.MainKt"
+        // Lands in the jpackage .cfg as a java-option, which gutapk-launch
+        // passes through, so the running app knows its own version.
+        jvmArgs += listOf("-Dgutapk.version=${project.version}")
         nativeDistributions {
             packageName = "GutapK"
             packageVersion = project.version.toString()

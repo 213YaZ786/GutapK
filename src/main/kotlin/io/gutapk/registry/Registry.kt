@@ -1,6 +1,6 @@
 package io.gutapk.registry
 
-enum class Source { REPO, APK, DEVICE }
+enum class Source { REPO, BUILD, APK, DEVICE }
 
 interface Feature {
     val id: String
