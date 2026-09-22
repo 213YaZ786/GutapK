@@ -15,26 +15,44 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import io.gutapk.core.apk.OpenedPackage
+import io.gutapk.core.apk.Packages
 import io.gutapk.registry.Registry
 import io.gutapk.registry.Source
+import java.nio.file.Path
 
 // Four sources fill a 2 x 2 grid at this width. Rows would leave most of a
 // wide window empty.
 private val HomeWidth = 960.dp
 
+// The shell's rule: manage what exists only once something exists. The
+// zone appears with the first opened package.
+private const val RECENT_SHOWN = 6
+
 @Composable
-fun HomeScreen(version: String, onSettings: () -> Unit, onLicence: () -> Unit) {
+fun HomeScreen(
+    version: String,
+    root: Path?,
+    onSettings: () -> Unit,
+    onLicence: () -> Unit,
+    onSource: (Source) -> Unit,
+    onPackage: (Path) -> Unit,
+) {
+    val view = currentJobView()
+    // Read again when a job ends, an import adds a package.
+    val recent = remember(root, view?.state) { if (root == null) emptyList() else Packages.recent(root, RECENT_SHOWN) }
     Page(
         title = "GutapK",
         width = HomeWidth,
         large = true,
         topEnd = { CornerButton(GIcons.Settings, t("settings"), onSettings) },
         // An update accepted from the launch popup runs while Home is shown.
-        actions = jobPill(currentJobView()),
+        actions = jobPill(view),
         footer = {
             // The GPL asks an interactive program to show this notice. A line
             // that is always there does it without blocking every launch.
@@ -58,15 +76,22 @@ fun HomeScreen(version: String, onSettings: () -> Unit, onLicence: () -> Unit) {
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(start = 16.dp),
             )
+            // Standalone sources first. The LineageOS ones come last in the
+            // plan, and last on the screen.
             TileRow(
-                { SourceTile("src_repo", Source.REPO, it) },
-                { SourceTile("src_build", Source.BUILD, it) },
+                { SourceTile("src_apk", Source.APK, it, onSource) },
+                { SourceTile("src_device", Source.DEVICE, it, onSource) },
             )
             Spacer(Modifier.height(8.dp))
             TileRow(
-                { SourceTile("src_apk", Source.APK, it) },
-                { SourceTile("src_device", Source.DEVICE, it) },
+                { SourceTile("src_repo", Source.REPO, it, onSource) },
+                { SourceTile("src_build", Source.BUILD, it, onSource) },
             )
+        }
+        if (recent.isNotEmpty()) {
+            Zone(t("home_recent")) {
+                recent.forEach { p -> RecentRow(p, onPackage) }
+            }
         }
     }
 }
@@ -85,14 +110,23 @@ private fun TileRow(start: @Composable (Modifier) -> Unit, end: @Composable (Mod
 }
 
 @Composable
-private fun SourceTile(key: String, source: Source, modifier: Modifier) {
+private fun RecentRow(p: OpenedPackage, onPackage: (Path) -> Unit) {
+    ZoneRow(
+        title = p.label,
+        detail = listOf(p.packageName, p.version).filter { it.isNotEmpty() }.joinToString("  ·  "),
+        onClick = { onPackage(p.dir) },
+    )
+}
+
+@Composable
+private fun SourceTile(key: String, source: Source, modifier: Modifier, onSource: (Source) -> Unit) {
     val count = Registry.forSource(source).size
     val base = modifier.clip(MaterialTheme.shapes.large)
     Surface(
         shape = MaterialTheme.shapes.large,
         color = zoneFill(),
         border = BorderStroke(2.dp, MaterialTheme.colorScheme.outlineVariant),
-        modifier = if (count > 0) base.clickable {} else base,
+        modifier = if (count > 0) base.clickable { onSource(source) } else base,
     ) {
         Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(t(key), style = MaterialTheme.typography.titleLarge)

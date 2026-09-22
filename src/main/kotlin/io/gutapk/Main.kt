@@ -10,6 +10,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import io.gutapk.registry.Features
 import io.gutapk.settings.SettingsStore
 import io.gutapk.tools.RunLog
 import io.gutapk.tools.RunSession
@@ -20,6 +21,7 @@ fun main() {
     // Set by the build through jvmArgs, so the AppImage and the jar agree.
     val version = System.getProperty("gutapk.version") ?: "dev"
     val initial = SettingsStore.load()
+    Features.registerAll()
     // Started before the window so every screen, and the update check at
     // launch, sees the root of this run from the first frame. A first run
     // has no root yet and starts it once the root step is done.

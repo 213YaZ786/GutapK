@@ -1,6 +1,13 @@
 [versions]
 kotlin = "2.4.10"
 compose = "1.12.0"
+# Google's signing and verification library, Apache-2.0, meant for use off
+# device. Published on google(), not on Maven Central. Its version follows
+# the Android Gradle plugin.
+apksig = "8.7.3"
+
+[libraries]
+apksig = { module = "com.android.tools.build:apksig", version.ref = "apksig" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

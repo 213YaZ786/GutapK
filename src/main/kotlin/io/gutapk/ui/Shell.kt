@@ -13,8 +13,30 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
+import io.gutapk.core.apk.Packages
+import io.gutapk.features.overview.OverviewScreen
+import io.gutapk.job.JobQueue
+import io.gutapk.job.JobState
+import io.gutapk.registry.Source
 import io.gutapk.settings.Settings
-import io.gutapk.settings.SettingsStore
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import java.nio.file.Path
+import javax.swing.JFileChooser
+import javax.swing.filechooser.FileNameExtensionFilter
+import io.gutapk.core.apk.Packages
+import io.gutapk.features.overview.OverviewScreen
+import io.gutapk.job.JobQueue
+import io.gutapk.job.JobState
+import io.gutapk.registry.Source
+import io.gutapk.settings.Settings
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import java.nio.file.Path
+import javax.swing.JFileChooser
+import javax.swing.filechooser.FileNameExtensionFilterStore
 import io.gutapk.tools.RunSession
 import io.gutapk.tools.Storage
 import io.gutapk.tools.Update
@@ -22,7 +44,7 @@ import io.gutapk.tools.Updates
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-private enum class Screen { HOME, SETTINGS, ROOT, DISK, LICENCE, LEGAL }
+private enum class Screen { HOME, SETTINGS, ROOT, DISK, LICENCE, LEGAL, OVERVIEW }
 
 private enum class FirstStep { LANGUAGE, LICENCE, LEGAL, ROOT }
 
@@ -36,6 +58,22 @@ private fun firstSteps(s: Settings): List<FirstStep> = buildList {
     }
     if (s.legalRev != SettingsStore.LEGAL_REV) add(FirstStep.LEGAL)
     if (s.root == null) add(FirstStep.ROOT)
+}
+
+private const val IMPORT_JOB = "import"
+
+// Swing's chooser, filtered on .apk. The user's file is only read, the copy
+// lands under the root.
+private fun pickApk(): Path? {
+    val chooser = JFileChooser().apply {
+        fileSelectionMode = JFileChooser.FILES_ONLY
+        fileFilter = FileNameExtensionFilter("APK", "apk")
+    }
+    return if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) chooser.selectedFile.toPath() else null
+}
+
+private fun startImport(root: Path, source: Path) {
+    JobQueue.start(IMPORT_JOB) { job -> job.result = Packages.importApk(root, source, job).toString() }
 }
 
 private fun stepLabelKey(step: FirstStep): String = when (step) {
@@ -60,6 +98,29 @@ fun Shell(
     var stepIndex by remember { mutableStateOf(0) }
     var screen by remember { mutableStateOf(Screen.HOME) }
     var updates by remember { mutableStateOf<List<Update>>(emptyList()) }
+    var overviewDir by remember { mutableStateOf<Path?>(null) }
+    var importError by remember { mutableStateOf<String?>(null) }
+    // The job already acted on, so going back to Home does not reopen the
+    // same package or show the same error twice.
+    var handled by remember { mutableStateOf<Any?>(null) }
+    val jobView = currentJobView()
+    LaunchedEffect(jobView) {
+        val job = JobQueue.current.value
+        if (jobView != null && jobView.title == IMPORT_JOB && job != null && handled !== job) {
+            when (jobView.state) {
+                JobState.DONE -> {
+                    handled = job
+                    overviewDir = Path.of(jobView.message)
+                    screen = Screen.OVERVIEW
+                }
+                JobState.FAILED -> {
+                    handled = job
+                    importError = jobView.message
+                }
+                else -> {}
+            }
+        }
+    }
     val setupDone = stepIndex >= steps.size
 
     // Once per launch, after the first run, when the user allows it. The
@@ -112,9 +173,25 @@ fun Shell(
                     when (screen) {
                         Screen.HOME -> HomeScreen(
                             version = version,
+                            root = root,
                             onSettings = { screen = Screen.SETTINGS },
                             onLicence = { screen = Screen.LICENCE },
+                            onSource = { source ->
+                                if (source == Source.APK && root != null) pickApk()?.let { startImport(root, it) }
+                            },
+                            onPackage = {
+                                overviewDir = it
+                                screen = Screen.OVERVIEW
+                            },
                         )
+                        Screen.OVERVIEW -> {
+                            val d = overviewDir
+                            if (d != null) {
+                                OverviewScreen(d, onBack = { screen = Screen.HOME })
+                            } else {
+                                LaunchedEffect(Unit) { screen = Screen.HOME }
+                            }
+                        }
                         Screen.SETTINGS -> SettingsScreen(
                             settings = settings,
                             lang = lang,
@@ -142,6 +219,15 @@ fun Shell(
                         Screen.DISK -> DiskScreen(RunSession.root, onBack = { screen = Screen.SETTINGS })
                         Screen.LICENCE -> LicenceScreen(null, onBack = { screen = Screen.SETTINGS }, onContinue = null)
                         Screen.LEGAL -> LegalScreen(null, onBack = { screen = Screen.SETTINGS }, onAccept = null, onDecline = null)
+                    }
+                    val err = importError
+                    if (err != null) {
+                        AlertDialog(
+                            onDismissRequest = { importError = null },
+                            title = { Text(t("imp_failed")) },
+                            text = { Text(err) },
+                            confirmButton = { TextButton(onClick = { importError = null }) { Text(t("close")) } },
+                        )
                     }
                     if (updates.isNotEmpty() && root != null) {
                         UpdateDialog(root, updates, onClose = { updates = emptyList() })

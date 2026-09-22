@@ -18,7 +18,7 @@ sealed interface RootCheck {
 }
 
 object Storage {
-    val SUBDIRS = listOf("dependencies", "work", "logs")
+    val SUBDIRS = listOf("dependencies", "work", "logs", "packages")
 
     private val home: String = System.getProperty("user.home")
 

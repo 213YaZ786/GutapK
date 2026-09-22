@@ -42,6 +42,11 @@ class Job internal constructor(val title: String) : JobSink {
     var cancelRequested: Boolean = false
         private set
 
+    // What a successful job hands back, a path for instance. It becomes the
+    // message of the finished view.
+    @Volatile
+    var result: String = ""
+
     fun cancel() {
         cancelRequested = true
         _view.value = _view.value.copy(state = JobState.CANCELLING)
@@ -73,7 +78,7 @@ class Job internal constructor(val title: String) : JobSink {
         RunLog.line("[$title] started")
         try {
             work(this)
-            emit(JobEvent.Finished(true, ""))
+            emit(JobEvent.Finished(true, result))
         } catch (e: CancelledByUser) {
             RunLog.line("[$title] cancelled")
             _view.value = _view.value.copy(state = JobState.CANCELLED)

@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "io.gutapk"
-version = "0.1.11"
+version = "0.1.12"
 
 kotlin {
     jvmToolchain(21)
@@ -17,6 +17,7 @@ dependencies {
     // the newest stable on Maven Central: the 1.11 and 1.12 lines exist only as
     // alphas on the dev repository. Declaring 1.12.0 by coordinates fails.
     implementation(compose.material3)
+    implementation(libs.apksig)
     testImplementation(kotlin("test"))
 }
 
