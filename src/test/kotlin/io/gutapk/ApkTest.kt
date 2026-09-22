@@ -5,6 +5,9 @@ import io.gutapk.core.apk.BinaryXml
 import io.gutapk.core.apk.Packages
 import io.gutapk.core.apk.ResourceTable
 import io.gutapk.core.apk.Signatures
+import io.gutapk.core.sign.ApkSigning
+import io.gutapk.core.sign.KeyChoice
+import io.gutapk.core.sign.TestKey
 import io.gutapk.job.JobEvent
 import io.gutapk.job.JobSink
 import io.gutapk.tools.Storage
@@ -166,6 +169,27 @@ class ApkTest {
 
         // Unsigned is a result to show, not a crash.
         assertFalse(Signatures.verify(file).verified)
+    }
+
+    // The whole signing path on a real zip: apksig signs with the bundled
+    // test key, the result verifies, and the signer is AOSP's test key.
+    @Test
+    fun signsWithTheTestKey() = withDir { dir ->
+        val source = dir.resolve("app.apk")
+        apk(source)
+        val out = ApkSigning.output(dir, "com.example.app", "1.2", KeyChoice.TEST)
+        val quiet = object : JobSink {
+            override fun emit(event: JobEvent) {}
+        }
+
+        val check = ApkSigning.sign(source, out, TestKey.load(), 21, "test", quiet)
+
+        assertTrue(check.verified, check.problems.joinToString())
+        assertEquals(listOf("v1", "v2", "v3"), check.schemes.filter { it != "v3.1" })
+        assertEquals(TestKey.CERT_SHA256, check.signers.single().sha256)
+        assertTrue(Files.isRegularFile(out))
+        assertFalse(Files.exists(out.resolveSibling(out.fileName.toString() + ".part")))
+        assertEquals(listOf("v2", "v3"), ApkSigning.schemesFor(24))
     }
 
     @Test

@@ -10,6 +10,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import io.gutapk.core.sign.KeyChoice
+import io.gutapk.core.sign.TestKey
+import io.gutapk.core.sign.keyChoiceOf
 import io.gutapk.settings.Settings
 import io.gutapk.settings.SettingsStore
 import androidx.compose.ui.Alignment
@@ -53,6 +56,13 @@ fun SettingsScreen(
             onCheckUpdates = { onChange(settings.copy(checkUpdates = it)) },
         )
     }
+    val signing: @Composable () -> Unit = {
+        val choice = keyChoiceOf(settings.signKey)
+        Zone(t("set_signing")) {
+            ZoneRow(t("set_sign_key"), keyLabel(choice), onClick = { dialog = "key" })
+            if (choice == KeyChoice.TEST) ZoneRow(t("signed_signer"), TestKey.CERT_SHA256)
+        }
+    }
     val legal: @Composable () -> Unit = {
         Zone(t("set_legal")) {
             ZoneRow(t("lic_title"), t("set_licence_d"), onClick = onLicence)
@@ -75,6 +85,7 @@ fun SettingsScreen(
                         storage()
                     }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(24.dp)) {
+                        signing()
                         legal()
                         about()
                     }
@@ -83,6 +94,7 @@ fun SettingsScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(24.dp)) {
                     general()
                     storage()
+                    signing()
                     legal()
                     about()
                 }
@@ -97,6 +109,14 @@ fun SettingsScreen(
             current = lang,
             onPick = {
                 onChange(settings.copy(lang = it.code))
+                dialog = null
+            },
+            onDismiss = { dialog = null },
+        )
+        "key" -> KeyDialog(
+            current = keyChoiceOf(settings.signKey),
+            onPick = {
+                onChange(settings.copy(signKey = it.name))
                 dialog = null
             },
             onDismiss = { dialog = null },

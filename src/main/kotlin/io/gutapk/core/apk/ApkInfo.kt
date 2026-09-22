@@ -145,9 +145,13 @@ object ApkReader {
 
 object Signatures {
     // apksig checks every scheme the APK carries against its own content.
-    // An unsigned or broken APK is a result to show, not an exception.
-    fun verify(file: Path): SignatureInfo = runCatching {
-        val r = ApkVerifier.Builder(file.toFile()).build().verify()
+    // An unsigned or broken APK is a result to show, not an exception. The
+    // minimum SDK our own reader found is passed on, so an obfuscated
+    // manifest that apksig cannot read still gets its signature checked.
+    fun verify(file: Path, minSdk: Int? = null): SignatureInfo = runCatching {
+        val b = ApkVerifier.Builder(file.toFile())
+        if (minSdk != null) b.setMinCheckedPlatformVersion(minSdk)
+        val r = b.build().verify()
         val schemes = buildList {
             if (r.isVerifiedUsingV1Scheme) add("v1")
             if (r.isVerifiedUsingV2Scheme) add("v2")

@@ -17,6 +17,9 @@ data class Settings(
     // Asks the publishers of installed tools for newer releases at launch.
     // A lookup, never a download: an update still waits for the user's OK.
     val checkUpdates: Boolean = true,
+    // The signing key the user chose, a KeyChoice name. None until chosen:
+    // nothing is signed with a key the user did not pick.
+    val signKey: String? = null,
 )
 
 object SettingsStore {
@@ -37,6 +40,7 @@ object SettingsStore {
             legalRev = p.getProperty("legal")?.toIntOrNull() ?: 0,
             root = p.getProperty("root")?.takeIf { it.isNotBlank() },
             checkUpdates = p.getProperty("updates") != "false",
+            signKey = p.getProperty("signing")?.takeIf { it.isNotBlank() },
         )
     }
 
@@ -48,6 +52,7 @@ object SettingsStore {
         p.setProperty("legal", s.legalRev.toString())
         s.root?.let { p.setProperty("root", it) }
         p.setProperty("updates", s.checkUpdates.toString())
+        s.signKey?.let { p.setProperty("signing", it) }
         // Written next to the target, then moved. A crash mid-write leaves
         // the old file intact, and the temporary never touches /tmp.
         val part = dir.resolve("settings.properties.part")

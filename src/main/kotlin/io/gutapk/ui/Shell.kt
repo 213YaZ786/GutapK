@@ -254,7 +254,13 @@ fun Shell(
                         Screen.OVERVIEW -> {
                             val d = overviewDir
                             if (d != null) {
-                                OverviewScreen(d, onBack = { screen = Screen.HOME })
+                                OverviewScreen(
+                                    dir = d,
+                                    version = version,
+                                    signKey = settings.signKey,
+                                    onSignKey = { onChange(settings.copy(signKey = it.name)) },
+                                    onBack = { screen = Screen.HOME },
+                                )
                             } else {
                                 LaunchedEffect(Unit) { screen = Screen.HOME }
                             }

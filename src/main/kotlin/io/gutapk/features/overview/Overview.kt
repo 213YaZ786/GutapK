@@ -11,11 +11,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -27,13 +32,21 @@ import io.gutapk.core.apk.ApkReader
 import io.gutapk.core.apk.Packages
 import io.gutapk.core.apk.SignatureInfo
 import io.gutapk.core.apk.Signatures
+import io.gutapk.core.sign.KeyChoice
+import io.gutapk.core.sign.keyChoiceOf
+import io.gutapk.job.Job
+import io.gutapk.job.JobQueue
+import io.gutapk.job.JobState
 import io.gutapk.registry.Feature
 import io.gutapk.registry.Source
 import io.gutapk.tools.Hash
 import io.gutapk.ui.BodyText
 import io.gutapk.ui.Page
 import io.gutapk.ui.Zone
+import io.gutapk.ui.KeyDialog
 import io.gutapk.ui.ZoneRow
+import io.gutapk.ui.currentJobView
+import io.gutapk.ui.jobPill
 import io.gutapk.ui.humanSize
 import io.gutapk.ui.t
 import kotlinx.coroutines.Dispatchers
@@ -94,7 +107,7 @@ private fun load(original: Path): Loaded {
     return Loaded(
         info = info.getOrNull(),
         error = info.exceptionOrNull()?.message,
-        signature = Signatures.verify(original),
+        signature = Signatures.verify(original, info.getOrNull()?.minSdk),
         size = Files.size(original),
         sha256 = Hash.of(original, "SHA-256"),
         icon = bitmap,
@@ -102,20 +115,59 @@ private fun load(original: Path): Loaded {
 }
 
 @Composable
-fun OverviewScreen(dir: Path, onBack: () -> Unit) {
+fun OverviewScreen(
+    dir: Path,
+    version: String,
+    signKey: String?,
+    onSignKey: (KeyChoice) -> Unit,
+    onBack: () -> Unit,
+) {
     val original = dir.resolve(Packages.ORIGINAL)
     val state by produceState<State>(State.Reading, dir) {
         value = State.Ready(withContext(Dispatchers.IO) { load(original) })
+    }
+    var dialog by remember { mutableStateOf<String?>(null) }
+    // The job this screen started. Another job finishing, a tool update for
+    // instance, must not open this screen's report.
+    var started by remember { mutableStateOf<Job?>(null) }
+    var report by remember { mutableStateOf<SignReport?>(null) }
+    val view = currentJobView()
+    LaunchedEffect(view) {
+        val job = started
+        if (job != null && view != null && JobQueue.current.value === job) {
+            when (view.state) {
+                JobState.DONE -> {
+                    started = null
+                    report = SignReport.Done(Path.of(view.message))
+                }
+                JobState.FAILED -> {
+                    started = null
+                    report = SignReport.Failed(view.message)
+                }
+                JobState.CANCELLED -> {
+                    started = null
+                }
+                else -> {}
+            }
+        }
     }
 
     val s = state
     val loaded = (s as? State.Ready)?.data
     val info = loaded?.info
+    val choice = keyChoiceOf(signKey)
+    val running = jobPill(view)
+    val signAction: @Composable () -> Unit = {
+        FilledTonalButton(onClick = { dialog = "sign" }) { Text(t("sign_action")) }
+    }
     Page(
         title = info?.label ?: info?.packageName ?: dir.fileName.toString(),
         width = 1040.dp,
         onBack = onBack,
         header = { if (loaded != null) Header(loaded) },
+        // Actions on this APK. While a job runs, the pill shows it instead,
+        // so a second action cannot start on top of the first.
+        actions = running ?: (if (info != null) signAction else null),
     ) {
         when {
             loaded == null -> BodyText(t("ov_reading"))
@@ -123,6 +175,33 @@ fun OverviewScreen(dir: Path, onBack: () -> Unit) {
             else -> Body(loaded, info, original)
         }
     }
+
+    if (info != null) {
+        when (dialog) {
+            "sign" -> SignDialog(
+                dir = dir,
+                original = original,
+                info = info,
+                choice = choice,
+                version = version,
+                onChangeKey = { dialog = "key" },
+                onStarted = {
+                    started = it
+                    dialog = null
+                },
+                onDismiss = { dialog = null },
+            )
+            "key" -> KeyDialog(
+                current = choice,
+                onPick = {
+                    onSignKey(it)
+                    dialog = "sign"
+                },
+                onDismiss = { dialog = "sign" },
+            )
+        }
+    }
+    report?.let { SignReportDialog(it, onClose = { report = null }) }
 }
 
 @Composable

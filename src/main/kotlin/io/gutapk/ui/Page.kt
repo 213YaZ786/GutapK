@@ -157,7 +157,8 @@ fun BodyText(text: String) {
 }
 
 // Radio buttons are allowed here and only here: a choice on a page shows its
-// value and opens this dialog.
+// value and opens this dialog. An option not available yet stays listed,
+// disabled, so the user sees it exists and why it cannot be picked.
 @Composable
 fun <T> ChoiceDialog(
     title: String,
@@ -165,6 +166,7 @@ fun <T> ChoiceDialog(
     current: T,
     onPick: (T) -> Unit,
     onDismiss: () -> Unit,
+    disabled: Set<T> = emptySet(),
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -172,16 +174,21 @@ fun <T> ChoiceDialog(
         text = {
             Column {
                 options.forEach { (value, label) ->
+                    val enabled = value !in disabled
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(MaterialTheme.shapes.medium)
-                            .clickable { onPick(value) }
+                            .clickable(enabled = enabled) { onPick(value) }
                             .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        RadioButton(selected = value == current, onClick = { onPick(value) })
-                        Text(label, style = MaterialTheme.typography.bodyLarge)
+                        RadioButton(selected = value == current, onClick = { onPick(value) }, enabled = enabled)
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }
