@@ -16,10 +16,12 @@ import io.gutapk.core.apk.SignatureInfo
 import io.gutapk.core.apk.Signatures
 import io.gutapk.core.sign.ApkSigning
 import io.gutapk.core.sign.KeyChoice
+import io.gutapk.core.sign.OwnKey
 import io.gutapk.core.sign.TestKey
 import io.gutapk.job.Job
 import io.gutapk.job.JobQueue
 import io.gutapk.ui.Fact
+import io.gutapk.ui.keyFingerprint
 import io.gutapk.ui.keyLabel
 import io.gutapk.ui.showInFolder
 import io.gutapk.ui.t
@@ -43,7 +45,10 @@ fun SignDialog(
     onDismiss: () -> Unit,
 ) {
     val output = if (choice != null) ApkSigning.output(dir, info.packageName, info.versionName, choice) else null
-    val ready = choice == KeyChoice.TEST && output != null
+    // An own key chosen once, then its file removed by hand, cannot sign.
+    val ownMissing = choice == KeyChoice.OWN && !OwnKey.exists()
+    val ready = choice != null && output != null && !ownMissing
+    val print = keyFingerprint(choice)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(t("sign_title")) },
@@ -53,8 +58,14 @@ fun SignDialog(
                     Fact(t("sign_key"), keyLabel(choice))
                     TextButton(onClick = onChangeKey) { Text(t(if (choice == null) "sign_choose" else "sign_change")) }
                 }
+                if (print != null) {
+                    SelectionContainer { Fact(t("signed_signer"), print) }
+                }
                 if (choice == KeyChoice.TEST) {
                     Text(t("sign_test_warning"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                }
+                if (ownMissing) {
+                    Text(t("own_missing", OwnKey.keystore.toString()), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
                 }
                 Fact(t("sign_schemes"), ApkSigning.schemesFor(info.minSdk).joinToString(", "))
                 if (output != null) {
@@ -68,9 +79,13 @@ fun SignDialog(
                 enabled = ready,
                 onClick = {
                     val out = output
-                    if (out != null) {
+                    val key = choice
+                    if (out != null && key != null) {
                         val job = JobQueue.start(SIGN_JOB) { job ->
-                            ApkSigning.sign(original, out, TestKey.load(), info.minSdk, version, job)
+                            // Loaded inside the job: the own key asks the
+                            // keyring, which may show its unlock dialog.
+                            val signing = if (key == KeyChoice.OWN) OwnKey.load() else TestKey.load()
+                            ApkSigning.sign(original, out, signing, info.minSdk, version, job)
                             job.result = out.toString()
                         }
                         if (job != null) onStarted(job)

@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "io.gutapk"
-version = "0.1.16"
+version = "0.1.17"
 
 kotlin {
     jvmToolchain(21)
@@ -18,6 +18,8 @@ dependencies {
     // alphas on the dev repository. Declaring 1.12.0 by coordinates fails.
     implementation(compose.material3)
     implementation(libs.apksig)
+    implementation(libs.dbus.java.core)
+    implementation(libs.dbus.java.transport)
     testImplementation(kotlin("test"))
 }
 
@@ -39,7 +41,10 @@ compose.desktop {
         nativeDistributions {
             packageName = "GutapK"
             packageVersion = project.version.toString()
-            modules("java.instrument", "jdk.unsupported")
+            // jdk.security.auth gives dbus-java the user id for the bus
+            // handshake, jdk.net its socket options. Without them the
+            // keyring fails at runtime with NoClassDefFoundError.
+            modules("java.instrument", "jdk.unsupported", "jdk.security.auth", "jdk.net")
         }
     }
 }

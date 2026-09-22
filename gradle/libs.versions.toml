@@ -5,9 +5,14 @@ compose = "1.12.0"
 # device. Published on google(), not on Maven Central. Its version follows
 # the Android Gradle plugin.
 apksig = "8.7.3"
+# D-Bus for the system keyring, MIT. The native transport uses the JDK's own
+# unix sockets, no native library.
+dbus-java = "5.2.1"
 
 [libraries]
 apksig = { module = "com.android.tools.build:apksig", version.ref = "apksig" }
+dbus-java-core = { module = "com.github.hypfvieh:dbus-java-core", version.ref = "dbus-java" }
+dbus-java-transport = { module = "com.github.hypfvieh:dbus-java-transport-native-unixsocket", version.ref = "dbus-java" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

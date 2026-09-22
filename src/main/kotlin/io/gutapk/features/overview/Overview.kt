@@ -43,7 +43,7 @@ import io.gutapk.tools.Hash
 import io.gutapk.ui.BodyText
 import io.gutapk.ui.Page
 import io.gutapk.ui.Zone
-import io.gutapk.ui.KeyDialog
+import io.gutapk.ui.KeyChooser
 import io.gutapk.ui.ZoneRow
 import io.gutapk.ui.currentJobView
 import io.gutapk.ui.jobPill
@@ -191,9 +191,9 @@ fun OverviewScreen(
                 },
                 onDismiss = { dialog = null },
             )
-            "key" -> KeyDialog(
+            "key" -> KeyChooser(
                 current = choice,
-                onPick = {
+                onChosen = {
                     onSignKey(it)
                     dialog = "sign"
                 },

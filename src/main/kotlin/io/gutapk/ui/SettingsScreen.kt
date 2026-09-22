@@ -11,7 +11,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import io.gutapk.core.sign.KeyChoice
-import io.gutapk.core.sign.TestKey
+import io.gutapk.core.sign.OwnKey
 import io.gutapk.core.sign.keyChoiceOf
 import io.gutapk.settings.Settings
 import io.gutapk.settings.SettingsStore
@@ -60,7 +60,8 @@ fun SettingsScreen(
         val choice = keyChoiceOf(settings.signKey)
         Zone(t("set_signing")) {
             ZoneRow(t("set_sign_key"), keyLabel(choice), onClick = { dialog = "key" })
-            if (choice == KeyChoice.TEST) ZoneRow(t("signed_signer"), TestKey.CERT_SHA256)
+            keyFingerprint(choice)?.let { ZoneRow(t("signed_signer"), it) }
+            if (choice == KeyChoice.OWN) ZoneRow(t("set_key_file"), OwnKey.keystore.toString())
         }
     }
     val legal: @Composable () -> Unit = {
@@ -113,9 +114,9 @@ fun SettingsScreen(
             },
             onDismiss = { dialog = null },
         )
-        "key" -> KeyDialog(
+        "key" -> KeyChooser(
             current = keyChoiceOf(settings.signKey),
-            onPick = {
+            onChosen = {
                 onChange(settings.copy(signKey = it.name))
                 dialog = null
             },
