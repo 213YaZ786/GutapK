@@ -144,8 +144,12 @@ object Installer {
         Storage.deleteTree(staging, dir)
         Storage.deleteTree(content, dir)
         try {
-            unzip(archive, staging, cancelled)
-            markExecutable(staging.resolve(spec.execDir))
+            if (release.fileName.endsWith(".zip")) {
+                unzip(archive, staging, cancelled)
+                spec.execDirOrNull?.let { markExecutable(staging.resolve(it)) }
+            } else {
+                placeSingle(archive, staging, spec.entry)
+            }
             Files.move(staging, content, StandardCopyOption.ATOMIC_MOVE)
         } finally {
             Storage.deleteTree(staging, dir)
@@ -279,6 +283,17 @@ object Installer {
                 }
             }
         }
+    }
+
+    // A jar is the program itself. It is copied under the stable name of the
+    // table, so the path the app runs does not change with each version. The
+    // archive stays beside it, for a re-check without a download.
+    private fun placeSingle(archive: Path, staging: Path, entry: String) {
+        val base = staging.toAbsolutePath().normalize()
+        val target = base.resolve(entry).normalize()
+        if (!target.startsWith(base) || target == base) throw CheckFailed("unsafe entry name: $entry")
+        Files.createDirectories(target.parent)
+        Files.copy(archive, target, StandardCopyOption.REPLACE_EXISTING)
     }
 
     // Tools ship their programs without an extension and their libraries

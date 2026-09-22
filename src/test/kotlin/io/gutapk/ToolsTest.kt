@@ -6,6 +6,8 @@ import io.gutapk.tools.CheckFailed
 import io.gutapk.tools.Fingerprints
 import io.gutapk.tools.Hash
 import io.gutapk.tools.Installer
+import io.gutapk.tools.Json
+import io.gutapk.tools.NO_EXEC_DIR
 import io.gutapk.tools.Release
 import io.gutapk.tools.Releases
 import io.gutapk.tools.Storage
@@ -42,9 +44,14 @@ class ToolsTest {
         assertTrue(Tools.known.isNotEmpty())
         Tools.known.forEach {
             assertTrue(it.index.startsWith("https://"), "index not https for ${it.id}")
-            assertTrue(it.entry.startsWith(it.execDir + "/"), "entry outside execDir for ${it.id}")
+            if (it.execDir != NO_EXEC_DIR) {
+                assertTrue(it.entry.startsWith(it.execDir + "/"), "entry outside execDir for ${it.id}")
+            }
+            if (it.source == ToolSource.GITHUB) Releases.githubRepo(it.index)
         }
         assertNotNull(Tools.byId("platform-tools"))
+        assertNotNull(Tools.byId("apkeditor"))
+        assertNotNull(Tools.byId("apktool"))
     }
 
     @Test
@@ -112,6 +119,51 @@ class ToolsTest {
     fun refusesDoctype() {
         val evil = "<?xml version=\"1.0\"?><!DOCTYPE x SYSTEM \"file:///etc/passwd\"><x/>"
         assertFailsWith<Exception> { Releases.parseGoogle(evil, "x", "https://x/") }
+    }
+
+    @Test
+    fun readsJson() {
+        val v = Json.parse("""{"a": [1, -2, 3.5e1, true, false, null], "s": "x\"y\\z\u00e9\n", "o": {}}""") as Map<*, *>
+        assertEquals(listOf(1L, -2L, 35.0, true, false, null), v["a"])
+        assertEquals("x\"y\\z\u00e9\n", v["s"])
+        assertEquals(emptyMap<String, Any?>(), v["o"])
+        assertFailsWith<IllegalArgumentException> { Json.parse("""{"a": 1""") }
+        assertFailsWith<IllegalArgumentException> { Json.parse("""{"a": 1} x""") }
+        assertFailsWith<IllegalArgumentException> { Json.parse("[".repeat(100) + "]".repeat(100)) }
+    }
+
+    // Shape of GET /repos/{owner}/{repo}/releases/latest, with the values
+    // of APKEditor 1.4.9 as GitHub served them on 2026-09-22.
+    private val github = """
+        {"tag_name": "V1.4.9", "draft": false, "prerelease": false,
+         "assets": [
+           {"name": "APKEditor-1.4.9.jar.sig", "size": 1, "browser_download_url": "https://github.com/x/sig"},
+           {"name": "APKEditor-1.4.9.jar", "size": 7733037,
+            "digest": "sha256:a9cd40df818845456be6d696de6110c89edf4b0a0580cb83438ed6b25a366e67",
+            "browser_download_url": "https://github.com/REAndroid/APKEditor/releases/download/V1.4.9/APKEditor-1.4.9.jar"}
+         ]}
+    """.trimIndent()
+
+    @Test
+    fun readsGithubRelease() {
+        val r = assertNotNull(Releases.parseGithub(github, "APKEditor-[0-9][0-9.]*\\.jar"))
+        assertEquals("1.4.9", r.version)
+        assertEquals(7733037L, r.size)
+        assertEquals("a9cd40df818845456be6d696de6110c89edf4b0a0580cb83438ed6b25a366e67", r.sha256)
+        assertNull(r.sha1)
+        assertEquals("APKEditor-1.4.9.jar", r.fileName)
+        assertNull(Releases.parseGithub(github, "nothing\\.jar"))
+        val noDigest = github.replace(Regex(""""digest": "[^"]*","""), "")
+        assertNull(assertNotNull(Releases.parseGithub(noDigest, "APKEditor-[0-9][0-9.]*\\.jar")).sha256)
+        assertNull(Releases.parseGithub(github.replace("\"prerelease\": false", "\"prerelease\": true"), ".*"))
+    }
+
+    @Test
+    fun githubRepoStaysOnGithub() {
+        assertEquals("REAndroid/APKEditor", Releases.githubRepo("https://github.com/REAndroid/APKEditor"))
+        assertFailsWith<IllegalArgumentException> { Releases.githubRepo("https://evil.example/REAndroid/APKEditor") }
+        assertFailsWith<IllegalArgumentException> { Releases.githubRepo("https://github.com/a/b/c") }
+        assertFailsWith<IllegalArgumentException> { Releases.githubRepo("http://github.com/a/b") }
     }
 
     private fun zip(file: Path, entries: Map<String, String>) {
@@ -213,6 +265,28 @@ class ToolsTest {
         assertFailsWith<CheckFailed> { Installer.install(root, spec, release, quiet) { false } }
         assertFalse(Files.exists(Installer.dir(root, spec, release.version).resolve(release.fileName)))
         assertTrue(Installer.status(root, spec) is ToolStatus.Missing)
+    }
+
+    @Test
+    fun installsASingleJar() = withRoot { root ->
+        val jarSpec = spec.copy(id = "j", source = ToolSource.GITHUB, entry = "tool.jar", execDir = NO_EXEC_DIR)
+        val jar = root.resolve("tool-2.0.jar")
+        zip(jar, mapOf("META-INF/MANIFEST.MF" to "Manifest-Version: 1.0\n"))
+        val release = Release(
+            version = "2.0", url = "https://example.invalid/tool-2.0.jar",
+            size = Files.size(jar), sha1 = null, sha256 = Hash.of(jar, "SHA-256"),
+        )
+        val dir = Installer.dir(root, jarSpec, "2.0")
+        Files.createDirectories(dir)
+        Files.copy(jar, dir.resolve(release.fileName))
+
+        Installer.install(root, jarSpec, release, quiet) { false }
+
+        val entry = Installer.entry(root, jarSpec, "2.0")
+        assertTrue(Files.isRegularFile(entry))
+        assertEquals(Hash.of(jar, "SHA-256"), Hash.of(entry, "SHA-256"))
+        assertTrue(Installer.verify(root, jarSpec))
+        assertTrue(Files.isRegularFile(dir.resolve(release.fileName)), "archive kept for a re-check")
     }
 
     @Test

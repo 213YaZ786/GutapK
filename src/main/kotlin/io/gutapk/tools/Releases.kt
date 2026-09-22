@@ -6,6 +6,8 @@ import java.io.IOException
 import java.io.StringReader
 import java.net.HttpURLConnection
 import java.net.URI
+import java.time.Instant
+import java.time.ZoneId
 import javax.xml.XMLConstants
 import javax.xml.parsers.DocumentBuilderFactory
 
@@ -19,6 +21,49 @@ object Releases {
             parseGoogle(fetchText(spec.index), spec.pkg, base)
                 ?: throw IOException("${spec.pkg} not found in ${spec.index}")
         }
+        ToolSource.GITHUB -> {
+            val repo = githubRepo(spec.index)
+            val api = "https://api.github.com/repos/$repo/releases/latest"
+            parseGithub(fetchText(api, githubHeaders()), spec.pkg)
+                ?: throw IOException("no asset matching ${spec.pkg} in the latest release of $repo")
+        }
+    }
+
+    // owner/name out of https://github.com/owner/name, refused otherwise so
+    // the table cannot point the lookup at another host.
+    fun githubRepo(index: String): String {
+        val uri = URI(index)
+        val path = uri.path.orEmpty().trim('/')
+        require(uri.scheme == "https" && uri.host == "github.com") { "not a GitHub repository: $index" }
+        require(Regex("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+").matches(path)) { "not a GitHub repository: $index" }
+        return path
+    }
+
+    private fun githubHeaders(): Map<String, String> = mapOf(
+        "Accept" to "application/vnd.github+json",
+        "X-GitHub-Api-Version" to "2022-11-28",
+        "User-Agent" to "GutapK/" + (System.getProperty("gutapk.version") ?: "dev"),
+    )
+
+    // The answer of /releases/latest, which already skips drafts and
+    // pre-releases. The asset is chosen by name pattern. The sha256 is the
+    // one GitHub computed at upload, when it publishes it.
+    fun parseGithub(json: String, pattern: String): Release? {
+        val root = Json.parse(json) as? Map<*, *> ?: return null
+        if (root["draft"] == true || root["prerelease"] == true) return null
+        val tag = (root["tag_name"] as? String)?.trim() ?: return null
+        val version = tag.removePrefix("v").removePrefix("V")
+        if (version.isEmpty() || !version[0].isDigit()) return null
+        val want = Regex(pattern)
+        val assets = (root["assets"] as? List<*>)?.filterIsInstance<Map<*, *>>() ?: return null
+        val asset = assets.firstOrNull { a -> (a["name"] as? String)?.let { want.matches(it) } == true } ?: return null
+        val url = asset["browser_download_url"] as? String ?: return null
+        if (!url.startsWith("https://")) return null
+        val size = asset["size"] as? Long ?: return null
+        val digest = (asset["digest"] as? String)?.trim()?.lowercase().orEmpty()
+        val hex = digest.removePrefix("sha256:")
+        val sha256 = if (digest.startsWith("sha256:") && Regex("[0-9a-f]{64}").matches(hex)) hex else null
+        return Release(version = version, url = url, size = size, sha1 = null, sha256 = sha256)
     }
 
     // Dotted numeric versions, compared part by part. A missing part is 0,
@@ -97,12 +142,26 @@ object Releases {
 
     private fun child(e: Element, name: String): Element? = children(e, name).firstOrNull()
 
-    private fun fetchText(url: String): String {
+    // GitHub allows 60 lookups an hour per address without an account. Said
+    // plainly, with the time the next one works, rather than a bare 403.
+    private fun refusal(conn: HttpURLConnection, code: Int): String {
+        val left = conn.getHeaderField("x-ratelimit-remaining")
+        val reset = conn.getHeaderField("x-ratelimit-reset")?.toLongOrNull()
+        if ((code == 403 || code == 429) && left == "0" && reset != null) {
+            val at = Instant.ofEpochSecond(reset).atZone(ZoneId.systemDefault()).toLocalTime().withNano(0)
+            return "GitHub allows 60 lookups an hour without an account, all used from this address. Try again after $at."
+        }
+        return "${conn.url.host} answered $code"
+    }
+
+    private fun fetchText(url: String, headers: Map<String, String> = emptyMap()): String {
         val conn = URI(url).toURL().openConnection() as HttpURLConnection
         conn.connectTimeout = 20_000
         conn.readTimeout = 30_000
+        headers.forEach { (k, v) -> conn.setRequestProperty(k, v) }
         try {
-            if (conn.responseCode != HttpURLConnection.HTTP_OK) throw IOException("${conn.url.host} answered ${conn.responseCode}")
+            val code = conn.responseCode
+            if (code != HttpURLConnection.HTTP_OK) throw IOException(refusal(conn, code))
             val bytes = conn.inputStream.use { it.readNBytes((INDEX_MAX + 1).toInt()) }
             if (bytes.size > INDEX_MAX) throw IOException("index larger than expected")
             return String(bytes, Charsets.UTF_8)

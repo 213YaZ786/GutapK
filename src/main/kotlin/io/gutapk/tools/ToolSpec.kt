@@ -2,7 +2,12 @@ package io.gutapk.tools
 
 enum class ToolSource(val tag: String) {
     GOOGLE_REPO("google-repo"),
+    GITHUB("github"),
 }
+
+// In the execDir column, a tool whose program is a single file, a jar, with
+// nothing to mark executable.
+const val NO_EXEC_DIR = "-"
 
 // What a tool is and where its publisher lists releases. Never a version:
 // that is looked up, so the app keeps working as tools move on.
@@ -18,6 +23,7 @@ data class ToolSpec(
     val what: String,
 ) {
     val host: String get() = runCatching { java.net.URI(index).host }.getOrNull() ?: index
+    val execDirOrNull: String? get() = execDir.takeIf { it != NO_EXEC_DIR }
 }
 
 // One release as the publisher states it. The checksums are the
@@ -49,6 +55,9 @@ object Tools {
             require(f.size == 9) { "tool table line has ${f.size} fields, expected 9: $line" }
             val source = ToolSource.entries.firstOrNull { it.tag == f[1] }
                 ?: throw IllegalArgumentException("unknown source ${f[1]}")
+            // For GitHub the package column is the asset name pattern. A bad
+            // pattern fails here, at load, not at the first lookup.
+            if (source == ToolSource.GITHUB) Regex(f[3])
             ToolSpec(
                 id = f[0],
                 source = source,
