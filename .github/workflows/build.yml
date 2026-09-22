@@ -44,6 +44,16 @@ jobs:
           echo "version $VERSION"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
+      # The app downloads these at first use. Checking them here turns the
+      # build red when a file changes upstream, before a user meets it. An
+      # unpinned sha256 is only a warning, and the log prints the value to pin.
+      # The job token lifts the GitHub API limit. Runners share addresses, and
+      # 60 anonymous lookups an hour can be gone before this job asks.
+      - name: Check the tool table
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/check-tools.sh
+
       # One command, so a failing test stops the release like a failing compile
       # does.
       - name: Build and test
