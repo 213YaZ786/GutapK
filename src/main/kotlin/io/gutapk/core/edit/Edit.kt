@@ -19,6 +19,11 @@ import java.nio.file.StandardCopyOption
 // class grows one field per tweak, the pipeline stays the same.
 data class Tweaks(
     val label: String? = null,
+    val minSdk: Int? = null,
+    val targetSdk: Int? = null,
+    // Permissions to remove, by their full name. Only removal, since 0.1.20:
+    // adding a permission an app was not built to ask for grants nothing.
+    val removePermissions: Set<String> = emptySet(),
 )
 
 class EditResult(val output: Path, val signature: SignatureInfo)
@@ -64,7 +69,10 @@ object Edit {
 
             sink.emit(JobEvent.Step("sign", 4, 4))
             val out = ApkSigning.output(packageDir, packageName, version, keyChoiceSuffix(keyName))
-            val signature = ApkSigning.sign(rebuilt, out, key, minSdk, appVersion, sink)
+            // The signing floor follows the tweak: a lowered minSdk means v1
+            // is needed for the older versions it now installs on.
+            val signMin = tweaks.minSdk ?: minSdk
+            val signature = ApkSigning.sign(rebuilt, out, key, signMin, appVersion, sink)
             return EditResult(out, signature)
         } finally {
             Storage.deleteTree(work, packageDir)
@@ -82,19 +90,87 @@ object Edit {
     // should do. A label set to a literal in the manifest is handled by
     // rewriting the manifest attribute instead.
     private fun apply(decoded: Path, tweaks: Tweaks, sink: JobSink) {
-        val label = tweaks.label?.takeIf { it.isNotBlank() } ?: return
         val manifest = decoded.resolve("AndroidManifest.xml")
         if (!Files.isRegularFile(manifest)) throw CheckFailed("decoded APK has no AndroidManifest.xml")
-        val text = Files.readString(manifest)
-        val ref = Regex("""android:label="(@[^"]+)"""").find(text)?.groupValues?.get(1)
-        if (ref != null) {
-            setStringResource(decoded, ref.removePrefix("@"), label, sink)
-        } else {
-            val replaced = text.replace(Regex("""android:label="[^"]*""""), "android:label=\"" + xmlEscape(label) + "\"")
-            if (replaced == text) throw CheckFailed("no android:label in the manifest to change")
-            Files.writeString(manifest, replaced)
-            sink.emit(JobEvent.Line("label set in the manifest"))
+        var text = Files.readString(manifest)
+
+        val label = tweaks.label?.takeIf { it.isNotBlank() }
+        if (label != null) {
+            val ref = Regex("""android:label="(@[^"]+)"""").find(text)?.groupValues?.get(1)
+            if (ref != null) {
+                setStringResource(decoded, ref.removePrefix("@"), label, sink)
+            } else {
+                val replaced = text.replace(Regex("""android:label="[^"]*""""), "android:label=\"" + xmlEscape(label) + "\"")
+                if (replaced == text) throw CheckFailed("no android:label in the manifest to change")
+                text = replaced
+                sink.emit(JobEvent.Line("label set in the manifest"))
+            }
         }
+
+        if (tweaks.minSdk != null || tweaks.targetSdk != null) {
+            text = setSdk(text, tweaks.minSdk, tweaks.targetSdk, sink)
+        }
+
+        if (tweaks.removePermissions.isNotEmpty()) {
+            text = removePermissions(text, tweaks.removePermissions, sink)
+        }
+
+        Files.writeString(manifest, text)
+    }
+
+    // minSdkVersion and targetSdkVersion live on a uses-sdk element. Each is
+    // changed in place if present, added to uses-sdk if the element exists,
+    // and a uses-sdk element is inserted after the opening manifest tag when
+    // there is none.
+    private fun setSdk(text: String, minSdk: Int?, targetSdk: Int?, sink: JobSink): String {
+        var out = text
+        val hasUsesSdk = Regex("""<uses-sdk""").containsMatchIn(out)
+        if (!hasUsesSdk) {
+            val attrs = buildList {
+                if (minSdk != null) add("android:minSdkVersion=\"$minSdk\"")
+                if (targetSdk != null) add("android:targetSdkVersion=\"$targetSdk\"")
+            }.joinToString(" ")
+            // After the whole opening manifest tag, so the android prefix it
+            // declares is in scope. The manifest tag may span several lines.
+            val open = Regex("""<manifest\b[^>]*>""", RegexOption.DOT_MATCHES_ALL).find(out)
+                ?: throw CheckFailed("manifest has no manifest element")
+            out = out.substring(0, open.range.last + 1) + "\n  <uses-sdk $attrs />" + out.substring(open.range.last + 1)
+            sink.emit(JobEvent.Line("uses-sdk added: $attrs"))
+            return out
+        }
+        out = setSdkAttr(out, "minSdkVersion", minSdk, sink)
+        out = setSdkAttr(out, "targetSdkVersion", targetSdk, sink)
+        return out
+    }
+
+    private fun setSdkAttr(text: String, attr: String, value: Int?, sink: JobSink): String {
+        if (value == null) return text
+        val present = Regex("""android:$attr="[^"]*"""")
+        if (present.containsMatchIn(text)) {
+            sink.emit(JobEvent.Line("$attr set to $value"))
+            return present.replaceFirst(text, "android:$attr=\"$value\"")
+        }
+        // uses-sdk exists but lacks this attribute: add it to the element.
+        val open = Regex("""<uses-sdk""").find(text) ?: return text
+        sink.emit(JobEvent.Line("$attr added as $value"))
+        return text.substring(0, open.range.last + 1) + " android:$attr=\"$value\"" + text.substring(open.range.last + 1)
+    }
+
+    // Drops each named uses-permission element, whitespace before it too, so
+    // no blank line is left. A name asked for but not present is reported and
+    // skipped, never an error, since it changes nothing.
+    private fun removePermissions(text: String, names: Set<String>, sink: JobSink): String {
+        var out = text
+        names.forEach { name ->
+            val element = Regex("""\s*<uses-permission\b[^>]*android:name="${Regex.escape(name)}"[^>]*/>""")
+            if (element.containsMatchIn(out)) {
+                out = element.replaceFirst(out, "")
+                sink.emit(JobEvent.Line("permission removed: $name"))
+            } else {
+                sink.emit(JobEvent.Line("permission not present, skipped: $name"))
+            }
+        }
+        return out
     }
 
     // A @string/name reference, resolved to the file and entry APKEditor
