@@ -1,8 +1,9 @@
 [Desktop Entry]
 Type=Application
 Name=GutapK
-Comment=Open, edit, clone and sign Android packages
+Comment=Edit and sign Android packages, drive a phone over ADB
 Exec=gutapk-launch
 Icon=gutapk
 Categories=Development;Utility;
 Terminal=false
+StartupWMClass=gutapk

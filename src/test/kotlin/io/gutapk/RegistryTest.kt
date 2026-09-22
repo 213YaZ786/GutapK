@@ -28,18 +28,17 @@ class RegistryTest {
     fun filtersBySource() {
         Registry.register(Stub("a", setOf(Source.APK)))
         Registry.register(Stub("b", setOf(Source.APK, Source.DEVICE)))
-        Registry.register(Stub("c", setOf(Source.REPO)))
+        Registry.register(Stub("c", setOf(Source.DEVICE)))
 
         assertEquals(listOf("a", "b"), Registry.forSource(Source.APK).map { it.id })
-        assertEquals(listOf("b"), Registry.forSource(Source.DEVICE).map { it.id })
-        assertEquals(listOf("c"), Registry.forSource(Source.REPO).map { it.id })
+        assertEquals(listOf("b", "c"), Registry.forSource(Source.DEVICE).map { it.id })
     }
 
     @Test
     fun rejectsDuplicateId() {
         Registry.register(Stub("a", setOf(Source.APK)))
         assertFailsWith<IllegalArgumentException> {
-            Registry.register(Stub("a", setOf(Source.REPO)))
+            Registry.register(Stub("a", setOf(Source.DEVICE)))
         }
     }
 }

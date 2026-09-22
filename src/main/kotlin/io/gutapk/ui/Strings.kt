@@ -55,40 +55,36 @@ object Strings {
         "lic_title" to "Licence",
 
         "legal_title" to "Licensing and trademarks",
-        "legal_body" to """GutapK builds modified copies of software written by other people. Their licence travels with every copy.
+        "legal_body" to """GutapK modifies apps written by other people. Their authors keep their rights, and their licence travels with every copy.
 
-Using and modifying an app on your own device is unrestricted. Obligations begin only when you GIVE the APK to someone else.
+Using and modifying an app on your own device is your business. Obligations begin when you GIVE the modified APK to someone else.
 
-Apache-2.0: keep the LICENSE and NOTICE files and the LICENSES folder, and state that you changed the code. Selling it is allowed.
+Free software licences allow modification, under conditions. Apache-2.0: keep the LICENSE and NOTICE files, and state that you changed the code. GPL-3.0: the same, plus you must offer the recipient the complete source of YOUR modified version, under the GPL, with no added restriction.
 
-GPL-3.0: everything above, plus you must offer the recipient the complete corresponding source of YOUR modified version, under the GPL, and you may not add further restrictions.
+Proprietary apps: their terms usually forbid modifying or redistributing them. Keep what you change for yourself, and read the terms before you share anything.
 
-Other licences: read the licence of the package before you share anything built from it.
+Names, logos and icons are often trademarks. Do not present a modified app as the original or as an official one. This is why GutapK lets you rename an app and change its icon.
 
-LineageOS is a registered trademark of LineageOS LLC. Apache-2.0 grants no trademark rights, so do not use a project's name, logo or icons to present your build as an official one. This is why GutapK asks you to rename a clone and offers to recolour its icon.
-
-Your build is signed with your own key. It is not built, reviewed or endorsed by the authors of the original. It comes with no warranty.
+A modified APK is signed with your own key. It is not built, reviewed or endorsed by the original authors, and it comes with no warranty.
 
 This is a plain-language summary, not legal advice.""",
         "legal_accepted" to "Accepted, revision %s",
 
         "root_title" to "Where should GutapK keep everything?",
-        "root_body" to "This folder holds the downloaded tools, the downloaded builds, the work folders, the logs and every opened package. GutapK writes nowhere else, except its settings.",
+        "root_body" to "This folder holds the downloaded tools, the work folders, the logs and every opened package. GutapK writes nowhere else, except its settings.",
         "root_field" to "Folder",
         "root_bad_absolute" to "Give a full path, starting with / or ~.",
         "root_bad_forbidden" to "The system empties temporary and cache folders. Choose a folder that lasts.",
         "root_bad_write" to "This folder cannot be created or written to.",
         "root_next_launch" to "Applies at the next launch. What is already under the old folder stays there.",
 
-        "home_source" to "Source",
-        "src_repo" to "Repository",
-        "src_repo_d" to "Clone a LineageOS app from its official source",
-        "src_build" to "LineageOS build",
-        "src_build_d" to "Take an app out of an official LineageOS build",
-        "src_apk" to "APK file",
-        "src_apk_d" to "Open any APK from disk",
-        "src_device" to "Device",
-        "src_device_d" to "Work on a phone over ADB",
+        "home_source" to "Start",
+        "src_apk" to "Edit an APK",
+        "src_apk_d" to "Pick an APK, or drop it on this window",
+        "src_device" to "ADB device",
+        "src_device_d" to "Debloat, pull and install apps on a phone connected over ADB",
+        "drop_here" to "Drop to open",
+        "drop_not_apk" to "GutapK opens .apk files. Split bundles (.apks, .xapk, .apkm) come in a later version.",
         "not_yet" to "Not yet",
         "available" to "Available",
         "footer" to "GutapK %s. Free software under the GNU GPL 3.0 or later, with absolutely no warranty.",
@@ -187,7 +183,7 @@ This is a plain-language summary, not legal advice.""",
         "disk_delete_q" to "Delete %s?",
         "disk_delete_body" to "%s will be freed. This cannot be undone.",
         "delete" to "Delete",
-        "sec_dependencies" to "Downloaded tools and builds",
+        "sec_dependencies" to "Downloaded tools",
         "sec_work" to "Work folders",
         "sec_logs" to "Logs",
         "sec_packages" to "Packages",
@@ -214,40 +210,36 @@ This is a plain-language summary, not legal advice.""",
         "lic_title" to "Licence",
 
         "legal_title" to "Licences et marques",
-        "legal_body" to """GutapK construit des copies modifiées de logiciels écrits par d'autres. Leur licence accompagne chaque copie.
+        "legal_body" to """GutapK modifie des applications écrites par d'autres. Leurs auteurs gardent leurs droits, et leur licence accompagne chaque copie.
 
-Utiliser et modifier une application sur votre propre appareil est libre. Les obligations commencent seulement si vous DONNEZ l'APK à quelqu'un.
+Utiliser et modifier une application sur votre propre appareil vous regarde. Les obligations commencent quand vous DONNEZ l'APK modifié à quelqu'un.
 
-Apache-2.0 : conserver les fichiers LICENSE et NOTICE ainsi que le dossier LICENSES, et indiquer que vous avez modifié le code. La vente est autorisée.
+Les licences libres autorisent la modification, sous conditions. Apache-2.0 : conserver les fichiers LICENSE et NOTICE, et indiquer que vous avez modifié le code. GPL-3.0 : la même chose, plus l'obligation de fournir au destinataire le code source complet de VOTRE version modifiée, sous licence GPL, sans restriction ajoutée.
 
-GPL-3.0 : tout ce qui précède, plus l'obligation de fournir au destinataire le code source complet de VOTRE version modifiée, sous licence GPL, sans restriction ajoutée.
+Applications propriétaires : leurs conditions interdisent en général de les modifier ou de les redistribuer. Gardez ce que vous changez pour vous, et lisez les conditions avant de partager quoi que ce soit.
 
-Autres licences : lisez la licence du paquet avant de partager quoi que ce soit construit à partir de lui.
+Les noms, logos et icônes sont souvent des marques. Ne présentez pas une application modifiée comme l'originale ni comme officielle. C'est pourquoi GutapK vous permet de renommer une application et de changer son icône.
 
-LineageOS est une marque déposée de LineageOS LLC. La licence Apache-2.0 n'accorde aucun droit sur les marques : n'utilisez pas le nom, le logo ni les icônes d'un projet pour faire passer votre version pour officielle. C'est pourquoi GutapK vous demande de renommer un clone et propose de recolorer son icône.
-
-Votre build est signé avec votre propre clé. Il n'est ni construit, ni relu, ni approuvé par les auteurs de l'original. Il est fourni sans garantie.
+Un APK modifié est signé avec votre propre clé. Il n'est ni construit, ni relu, ni approuvé par les auteurs de l'original, et il est fourni sans garantie.
 
 Ceci est un résumé en langage courant, pas un avis juridique.""",
         "legal_accepted" to "Accepté, révision %s",
 
         "root_title" to "Où GutapK doit-il tout ranger ?",
-        "root_body" to "Ce dossier contient les outils téléchargés, les builds téléchargés, les dossiers de travail, les journaux et chaque paquet ouvert. GutapK n'écrit nulle part ailleurs, à part ses réglages.",
+        "root_body" to "Ce dossier contient les outils téléchargés, les dossiers de travail, les journaux et chaque paquet ouvert. GutapK n'écrit nulle part ailleurs, à part ses réglages.",
         "root_field" to "Dossier",
         "root_bad_absolute" to "Indiquez un chemin complet, commençant par / ou ~.",
         "root_bad_forbidden" to "Le système vide les dossiers temporaires et de cache. Choisissez un dossier qui dure.",
         "root_bad_write" to "Ce dossier ne peut pas être créé ou n'est pas accessible en écriture.",
         "root_next_launch" to "Pris en compte au prochain lancement. Ce qui se trouve déjà sous l'ancien dossier y reste.",
 
-        "home_source" to "Source",
-        "src_repo" to "Dépôt",
-        "src_repo_d" to "Cloner une application LineageOS depuis sa source officielle",
-        "src_build" to "Build LineageOS",
-        "src_build_d" to "Extraire une application d'un build officiel LineageOS",
-        "src_apk" to "Fichier APK",
-        "src_apk_d" to "Ouvrir n'importe quel APK depuis le disque",
-        "src_device" to "Appareil",
-        "src_device_d" to "Travailler sur un téléphone via ADB",
+        "home_source" to "Commencer",
+        "src_apk" to "Modifier un APK",
+        "src_apk_d" to "Choisir un APK, ou le déposer sur cette fenêtre",
+        "src_device" to "Appareil ADB",
+        "src_device_d" to "Retirer les applications inutiles, récupérer et installer des applications sur un téléphone branché en ADB",
+        "drop_here" to "Déposer pour ouvrir",
+        "drop_not_apk" to "GutapK ouvre les fichiers .apk. Les paquets découpés (.apks, .xapk, .apkm) arrivent dans une version ultérieure.",
         "not_yet" to "Pas encore",
         "available" to "Disponible",
         "footer" to "GutapK %s. Logiciel libre sous GNU GPL 3.0 ou ultérieure, sans aucune garantie.",
@@ -346,7 +338,7 @@ Ceci est un résumé en langage courant, pas un avis juridique.""",
         "disk_delete_q" to "Supprimer %s ?",
         "disk_delete_body" to "%s seront libérés. Cette action est définitive.",
         "delete" to "Supprimer",
-        "sec_dependencies" to "Outils et builds téléchargés",
+        "sec_dependencies" to "Outils téléchargés",
         "sec_work" to "Dossiers de travail",
         "sec_logs" to "Journaux",
         "sec_packages" to "Paquets",

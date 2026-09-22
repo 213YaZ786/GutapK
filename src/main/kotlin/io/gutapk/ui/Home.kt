@@ -26,8 +26,8 @@ import io.gutapk.registry.Registry
 import io.gutapk.registry.Source
 import java.nio.file.Path
 
-// Four sources fill a 2 x 2 grid at this width. Rows would leave most of a
-// wide window empty.
+// Two tiles side by side at this width. Rows would leave most of a wide
+// window empty.
 private val HomeWidth = 960.dp
 
 // The shell's rule: manage what exists only once something exists. The
@@ -42,6 +42,9 @@ fun HomeScreen(
     onLicence: () -> Unit,
     onSource: (Source) -> Unit,
     onPackage: (Path) -> Unit,
+    // An APK is being dragged over the window. The tile it will land in says
+    // so, the user sees the drop is understood before letting go.
+    dropping: Boolean = false,
 ) {
     val view = currentJobView()
     // Read again when a job ends, an import adds a package.
@@ -76,16 +79,9 @@ fun HomeScreen(
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(start = 16.dp),
             )
-            // Standalone sources first. The LineageOS ones come last in the
-            // plan, and last on the screen.
             TileRow(
-                { SourceTile("src_apk", Source.APK, it, onSource) },
-                { SourceTile("src_device", Source.DEVICE, it, onSource) },
-            )
-            Spacer(Modifier.height(8.dp))
-            TileRow(
-                { SourceTile("src_repo", Source.REPO, it, onSource) },
-                { SourceTile("src_build", Source.BUILD, it, onSource) },
+                { SourceTile("src_apk", Source.APK, it, onSource, dropping) },
+                { SourceTile("src_device", Source.DEVICE, it, onSource, false) },
             )
         }
         if (recent.isNotEmpty()) {
@@ -119,13 +115,13 @@ private fun RecentRow(p: OpenedPackage, onPackage: (Path) -> Unit) {
 }
 
 @Composable
-private fun SourceTile(key: String, source: Source, modifier: Modifier, onSource: (Source) -> Unit) {
+private fun SourceTile(key: String, source: Source, modifier: Modifier, onSource: (Source) -> Unit, highlight: Boolean) {
     val count = Registry.forSource(source).size
     val base = modifier.clip(MaterialTheme.shapes.large)
     Surface(
         shape = MaterialTheme.shapes.large,
         color = zoneFill(),
-        border = BorderStroke(2.dp, MaterialTheme.colorScheme.outlineVariant),
+        border = BorderStroke(2.dp, if (highlight) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
         modifier = if (count > 0) base.clickable { onSource(source) } else base,
     ) {
         Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -137,7 +133,7 @@ private fun SourceTile(key: String, source: Source, modifier: Modifier, onSource
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                t(if (count > 0) "available" else "not_yet"),
+                t(if (highlight) "drop_here" else if (count > 0) "available" else "not_yet"),
                 style = MaterialTheme.typography.labelLarge,
                 color = if (count > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
             )

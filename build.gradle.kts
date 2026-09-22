@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "io.gutapk"
-version = "0.1.13"
+version = "0.1.14"
 
 kotlin {
     jvmToolchain(21)
@@ -30,7 +30,12 @@ compose.desktop {
         mainClass = "io.gutapk.MainKt"
         // Lands in the jpackage .cfg as a java-option, which gutapk-launch
         // passes through, so the running app knows its own version.
-        jvmArgs += listOf("-Dgutapk.version=${project.version}")
+        // The add-opens lets Main set WM_CLASS, which the dock uses to find
+        // the desktop entry. One token each, gutapk-launch splits on spaces.
+        jvmArgs += listOf(
+            "-Dgutapk.version=${project.version}",
+            "--add-opens=java.desktop/sun.awt.X11=ALL-UNNAMED",
+        )
         nativeDistributions {
             packageName = "GutapK"
             packageVersion = project.version.toString()

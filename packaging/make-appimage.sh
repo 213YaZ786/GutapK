@@ -34,7 +34,8 @@ fi
 install -m 755 "$ROOT/packaging/gutapk-launch" "$APPDIR/usr/bin/gutapk-launch"
 install -m 755 "$ROOT/packaging/AppRun" "$APPDIR/AppRun"
 install -m 644 "$ROOT/packaging/gutapk.desktop" "$APPDIR/gutapk.desktop"
-install -m 644 "$ROOT/packaging/gutapk.png" "$APPDIR/gutapk.png"
+# One icon file for the AppImage and the window, kept with the resources.
+install -m 644 "$ROOT/src/main/resources/io/gutapk/gutapk.png" "$APPDIR/gutapk.png"
 
 mkdir -p "$APPDIR/usr/share/applications" "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 cp "$APPDIR/gutapk.desktop" "$APPDIR/usr/share/applications/"

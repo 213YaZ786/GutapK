@@ -1,7 +1,7 @@
 # GutapK
 
-Opens, edits, clones and signs Android packages. Linux desktop, shipped as a single
-AppImage.
+Edits and signs Android packages, and drives a phone over ADB. Linux desktop,
+shipped as a single AppImage.
 
 ## Install
 

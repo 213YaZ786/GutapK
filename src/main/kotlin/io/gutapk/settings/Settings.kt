@@ -22,7 +22,7 @@ data class Settings(
 object SettingsStore {
     // The wording of the legal notice. Raising it shows the notice again to
     // everyone, and to nobody else than those who accepted an older text.
-    const val LEGAL_REV = 1
+    const val LEGAL_REV = 2
 
     val dir: Path = Paths.get(System.getProperty("user.home"), ".config", "gutapk")
     private val file: Path get() = dir.resolve("settings.properties")
