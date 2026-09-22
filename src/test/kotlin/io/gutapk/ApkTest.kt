@@ -114,6 +114,35 @@ class ApkTest {
         return Out().u16(0x0002).u16(12).u32(12 + body.size).u32(1).raw(body.bytes()).bytes()
     }
 
+    // A valid empty DEX 035: 0x70 header plus a map with HEADER_ITEM and
+    // MAP_LIST, the two entries APKEditor's reader requires. Built here so
+    // the fixture stays a few lines and the repository ships no real APK.
+    private fun emptyDex(): ByteArray {
+        val header = 0x70
+        val entries = listOf(Triple(0x0000, 1, 0), Triple(0x1000, 1, header))
+        val size = header + 4 + entries.size * 12
+        val out = ByteArray(size)
+        val bb = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN)
+        val magic = byteArrayOf(0x64, 0x65, 0x78, 0x0a, 0x30, 0x33, 0x35, 0x00)
+        magic.copyInto(out)
+        bb.putInt(0x20, size)          // file_size
+        bb.putInt(0x24, header)        // header_size
+        bb.putInt(0x28, 0x12345678)    // endian_tag
+        bb.putInt(0x34, header)        // map_off
+        bb.putInt(0x38, size - header) // data_size
+        bb.putInt(0x3c, header)        // data_off
+        bb.position(header)
+        bb.putInt(entries.size)
+        entries.forEach { (type, count, off) ->
+            bb.putShort(type.toShort()); bb.putShort(0); bb.putInt(count); bb.putInt(off)
+        }
+        val sig = java.security.MessageDigest.getInstance("SHA-1").digest(out.copyOfRange(0x20, size))
+        System.arraycopy(sig, 0, out, 0x0c, 20)
+        val adler = java.util.zip.Adler32().apply { update(out, 0x0c, size - 0x0c) }.value
+        bb.putInt(0x08, adler.toInt())
+        return out
+    }
+
     private fun apk(file: Path) {
         ZipOutputStream(Files.newOutputStream(file)).use { z ->
             fun put(name: String, data: ByteArray) {
@@ -123,8 +152,8 @@ class ApkTest {
             }
             put("AndroidManifest.xml", manifest())
             put("resources.arsc", table("My App"))
-            put("classes.dex", ByteArray(4))
-            put("classes2.dex", ByteArray(4))
+            put("classes.dex", emptyDex())
+            put("classes2.dex", emptyDex())
             put("lib/arm64-v8a/libil2cpp.so", ByteArray(4))
             put("assets/bin/Data/Managed/Metadata/global-metadata.dat", ByteArray(4))
         }

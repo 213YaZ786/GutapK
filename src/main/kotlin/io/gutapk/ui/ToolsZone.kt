@@ -73,6 +73,9 @@ private fun stepKey(step: String): String = when (step) {
     "keygen" -> "job_keygen"
     "keystore" -> "job_keystore"
     "keyring" -> "job_keyring"
+    "decode" -> "job_decode"
+    "edit" -> "job_edit"
+    "build" -> "job_build"
     "verify" -> "job_verify"
     else -> "job_download"
 }

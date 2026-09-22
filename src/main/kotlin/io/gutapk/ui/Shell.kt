@@ -256,6 +256,7 @@ fun Shell(
                             if (d != null) {
                                 OverviewScreen(
                                     dir = d,
+                                    root = root,
                                     version = version,
                                     signKey = settings.signKey,
                                     onSignKey = { onChange(settings.copy(signKey = it.name)) },

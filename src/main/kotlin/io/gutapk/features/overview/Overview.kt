@@ -117,6 +117,7 @@ private fun load(original: Path): Loaded {
 @Composable
 fun OverviewScreen(
     dir: Path,
+    root: Path?,
     version: String,
     signKey: String?,
     onSignKey: (KeyChoice) -> Unit,
@@ -131,6 +132,8 @@ fun OverviewScreen(
     // instance, must not open this screen's report.
     var started by remember { mutableStateOf<Job?>(null) }
     var report by remember { mutableStateOf<SignReport?>(null) }
+    // Change key is reached from either dialog, and returns to that one.
+    var keyReturnsTo by remember { mutableStateOf("sign") }
     val view = currentJobView()
     LaunchedEffect(view) {
         val job = started
@@ -157,8 +160,15 @@ fun OverviewScreen(
     val info = loaded?.info
     val choice = keyChoiceOf(signKey)
     val running = jobPill(view)
-    val signAction: @Composable () -> Unit = {
-        FilledTonalButton(onClick = { dialog = "sign" }) { Text(t("sign_action")) }
+    // Rename first, it is the fuller action, Sign to its right. Both open a
+    // dialog, and while a job runs the pill replaces the whole row.
+    val actionRow: @Composable () -> Unit = {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (root != null) {
+                FilledTonalButton(onClick = { dialog = "rename" }) { Text(t("rename_action")) }
+            }
+            FilledTonalButton(onClick = { dialog = "sign" }) { Text(t("sign_action")) }
+        }
     }
     Page(
         title = info?.label ?: info?.packageName ?: dir.fileName.toString(),
@@ -167,7 +177,7 @@ fun OverviewScreen(
         header = { if (loaded != null) Header(loaded) },
         // Actions on this APK. While a job runs, the pill shows it instead,
         // so a second action cannot start on top of the first.
-        actions = running ?: (if (info != null) signAction else null),
+        actions = running ?: (if (info != null) actionRow else null),
     ) {
         when {
             loaded == null -> BodyText(t("ov_reading"))
@@ -184,20 +194,42 @@ fun OverviewScreen(
                 info = info,
                 choice = choice,
                 version = version,
-                onChangeKey = { dialog = "key" },
+                onChangeKey = {
+                    keyReturnsTo = "sign"
+                    dialog = "key"
+                },
                 onStarted = {
                     started = it
                     dialog = null
                 },
                 onDismiss = { dialog = null },
             )
+            "rename" -> if (root != null) {
+                RenameDialog(
+                    root = root,
+                    packageDir = dir,
+                    original = original,
+                    info = info,
+                    choice = choice,
+                    version = version,
+                    onChangeKey = {
+                        keyReturnsTo = "rename"
+                        dialog = "key"
+                    },
+                    onStarted = {
+                        started = it
+                        dialog = null
+                    },
+                    onDismiss = { dialog = null },
+                )
+            }
             "key" -> KeyChooser(
                 current = choice,
                 onChosen = {
                     onSignKey(it)
-                    dialog = "sign"
+                    dialog = keyReturnsTo
                 },
-                onDismiss = { dialog = "sign" },
+                onDismiss = { dialog = keyReturnsTo },
             )
         }
     }

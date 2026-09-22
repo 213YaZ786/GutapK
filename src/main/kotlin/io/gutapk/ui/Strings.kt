@@ -234,6 +234,14 @@ This is a plain-language summary, not legal advice.""",
         "job_keyring" to "Saving to the keyring",
         "set_signing" to "Signing",
         "set_sign_key" to "Signing key",
+        "rename_action" to "Rename",
+        "rename_title" to "Rename this app",
+        "rename_field" to "New display name",
+        "rename_go" to "Rename and sign",
+        "rename_needs_tool" to "APKEditor is needed to rebuild the APK. It will be downloaded and checked the first time, with the facts shown before anything is fetched.",
+        "job_decode" to "Decoding",
+        "job_edit" to "Editing",
+        "job_build" to "Rebuilding",
     )
 
     private val fr: Map<String, String> = mapOf(
@@ -430,6 +438,14 @@ Ceci est un résumé en langage courant, pas un avis juridique.""",
         "job_keyring" to "Enregistrement dans le trousseau",
         "set_signing" to "Signature",
         "set_sign_key" to "Clé de signature",
+        "rename_action" to "Renommer",
+        "rename_title" to "Renommer cette application",
+        "rename_field" to "Nouveau nom affiché",
+        "rename_go" to "Renommer et signer",
+        "rename_needs_tool" to "APKEditor est nécessaire pour reconstruire l'APK. Il sera téléchargé et vérifié la première fois, les détails affichés avant tout téléchargement.",
+        "job_decode" to "Décodage",
+        "job_edit" to "Modification",
+        "job_build" to "Reconstruction",
     )
 
     val tables: Map<Lang, Map<String, String>> = mapOf(Lang.EN to en, Lang.FR to fr)
