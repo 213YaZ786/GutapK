@@ -31,6 +31,10 @@ data class ApkInfo(
     // The icon as vectors and colours, read only when there is no bitmap.
     val iconArt: IconArt?,
     val iconKind: IconKind,
+    // What the modernisation tweaks would change, as the manifest has it.
+    val predictiveBack: Boolean,
+    val hasLocaleConfig: Boolean,
+    val nativeLibsFromApk: Boolean,
     val split: String?,
     val permissions: List<String>,
     val dexCount: Int,
@@ -50,6 +54,9 @@ object Attr {
     const val VERSION_NAME = 0x0101021c
     const val TARGET_SDK = 0x01010270
     const val VERSION_CODE_MAJOR = 0x01010576
+    const val EXTRACT_NATIVE_LIBS = 0x010104ea
+    const val LOCALE_CONFIG = 0x0101065b
+    const val ON_BACK_INVOKED = 0x0101066c
 }
 
 object ApkReader {
@@ -99,6 +106,9 @@ object ApkReader {
             iconKind = app?.attr(Attr.ICON, "icon")?.let { a ->
                 if (a.type == ValueType.REFERENCE && table != null) iconKind(a.data, table, zip) else IconKind.LEGACY
             } ?: IconKind.NONE,
+            predictiveBack = app?.attr(Attr.ON_BACK_INVOKED, "enableOnBackInvokedCallback")?.takeIf { it.type == ValueType.BOOLEAN }?.let { it.data != 0 } ?: false,
+            hasLocaleConfig = app?.attr(Attr.LOCALE_CONFIG, "localeConfig") != null,
+            nativeLibsFromApk = app?.attr(Attr.EXTRACT_NATIVE_LIBS, "extractNativeLibs")?.takeIf { it.type == ValueType.BOOLEAN }?.let { it.data == 0 } ?: false,
             split = root.attrs.firstOrNull { it.name == "split" }?.raw,
             permissions = manifest.filter { it.depth == 2 && it.name == "uses-permission" }
                 .mapNotNull { it.attr(Attr.NAME, "name")?.raw }

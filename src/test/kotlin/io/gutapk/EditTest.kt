@@ -3,6 +3,7 @@ package io.gutapk
 import io.gutapk.core.edit.Edit
 import io.gutapk.core.edit.IconImage
 import io.gutapk.core.edit.IconRefusal
+import io.gutapk.core.edit.Modern
 import io.gutapk.core.edit.PackageId
 import io.gutapk.core.edit.PackageIdRefusal
 import io.gutapk.tools.Storage
@@ -235,5 +236,45 @@ class EditTest {
         assertEquals("<string name=\"authority\">com.new.clone.files</string>", PackageId.renameLiterals(strings, map).first)
         val json = "\"package_name\": \"com.old.app\","
         assertEquals("\"package_name\": \"com.new.clone\",", PackageId.renameLiterals(json, map).first)
+    }
+
+    @Test
+    fun setsApplicationAttributes() {
+        val manifest = "<manifest>\n  <application android:label=\"@string/app_name\"\n      android:extractNativeLibs=\"true\">\n  </application>\n</manifest>"
+        val back = Modern.setAppAttr(manifest, "android:enableOnBackInvokedCallback", "true")
+        assertTrue(back.contains("<application android:enableOnBackInvokedCallback=\"true\" android:label="))
+        val libs = Modern.setAppAttr(manifest, "android:extractNativeLibs", "false")
+        assertTrue(libs.contains("android:extractNativeLibs=\"false\""))
+        assertFalse(libs.contains("android:extractNativeLibs=\"true\""))
+    }
+
+    @Test
+    fun readsLocaleFolders() {
+        assertEquals("fr", Modern.localeTag("values-fr"))
+        assertEquals("pt-BR", Modern.localeTag("values-pt-rBR"))
+        assertEquals("es-419", Modern.localeTag("values-es-r419"))
+        assertEquals("sr-Latn", Modern.localeTag("values-b+sr+Latn"))
+        assertEquals("fr", Modern.localeTag("values-fr-v21"))
+        assertNull(Modern.localeTag("values-night"))
+        assertNull(Modern.localeTag("values-v31"))
+        assertNull(Modern.localeTag("values-car"))
+        assertNull(Modern.localeTag("values"))
+        assertTrue(Modern.localeConfigXml(listOf("fr", "pt-BR")).contains("<locale android:name=\"pt-BR\" />"))
+    }
+
+    // Libraries read from the APK must be stored, in either engine's list.
+    @Test
+    fun storesNativeLibraries() {
+        val json = "{\n  \"extensions\": [\n    \".png\"\n  ],\n  \"paths\": []\n}"
+        val stored = Modern.storeSoApkEditor(json)
+        assertTrue(stored.contains("\".so\""))
+        assertEquals(stored, Modern.storeSoApkEditor(stored))
+        assertTrue(Modern.storeSoApkEditor("{\"extensions\": [], \"paths\": []}").contains("\".so\""))
+
+        val yml = "version: 3.0.3\ndoNotCompress:\n- arsc\n- dex\nsdkInfo:\n  minSdkVersion: 31\n"
+        val added = Modern.storeSoApktool(yml)
+        assertTrue(added.contains("doNotCompress:\n- so\n- arsc"))
+        assertEquals(added, Modern.storeSoApktool(added))
+        assertTrue(Modern.storeSoApktool("version: 3.0.3\n").endsWith("doNotCompress:\n- so\n"))
     }
 }

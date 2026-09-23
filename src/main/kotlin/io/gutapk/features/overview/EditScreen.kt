@@ -104,6 +104,9 @@ fun EditScreen(
     var targetSdk by remember { mutableStateOf(info.targetSdk) }
     var themed by remember { mutableStateOf(false) }
     var iconImage by remember { mutableStateOf<Path?>(null) }
+    var predictiveBack by remember { mutableStateOf(false) }
+    var localeConfig by remember { mutableStateOf(false) }
+    var nativeLibs by remember { mutableStateOf(false) }
     var iconCheck by remember { mutableStateOf<IconCheck?>(null) }
     // Every permission starts kept. Switching one off marks it for removal,
     // so the default action leaves the app exactly as it was.
@@ -117,7 +120,8 @@ fun EditScreen(
     val minChanged = minSdk != null && minSdk != info.minSdk
     val targetChanged = targetSdk != null && targetSdk != info.targetSdk
     val iconOk = iconImage != null && iconCheck?.refusal == null
-    val anyChange = nameChanged || minChanged || targetChanged || toRemove.isNotEmpty() || themed || iconOk || packageChanged
+    val anyChange = nameChanged || minChanged || targetChanged || toRemove.isNotEmpty() || themed || iconOk || packageChanged ||
+        predictiveBack || localeConfig || nativeLibs
     val spec = Tools.byId("apkeditor")
     // Verify hashes the jar, so it runs once per visit, not on every switch.
     val toolReady = remember { spec != null && Installer.status(root, spec).let { it is ToolStatus.Installed && Installer.verify(root, spec) } }
@@ -146,6 +150,9 @@ fun EditScreen(
                         themedIcon = themed,
                         iconImage = if (iconOk) iconImage else null,
                         packageId = if (packageChanged) packageId else null,
+                        predictiveBack = predictiveBack,
+                        localeConfig = localeConfig,
+                        nativeLibsFromApk = nativeLibs,
                     ),
                     key = key,
                     packageName = info.packageName,
@@ -262,6 +269,38 @@ fun EditScreen(
             )
         }
 
+        // Each switch is offered only while the app lacks what it adds, an
+        // app that already has it says so instead.
+        Zone(t("edit_zone_modern")) {
+            ToggleRow(
+                t("edit_back"),
+                t(if (info.predictiveBack) "edit_back_done" else "edit_back_d"),
+                available = !info.predictiveBack,
+                checked = predictiveBack,
+                onChange = { predictiveBack = it },
+            )
+            ToggleRow(
+                t("edit_locales"),
+                t(if (info.hasLocaleConfig) "edit_locales_done" else "edit_locales_d"),
+                available = !info.hasLocaleConfig,
+                checked = localeConfig,
+                onChange = { localeConfig = it },
+            )
+            ToggleRow(
+                t("edit_libs"),
+                t(
+                    when {
+                        info.nativeLibs == 0 -> "edit_libs_none"
+                        info.nativeLibsFromApk -> "edit_libs_done"
+                        else -> "edit_libs_d"
+                    },
+                ),
+                available = info.nativeLibs > 0 && !info.nativeLibsFromApk,
+                checked = nativeLibs,
+                onChange = { nativeLibs = it },
+            )
+        }
+
         if (info.permissions.isNotEmpty()) {
             Zone(t("ov_permissions", info.permissions.size)) {
                 BodyText(t("edit_perm_note"))
@@ -349,6 +388,19 @@ fun EditScreen(
             onDismiss = { dialog = null },
         )
     }
+}
+
+// A setting that is either offered with its switch, or stated as it is.
+@Composable
+private fun ToggleRow(title: String, detail: String, available: Boolean, checked: Boolean, onChange: (Boolean) -> Unit) {
+    val toggle: () -> Unit = { onChange(!checked) }
+    val switch: @Composable () -> Unit = { Switch(checked = checked, onCheckedChange = onChange) }
+    ZoneRow(
+        title,
+        detail,
+        onClick = if (available) toggle else null,
+        trailing = if (available) switch else null,
+    )
 }
 
 @Composable

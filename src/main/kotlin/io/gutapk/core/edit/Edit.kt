@@ -31,6 +31,10 @@ data class Tweaks(
     val iconImage: Path? = null,
     // A new package id, checked by PackageId, to install beside the original.
     val packageId: String? = null,
+    // Modernisation, each only offered when the app does not have it yet.
+    val predictiveBack: Boolean = false,
+    val localeConfig: Boolean = false,
+    val nativeLibsFromApk: Boolean = false,
 )
 
 class EditResult(val output: Path, val signature: SignatureInfo)
@@ -158,6 +162,18 @@ object Edit {
             text = removePermissions(text, tweaks.removePermissions, sink)
         }
 
+        if (tweaks.predictiveBack) {
+            text = Modern.setAppAttr(text, "android:enableOnBackInvokedCallback", "true")
+            sink.emit(JobEvent.Line("predictive back enabled"))
+        }
+        if (tweaks.localeConfig) {
+            text = addLocaleConfig(decoded, text, engine, sink)
+        }
+        if (tweaks.nativeLibsFromApk) {
+            text = Modern.setAppAttr(text, "android:extractNativeLibs", "false")
+            storeNativeLibs(decoded, engine, sink)
+        }
+
         // Before the themed icon, so a monochrome layer it adds follows the
         // new picture, not the old foreground.
         if (tweaks.iconImage != null) {
@@ -178,6 +194,50 @@ object Edit {
         }
 
         Files.writeString(manifest, text)
+    }
+
+    // The languages the app is translated into, read from its values
+    // folders that hold strings, written as a locale-config resource the
+    // manifest points to. Android 13 and later then list the app in
+    // Settings > App languages.
+    private fun addLocaleConfig(decoded: Path, manifest: String, engine: Engine, sink: JobSink): String {
+        val res = resDirs(decoded).firstOrNull() ?: throw CheckFailed("the decoded APK has no res folder")
+        val tags = Files.list(res).use { it.toList() }
+            .filter { Files.isRegularFile(it.resolve("strings.xml")) }
+            .mapNotNull { Modern.localeTag(it.fileName.toString()) }
+            .distinct()
+            .sorted()
+        if (tags.isEmpty()) {
+            sink.emit(JobEvent.Line("no translated strings, per-app language skipped"))
+            return manifest
+        }
+        // APKEditor needs the id declared, apktool gives one itself.
+        val publicXml = res.resolve("values").resolve("public.xml")
+        if (Files.isRegularFile(publicXml)) {
+            val before = Files.readString(publicXml)
+            val after = withPublic(before, "xml", Modern.LOCALES_NAME)
+            if (after == null && engine == Engine.APKEDITOR) {
+                throw CheckFailed("the APK has no xml resource to place the language list beside")
+            }
+            if (after != null && after != before) Files.writeString(publicXml, after)
+        }
+        val file = res.resolve("xml").resolve(Modern.LOCALES_NAME + ".xml")
+        Files.createDirectories(file.parent)
+        Files.writeString(file, Modern.localeConfigXml(tags))
+        sink.emit(JobEvent.Line("per-app language: ${tags.joinToString(" ")}"))
+        return Modern.setAppAttr(manifest, "android:localeConfig", "@xml/${Modern.LOCALES_NAME}")
+    }
+
+    // extractNativeLibs false means the libraries are read from the APK,
+    // which Android only accepts stored, not compressed.
+    private fun storeNativeLibs(decoded: Path, engine: Engine, sink: JobSink) {
+        val (file, change) = when (engine) {
+            Engine.APKEDITOR -> decoded.resolve("uncompressed-files.json") to Modern::storeSoApkEditor
+            Engine.APKTOOL -> decoded.resolve("apktool.yml") to Modern::storeSoApktool
+        }
+        if (!Files.isRegularFile(file)) throw CheckFailed("the decoded APK has no ${file.fileName}, libraries cannot be stored")
+        Files.writeString(file, change(Files.readString(file)))
+        sink.emit(JobEvent.Line("native libraries stored and read from the APK"))
     }
 
     // The code and the resources follow the manifest: every whole string

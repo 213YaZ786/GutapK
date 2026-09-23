@@ -15,6 +15,8 @@ import java.nio.file.StandardCopyOption
 private const val V2_FROM_SDK = 24
 
 object ApkSigning {
+    private const val LIBRARY_ALIGNMENT = 16384
+
     fun schemesFor(minSdk: Int?): List<String> =
         if (minSdk == null || minSdk < V2_FROM_SDK) listOf("v1", "v2", "v3") else listOf("v2", "v3")
 
@@ -25,8 +27,9 @@ object ApkSigning {
         return packageDir.resolve("out").resolve(safe(packageName) + v + "-signed-" + choice.name.lowercase() + ".apk")
     }
 
-    // apksig aligns every stored entry while it signs, 4 bytes, and 4096 for
-    // native libraries, so no separate zipalign pass is needed. The result
+    // apksig aligns every stored entry while it signs, 4 bytes, and native
+    // libraries on 16 KB, the page size of Android 15 devices that use it,
+    // which is also a multiple of 4 KB. No separate zipalign pass. The result
     // is verified before it replaces anything: a file that does not verify
     // never reaches the out folder.
     fun sign(input: Path, output: Path, key: SigningKey, minSdk: Int?, version: String, sink: JobSink): SignatureInfo {
@@ -45,6 +48,7 @@ object ApkSigning {
                 .setV2SigningEnabled(true)
                 .setV3SigningEnabled(true)
                 .setCreatedBy("GutapK $version")
+                .setLibraryPageAlignmentBytes(LIBRARY_ALIGNMENT)
             if (minSdk != null) builder.setMinSdkVersion(minSdk)
             builder.build().sign()
 
