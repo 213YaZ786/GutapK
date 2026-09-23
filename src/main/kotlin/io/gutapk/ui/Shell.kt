@@ -29,8 +29,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import java.nio.file.Path
-import javax.swing.JFileChooser
-import javax.swing.filechooser.FileNameExtensionFilter
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.Transferable
 import java.io.File
@@ -60,16 +58,6 @@ private fun firstSteps(s: Settings): List<FirstStep> = buildList {
 }
 
 private const val IMPORT_JOB = "import"
-
-// Swing's chooser, filtered on .apk. The user's file is only read, the copy
-// lands under the root.
-private fun pickApk(): Path? {
-    val chooser = JFileChooser().apply {
-        fileSelectionMode = JFileChooser.FILES_ONLY
-        fileFilter = FileNameExtensionFilter("APK", "apk")
-    }
-    return if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) chooser.selectedFile.toPath() else null
-}
 
 // X11 file managers offer a file list, some only a text/uri-list. Both are
 // read so a drop never depends on which one the user dragged from.
@@ -245,7 +233,12 @@ fun Shell(
                                 screen = Screen.LICENCE
                             },
                             onSource = { source ->
-                                if (source == Source.APK && root != null) pickApk()?.let { startImport(root, it) }
+                                // The user's file is only read, the copy lands under the root.
+                                if (source == Source.APK && root != null) {
+                                    Chooser.file(Strings.get(lang, "choose_apk"), "APK", "apk") { picked ->
+                                        picked?.let { startImport(root, it) }
+                                    }
+                                }
                             },
                             onPackage = {
                                 overviewDir = it

@@ -37,6 +37,7 @@ import io.gutapk.tools.Installer
 import io.gutapk.tools.ToolStatus
 import io.gutapk.tools.Tools
 import io.gutapk.ui.BodyText
+import io.gutapk.ui.Chooser
 import io.gutapk.ui.KeyChooser
 import io.gutapk.ui.Page
 import io.gutapk.ui.Zone
@@ -44,8 +45,6 @@ import io.gutapk.ui.ZoneRow
 import io.gutapk.ui.keyLabel
 import io.gutapk.ui.t
 import java.nio.file.Path
-import javax.swing.JFileChooser
-import javax.swing.filechooser.FileNameExtensionFilter
 
 const val RENAME_JOB = "rename"
 
@@ -219,10 +218,13 @@ fun EditScreen(
             val check = iconCheck
             // Checked at once, reading only: the picture is not copied or
             // changed until the rebuild runs.
+            val pngTitle = t("edit_icon_image")
             val pick: () -> Unit = {
-                pickPng()?.let {
-                    iconImage = it
-                    iconCheck = IconImage.check(it)
+                Chooser.file(pngTitle, "PNG", "png") { picked ->
+                    picked?.let {
+                        iconImage = it
+                        iconCheck = IconImage.check(it)
+                    }
                 }
             }
             val clear: @Composable () -> Unit = {
@@ -358,15 +360,6 @@ private fun iconRefusal(check: IconCheck, file: Path): String {
         IconRefusal.TOO_SMALL -> t("edit_icon_too_small", name, check.size ?: 0, IconImage.MIN_SIZE)
         else -> t("edit_icon_unreadable", name)
     }
-}
-
-// Swing's chooser, like the APK one, until the portal chooser lands.
-private fun pickPng(): Path? {
-    val chooser = JFileChooser().apply {
-        fileSelectionMode = JFileChooser.FILES_ONLY
-        fileFilter = FileNameExtensionFilter("PNG", "png")
-    }
-    return if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) chooser.selectedFile.toPath() else null
 }
 
 // One field, OK and Cancel. An empty answer keeps the value the app has,

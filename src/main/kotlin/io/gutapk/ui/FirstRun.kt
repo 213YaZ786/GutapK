@@ -21,10 +21,7 @@ import androidx.compose.ui.unit.dp
 import io.gutapk.tools.RootCheck
 import io.gutapk.tools.RootProblem
 import io.gutapk.tools.Storage
-import java.io.File
-import java.nio.file.Files
 import java.nio.file.Path
-import javax.swing.JFileChooser
 
 // Where the user is in the first run, or null when a screen is reopened
 // from Settings.
@@ -111,6 +108,7 @@ fun RootScreen(
 ) {
     var text by remember { mutableStateOf(initial) }
     var problem by remember { mutableStateOf<RootProblem?>(null) }
+    val chooseTitle = t("root_title")
 
     fun submit() {
         when (val c = Storage.check(text)) {
@@ -153,9 +151,11 @@ fun RootScreen(
                     )
                     TextButton(
                         onClick = {
-                            pickFolder(text)?.let {
-                                text = it
-                                problem = null
+                            Chooser.folder(chooseTitle, Storage.expand(text)) { picked ->
+                                picked?.let {
+                                    text = it.toString()
+                                    problem = null
+                                }
                             }
                         },
                     ) {
@@ -185,17 +185,4 @@ fun RootScreen(
             }
         }
     }
-}
-
-// Swing's chooser is the one AWT offers that selects folders on Linux.
-// FileDialog only picks files there.
-private fun pickFolder(current: String): String? {
-    val start = File(Storage.expand(current)).let { f ->
-        generateSequence(f) { it.parentFile }.firstOrNull { Files.isDirectory(it.toPath()) }
-    }
-    val chooser = JFileChooser(start).apply {
-        fileSelectionMode = JFileChooser.DIRECTORIES_ONLY
-        isAcceptAllFileFilterUsed = false
-    }
-    return if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) chooser.selectedFile.absolutePath else null
 }
