@@ -33,6 +33,10 @@ class ResourceTable private constructor(
         }
     }
 
+    // Every two letter language some resource is translated into.
+    fun languages(): Set<String> =
+        types.values.flatMap { it.values }.flatten().map { it.first.language }.filter { it.matches(Regex("[a-z]{2}")) }.toSet()
+
     // The default-language value, else the first one found.
     fun label(id: Int): String? {
         val all = strings(id)

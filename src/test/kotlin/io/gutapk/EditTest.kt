@@ -8,6 +8,7 @@ import io.gutapk.core.edit.Neutralise
 import io.gutapk.core.edit.PackageId
 import io.gutapk.core.edit.PackageIdRefusal
 import io.gutapk.core.edit.Security
+import io.gutapk.core.edit.Size
 import io.gutapk.tools.Storage
 import java.awt.image.BufferedImage
 import java.nio.file.Files
@@ -342,5 +343,37 @@ class EditTest {
         assertTrue(meta.contains("<meta-data android:name=\"google_analytics_adid_collection_enabled\" android:value=\"false\" />"))
         assertTrue(meta.contains("<meta-data android:name=\"firebase_analytics_collection_deactivated\" android:value=\"true\" />"))
         assertEquals(1, Regex("google_analytics_adid_collection_enabled").findAll(meta).count())
+    }
+
+    @Test
+    fun readsFolderLanguages() {
+        assertEquals("fr", Size.languageOf("values-fr"))
+        assertEquals("fr", Size.languageOf("drawable-fr-rCA-xxhdpi"))
+        assertEquals("sr", Size.languageOf("raw-b+sr+Latn"))
+        assertNull(Size.languageOf("values"))
+        assertNull(Size.languageOf("values-night"))
+        assertNull(Size.languageOf("mipmap-anydpi-v26"))
+        assertNull(Size.languageOf("values-car"))
+    }
+
+    // Debug lines go, every instruction stays, the final newline too.
+    @Test
+    fun stripsDebugLines() {
+        val smali = listOf(
+            ".method public run()V",
+            "    .registers 2",
+            "    .line 42",
+            "    const-string v0, \"x\"",
+            "    .local v0, \"name\"",
+            "    return-void",
+            ".end method",
+            "",
+        ).joinToString("\n")
+        val (out, n) = Size.stripDebug(smali)
+        assertEquals(2, n)
+        assertFalse(out.contains(".line"))
+        assertFalse(out.contains(".local"))
+        assertTrue(out.contains("const-string v0, \"x\"\n    return-void"))
+        assertTrue(out.endsWith(".end method\n"))
     }
 }

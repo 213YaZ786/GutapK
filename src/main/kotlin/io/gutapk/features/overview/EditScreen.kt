@@ -1,6 +1,12 @@
 package io.gutapk.features.overview
 
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Checkbox
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilledTonalButton
@@ -15,6 +21,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -37,6 +44,7 @@ import io.gutapk.tools.Installer
 import io.gutapk.tools.ToolStatus
 import io.gutapk.tools.Tools
 import io.gutapk.ui.BodyText
+import io.gutapk.ui.ChoiceDialog
 import io.gutapk.ui.Chooser
 import io.gutapk.ui.KeyChooser
 import io.gutapk.ui.Page
@@ -45,6 +53,7 @@ import io.gutapk.ui.ZoneRow
 import io.gutapk.ui.keyLabel
 import io.gutapk.ui.t
 import java.nio.file.Path
+import java.util.Locale
 
 const val RENAME_JOB = "rename"
 
@@ -115,6 +124,10 @@ fun EditScreen(
     var fragileData by remember { mutableStateOf(false) }
     var memoryTagging by remember { mutableStateOf(false) }
     var notDebuggable by remember { mutableStateOf(false) }
+    var keepAbi by remember { mutableStateOf<String?>(null) }
+    var keptLanguages by remember { mutableStateOf(info.languages.toSet()) }
+    var stripDebug by remember { mutableStateOf(false) }
+    val removedLanguages = info.languages.toSet() - keptLanguages
     // Tracker names switched on for silencing. None by default.
     val silenced = remember { mutableStateMapOf<String, Boolean>() }
     val silencedPrefixes = detection?.found.orEmpty().filter { silenced[it.name] == true }.flatMap { it.prefixes }.toSet()
@@ -134,7 +147,7 @@ fun EditScreen(
     val anyChange = nameChanged || minChanged || targetChanged || toRemove.isNotEmpty() || themed || iconOk || packageChanged ||
         predictiveBack || localeConfig || nativeLibs ||
         noBackup || strictNetwork || fragileData || memoryTagging || notDebuggable ||
-        silencedPrefixes.isNotEmpty()
+        silencedPrefixes.isNotEmpty() || keepAbi != null || removedLanguages.isNotEmpty() || stripDebug
     val spec = Tools.byId("apkeditor")
     // Verify hashes the jar, so it runs once per visit, not on every switch.
     val toolReady = remember { spec != null && Installer.status(root, spec).let { it is ToolStatus.Installed && Installer.verify(root, spec) } }
@@ -172,6 +185,9 @@ fun EditScreen(
                         memoryTagging = memoryTagging,
                         notDebuggable = notDebuggable,
                         trackerPrefixes = silencedPrefixes,
+                        keepAbi = keepAbi,
+                        removeLanguages = removedLanguages,
+                        stripDebugInfo = stripDebug,
                     ),
                     key = key,
                     packageName = info.packageName,
@@ -398,6 +414,41 @@ fun EditScreen(
             }
         }
 
+        Zone(t("edit_zone_size")) {
+            val manyAbis = info.abis.size > 1
+            val openAbi: () -> Unit = { dialog = "abi" }
+            val openLanguages: () -> Unit = { dialog = "langs" }
+            ZoneRow(
+                t("edit_abi"),
+                when {
+                    info.abis.isEmpty() -> t("edit_libs_none")
+                    !manyAbis -> t("edit_abi_one", info.abis.first())
+                    keepAbi != null -> t("edit_abi_only", keepAbi ?: "")
+                    else -> t("edit_abi_all", info.abis.joinToString(", "))
+                },
+                onClick = if (manyAbis) openAbi else null,
+                trailing = if (keepAbi != null) changed else null,
+            )
+            val manyLanguages = info.languages.size > 1
+            ZoneRow(
+                t("edit_langs"),
+                when {
+                    !manyLanguages -> t("edit_langs_one")
+                    removedLanguages.isEmpty() -> t("edit_langs_all", info.languages.size)
+                    else -> t("edit_langs_some", keptLanguages.size, info.languages.size)
+                },
+                onClick = if (manyLanguages) openLanguages else null,
+                trailing = if (removedLanguages.isNotEmpty()) changed else null,
+            )
+            ToggleRow(
+                t("edit_debuginfo"),
+                t("edit_debuginfo_d"),
+                available = info.dexCount > 0,
+                checked = stripDebug,
+                onChange = { stripDebug = it },
+            )
+        }
+
         if (info.permissions.isNotEmpty()) {
             Zone(t("ov_permissions", info.permissions.size)) {
                 BodyText(t("edit_perm_note"))
@@ -476,6 +527,25 @@ fun EditScreen(
             },
             onDismiss = { dialog = null },
         )
+        "abi" -> ChoiceDialog(
+            title = t("edit_abi"),
+            options = listOf<Pair<String?, String>>(null to t("edit_abi_keep_all")) + info.abis.map { it to t("edit_abi_only", it) },
+            current = keepAbi,
+            onPick = {
+                keepAbi = it
+                dialog = null
+            },
+            onDismiss = { dialog = null },
+        )
+        "langs" -> LanguagesDialog(
+            all = info.languages,
+            kept = keptLanguages,
+            onDone = {
+                keptLanguages = it
+                dialog = null
+            },
+            onDismiss = { dialog = null },
+        )
         "key" -> KeyChooser(
             current = choice,
             onChosen = {
@@ -485,6 +555,30 @@ fun EditScreen(
             onDismiss = { dialog = null },
         )
     }
+}
+
+// One checkbox per language, the name in the language itself so a user
+// finds their own. OK takes the ticked ones.
+@Composable
+private fun LanguagesDialog(all: List<String>, kept: Set<String>, onDone: (Set<String>) -> Unit, onDismiss: () -> Unit) {
+    val ticked = remember { mutableStateMapOf<String, Boolean>().apply { all.forEach { put(it, it in kept) } } }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(t("edit_langs")) },
+        text = {
+            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                all.forEach { code ->
+                    val locale = Locale.forLanguageTag(code)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = ticked[code] == true, onCheckedChange = { ticked[code] = it })
+                        Text(locale.getDisplayLanguage(locale).replaceFirstChar { it.titlecase(locale) } + "  " + code, style = MaterialTheme.typography.bodyLarge)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onDone(all.filter { ticked[it] == true }.toSet()) }) { Text(t("ok")) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(t("cancel")) } },
+    )
 }
 
 // A setting that is either offered with its switch, or stated as it is.

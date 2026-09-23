@@ -43,6 +43,8 @@ data class ApkInfo(
     val memoryTagging: Boolean,
     val split: String?,
     val permissions: List<String>,
+    // Languages the resources are translated into, sorted.
+    val languages: List<String>,
     // Activities, services, receivers and providers, full class names.
     val components: List<String>,
     val dexCount: Int,
@@ -130,6 +132,7 @@ object ApkReader {
             permissions = manifest.filter { it.depth == 2 && it.name == "uses-permission" }
                 .mapNotNull { it.attr(Attr.NAME, "name")?.raw }
                 .distinct(),
+            languages = table?.languages()?.sorted().orEmpty(),
             components = manifest.filter { it.depth == 3 && it.name in COMPONENT_TAGS }
                 .mapNotNull { it.attr(Attr.NAME, "name")?.raw }
                 .map { n -> absoluteName(root.attrs.firstOrNull { it.name == "package" }?.raw.orEmpty(), n) },

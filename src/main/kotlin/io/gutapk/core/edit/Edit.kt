@@ -43,6 +43,10 @@ data class Tweaks(
     val notDebuggable: Boolean = false,
     // Class prefixes of the trackers to silence, from Exodus Privacy's list.
     val trackerPrefixes: Set<String> = emptySet(),
+    // Size: one ABI kept, languages removed, smali debug lines dropped.
+    val keepAbi: String? = null,
+    val removeLanguages: Set<String> = emptySet(),
+    val stripDebugInfo: Boolean = false,
 )
 
 class EditResult(val output: Path, val signature: SignatureInfo)
@@ -136,6 +140,11 @@ object Edit {
         val manifest = decoded.resolve("AndroidManifest.xml")
         if (!Files.isRegularFile(manifest)) throw CheckFailed("decoded APK has no AndroidManifest.xml")
         var text = Files.readString(manifest)
+
+        // First, so the language list written later sees what is kept.
+        if (tweaks.keepAbi != null) keepAbi(decoded, tweaks.keepAbi, sink)
+        if (tweaks.removeLanguages.isNotEmpty()) removeLanguages(decoded, tweaks.removeLanguages, sink)
+        if (tweaks.stripDebugInfo) stripDebugInfo(decoded, sink)
 
         val label = tweaks.label?.takeIf { it.isNotBlank() }
         if (label != null) {
@@ -306,6 +315,48 @@ object Edit {
         if (!Files.isRegularFile(file)) throw CheckFailed("the decoded APK has no ${file.fileName}, libraries cannot be stored")
         Files.writeString(file, change(Files.readString(file)))
         sink.emit(JobEvent.Line("native libraries stored and read from the APK"))
+    }
+
+    // Native libraries sit in root/lib for APKEditor and lib for apktool.
+    // A file its uncompressed list names but that is gone does not stop
+    // APKEditor, checked on 1.4.9.
+    private fun keepAbi(decoded: Path, abi: String, sink: JobSink) {
+        listOf(decoded.resolve("root").resolve("lib"), decoded.resolve("lib")).filter { Files.isDirectory(it) }.forEach { lib ->
+            Files.list(lib).use { it.toList() }.filter { Files.isDirectory(it) && it.fileName.toString() != abi }.forEach { other ->
+                Storage.deleteTree(other, decoded)
+                sink.emit(JobEvent.Line("native libraries removed: ${other.fileName}"))
+            }
+        }
+    }
+
+    // Every resource folder qualified by a removed language goes, values and
+    // drawables alike. The default folders stay, so the app falls back to
+    // its default language.
+    private fun removeLanguages(decoded: Path, languages: Set<String>, sink: JobSink) {
+        var count = 0
+        resDirs(decoded).forEach { res ->
+            Files.list(res).use { it.toList() }
+                .filter { Files.isDirectory(it) && Size.languageOf(it.fileName.toString()) in languages }
+                .forEach { folder ->
+                    Storage.deleteTree(folder, decoded)
+                    count++
+                }
+        }
+        sink.emit(JobEvent.Line("language folders removed: $count (${languages.sorted().joinToString(" ")})"))
+    }
+
+    private fun stripDebugInfo(decoded: Path, sink: JobSink) {
+        var lines = 0
+        Files.list(decoded).use { it.toList() }.filter { Files.isDirectory(it) && it.fileName.toString().startsWith("smali") }.forEach { dir ->
+            Files.walk(dir).use { all -> all.filter { it.fileName.toString().endsWith(".smali") }.toList() }.forEach { file ->
+                val (out, n) = Size.stripDebug(Files.readString(file))
+                if (n > 0) {
+                    Files.writeString(file, out)
+                    lines += n
+                }
+            }
+        }
+        sink.emit(JobEvent.Line("debug lines removed from smali: $lines"))
     }
 
     // The code and the resources follow the manifest: every whole string
