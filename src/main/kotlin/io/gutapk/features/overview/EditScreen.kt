@@ -21,6 +21,9 @@ import androidx.compose.ui.unit.dp
 import io.gutapk.core.apk.ApkInfo
 import io.gutapk.core.apk.IconKind
 import io.gutapk.core.edit.Edit
+import io.gutapk.core.edit.IconCheck
+import io.gutapk.core.edit.IconImage
+import io.gutapk.core.edit.IconRefusal
 import io.gutapk.core.edit.Tweaks
 import io.gutapk.core.sign.KeyChoice
 import io.gutapk.core.sign.OwnKey
@@ -38,6 +41,8 @@ import io.gutapk.ui.ZoneRow
 import io.gutapk.ui.keyLabel
 import io.gutapk.ui.t
 import java.nio.file.Path
+import javax.swing.JFileChooser
+import javax.swing.filechooser.FileNameExtensionFilter
 
 const val RENAME_JOB = "rename"
 
@@ -60,6 +65,8 @@ fun EditScreen(
     var minSdk by remember { mutableStateOf(info.minSdk) }
     var targetSdk by remember { mutableStateOf(info.targetSdk) }
     var themed by remember { mutableStateOf(false) }
+    var iconImage by remember { mutableStateOf<Path?>(null) }
+    var iconCheck by remember { mutableStateOf<IconCheck?>(null) }
     // Every permission starts kept. Switching one off marks it for removal,
     // so the default action leaves the app exactly as it was.
     val kept = remember { mutableStateMapOf<String, Boolean>().apply { info.permissions.forEach { put(it, true) } } }
@@ -70,7 +77,8 @@ fun EditScreen(
     val nameChanged = trimmed.isNotEmpty() && trimmed != info.label
     val minChanged = minSdk != null && minSdk != info.minSdk
     val targetChanged = targetSdk != null && targetSdk != info.targetSdk
-    val anyChange = nameChanged || minChanged || targetChanged || toRemove.isNotEmpty() || themed
+    val iconOk = iconImage != null && iconCheck?.refusal == null
+    val anyChange = nameChanged || minChanged || targetChanged || toRemove.isNotEmpty() || themed || iconOk
     val spec = Tools.byId("apkeditor")
     // Verify hashes the jar, so it runs once per visit, not on every switch.
     val toolReady = remember { spec != null && Installer.status(root, spec).let { it is ToolStatus.Installed && Installer.verify(root, spec) } }
@@ -99,6 +107,7 @@ fun EditScreen(
                             targetSdk = if (targetChanged) targetSdk else null,
                             removePermissions = toRemove,
                             themedIcon = themed,
+                            iconImage = if (iconOk) iconImage else null,
                         ),
                         key = signing,
                         keyName = key.name,
@@ -160,9 +169,37 @@ fun EditScreen(
             )
         }
 
-        // Shown for every icon kind, so an app that cannot get a themed icon
+        // Shown for every icon kind, so an app whose icon cannot be changed
         // says why instead of hiding the option.
         Zone(t("edit_zone_icon")) {
+            val replaceable = info.iconKind == IconKind.ADAPTIVE || info.iconKind == IconKind.THEMED
+            val picked = iconImage
+            val check = iconCheck
+            // Checked at once, reading only: the picture is not copied or
+            // changed until the rebuild runs.
+            val pick: () -> Unit = {
+                pickPng()?.let {
+                    iconImage = it
+                    iconCheck = IconImage.check(it)
+                }
+            }
+            val clear: @Composable () -> Unit = {
+                TextButton(onClick = {
+                    iconImage = null
+                    iconCheck = null
+                }) { Text(t("edit_icon_clear")) }
+            }
+            ZoneRow(
+                t("edit_icon_image"),
+                when {
+                    !replaceable -> t(if (info.iconKind == IconKind.NONE) "edit_themed_none" else "edit_themed_legacy")
+                    picked == null || check == null -> t("edit_icon_image_d", IconImage.MIN_SIZE)
+                    check.refusal != null -> iconRefusal(check, picked)
+                    else -> t("edit_icon_image_ok", picked.fileName.toString(), check.size ?: 0)
+                },
+                onClick = if (replaceable) pick else null,
+                trailing = if (picked != null) clear else null,
+            )
             val adaptive = info.iconKind == IconKind.ADAPTIVE
             val toggle: () -> Unit = { themed = !themed }
             val switch: @Composable () -> Unit = { Switch(checked = themed, onCheckedChange = { themed = it }) }
@@ -251,6 +288,26 @@ fun EditScreen(
             onDismiss = { dialog = null },
         )
     }
+}
+
+@Composable
+private fun iconRefusal(check: IconCheck, file: Path): String {
+    val name = file.fileName.toString()
+    return when (check.refusal) {
+        IconRefusal.NOT_PNG -> t("edit_icon_not_png", name)
+        IconRefusal.NOT_SQUARE -> t("edit_icon_not_square", name)
+        IconRefusal.TOO_SMALL -> t("edit_icon_too_small", name, check.size ?: 0, IconImage.MIN_SIZE)
+        else -> t("edit_icon_unreadable", name)
+    }
+}
+
+// Swing's chooser, like the APK one, until the portal chooser lands.
+private fun pickPng(): Path? {
+    val chooser = JFileChooser().apply {
+        fileSelectionMode = JFileChooser.FILES_ONLY
+        fileFilter = FileNameExtensionFilter("PNG", "png")
+    }
+    return if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) chooser.selectedFile.toPath() else null
 }
 
 // One field, OK and Cancel. An empty answer keeps the value the app has,

@@ -14,6 +14,7 @@ import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import javax.imageio.ImageIO
 
 // What the user asked to change. One field for now, the display name. The
 // class grows one field per tweak, the pipeline stays the same.
@@ -26,6 +27,8 @@ data class Tweaks(
     val removePermissions: Set<String> = emptySet(),
     // Adds a monochrome layer to every adaptive icon that lacks one.
     val themedIcon: Boolean = false,
+    // A square PNG checked by IconImage, to replace the icon's foreground.
+    val iconImage: Path? = null,
 )
 
 class EditResult(val output: Path, val signature: SignatureInfo)
@@ -35,6 +38,10 @@ class EditResult(val output: Path, val signature: SignatureInfo)
 // not ready. All work is under the package folder, swept on the way out.
 object Edit {
     private const val APKEDITOR = "apkeditor"
+
+    // Stable, so editing an app GutapK already changed replaces the picture
+    // instead of adding a second one.
+    private const val ICON_NAME = "gutapk_icon"
 
     fun run(
         root: Path,
@@ -117,6 +124,12 @@ object Edit {
             text = removePermissions(text, tweaks.removePermissions, sink)
         }
 
+        // Before the themed icon, so a monochrome layer it adds follows the
+        // new picture, not the old foreground.
+        if (tweaks.iconImage != null) {
+            replaceIcon(decoded, text, tweaks.iconImage, sink)
+        }
+
         if (tweaks.themedIcon) {
             addThemedIcon(decoded, text, sink)
         }
@@ -129,10 +142,7 @@ object Edit {
     // reused as that layer. Every icon the manifest names is covered, round
     // icons and activity icons too, since a launcher may show any of them.
     private fun addThemedIcon(decoded: Path, manifest: String, sink: JobSink) {
-        val refs = Regex("""android:(?:icon|roundIcon)="@([a-z]+)/([^"]+)"""").findAll(manifest)
-            .map { it.groupValues[1] to it.groupValues[2] }
-            .distinct()
-            .toList()
+        val refs = iconRefs(manifest)
         if (refs.isEmpty()) throw CheckFailed("the manifest names no icon resource")
         var adaptive = 0
         refs.forEach { (type, name) ->
@@ -154,6 +164,79 @@ object Edit {
         }
         if (adaptive == 0) throw CheckFailed("the icon is not an adaptive icon")
     }
+
+    // The picture becomes a new resource, declared in public.xml since
+    // APKEditor refuses a file it has no id for. The adaptive icon's
+    // foreground points to it, and its monochrome layer too, so a themed
+    // icon shows the new shape. The background stays the app's own.
+    private fun replaceIcon(decoded: Path, manifest: String, image: Path, sink: JobSink) {
+        val res = resDirs(decoded).firstOrNull() ?: throw CheckFailed("the decoded APK has no res folder")
+        val publicXml = res.resolve("values").resolve("public.xml")
+        if (!Files.isRegularFile(publicXml)) throw CheckFailed("the decoded APK has no public.xml")
+        val before = Files.readString(publicXml)
+        val type = listOf("drawable", "mipmap").firstOrNull { withPublic(before, it, ICON_NAME) != null }
+            ?: throw CheckFailed("the APK has no drawable or mipmap resource to place the icon beside")
+        val after = withPublic(before, type, ICON_NAME)!!
+        if (after != before) {
+            Files.writeString(publicXml, after)
+            sink.emit(JobEvent.Line("resource declared: @$type/$ICON_NAME"))
+        }
+        val png = res.resolve("$type-xxxhdpi").resolve("$ICON_NAME.png")
+        Files.createDirectories(png.parent)
+        ImageIO.write(IconImage.foreground(image), "png", png.toFile())
+        sink.emit(JobEvent.Line("icon image written: ${decoded.relativize(png)}"))
+
+        var adaptive = 0
+        iconRefs(manifest).forEach { (refType, name) ->
+            iconFiles(decoded, refType, name).forEach { file ->
+                val text = Files.readString(file)
+                if (!text.contains("<adaptive-icon")) return@forEach
+                adaptive++
+                val where = decoded.relativize(file)
+                val changed = withIcon(text, "@$type/$ICON_NAME")
+                if (changed == null) {
+                    sink.emit(JobEvent.Line("foreground is not a resource reference, skipped: $where"))
+                } else {
+                    Files.writeString(file, changed)
+                    sink.emit(JobEvent.Line("icon replaced: $where"))
+                }
+            }
+        }
+        if (adaptive == 0) throw CheckFailed("the icon is not an adaptive icon")
+    }
+
+    // public.xml with an entry for this name, the same text when the entry
+    // exists, or null when the type has no entry to take its id from. The
+    // entries are not sorted, so the next id is one past the highest of the
+    // type, never one past the last line, which could collide.
+    internal fun withPublic(text: String, type: String, name: String): String? {
+        if (Regex("""type="$type" name="${Regex.escape(name)}"""").containsMatchIn(text)) return text
+        val ids = Regex("""<public id="0x([0-9a-fA-F]{8})" type="$type"""").findAll(text)
+            .map { it.groupValues[1].toLong(16) }
+            .toList()
+        if (ids.isEmpty()) return null
+        val close = text.lastIndexOf("</resources>")
+        if (close < 0) return null
+        val id = "0x" + "%08x".format(ids.max() + 1)
+        val entry = "  <public id=\"$id\" type=\"$type\" name=\"$name\" />\n"
+        return text.substring(0, close) + entry + text.substring(close)
+    }
+
+    // The foreground and monochrome layers pointed at the new picture, or
+    // null when the foreground is drawn inline and has no reference.
+    internal fun withIcon(text: String, ref: String): String? {
+        val foreground = Regex("""(<foreground\b[^>]*android:drawable=")[^"]+(")""")
+        if (!foreground.containsMatchIn(text)) return null
+        val monochrome = Regex("""(<monochrome\b[^>]*android:drawable=")[^"]+(")""")
+        val withForeground = foreground.replace(text) { it.groupValues[1] + ref + it.groupValues[2] }
+        return monochrome.replace(withForeground) { it.groupValues[1] + ref + it.groupValues[2] }
+    }
+
+    private fun iconRefs(manifest: String): List<Pair<String, String>> =
+        Regex("""android:(?:icon|roundIcon)="@([a-z]+)/([^"]+)"""").findAll(manifest)
+            .map { it.groupValues[1] to it.groupValues[2] }
+            .distinct()
+            .toList()
 
     // The adaptive icon with a monochrome layer that reuses the foreground,
     // the same text when it already has one, or null when the foreground is
