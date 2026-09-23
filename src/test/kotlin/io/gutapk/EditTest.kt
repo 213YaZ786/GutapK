@@ -6,6 +6,7 @@ import io.gutapk.core.edit.IconRefusal
 import io.gutapk.core.edit.Modern
 import io.gutapk.core.edit.PackageId
 import io.gutapk.core.edit.PackageIdRefusal
+import io.gutapk.core.edit.Security
 import io.gutapk.tools.Storage
 import java.awt.image.BufferedImage
 import java.nio.file.Files
@@ -276,5 +277,32 @@ class EditTest {
         assertTrue(added.contains("doNotCompress:\n- so\n- arsc"))
         assertEquals(added, Modern.storeSoApktool(added))
         assertTrue(Modern.storeSoApktool("version: 3.0.3\n").endsWith("doNotCompress:\n- so\n"))
+    }
+
+    // Plain http off everywhere, user certificates out, and a block that
+    // held only them trusts the system instead of nothing.
+    @Test
+    fun tightensANetworkConfig() {
+        val config = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <network-security-config>
+              <domain-config cleartextTrafficPermitted="true">
+                <domain includeSubdomains="true">example.com</domain>
+                <trust-anchors>
+                  <certificates src="user" />
+                </trust-anchors>
+              </domain-config>
+            </network-security-config>
+        """.trimIndent()
+        val out = Security.strictNetworkConfig(config)
+        assertFalse(out.contains("cleartextTrafficPermitted=\"true\""))
+        assertFalse(out.contains("src=\"user\""))
+        assertTrue(out.contains("<certificates src=\"system\" />"))
+        assertTrue(out.contains("<base-config cleartextTrafficPermitted=\"false\" />"))
+        assertEquals(out, Security.strictNetworkConfig(out))
+
+        val base = "<network-security-config>\n  <base-config>\n  </base-config>\n</network-security-config>"
+        assertTrue(Security.strictNetworkConfig(base).contains("<base-config cleartextTrafficPermitted=\"false\">"))
+        assertTrue(Security.newNetworkConfig().contains("<certificates src=\"system\" />"))
     }
 }

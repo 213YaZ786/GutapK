@@ -107,6 +107,11 @@ fun EditScreen(
     var predictiveBack by remember { mutableStateOf(false) }
     var localeConfig by remember { mutableStateOf(false) }
     var nativeLibs by remember { mutableStateOf(false) }
+    var noBackup by remember { mutableStateOf(false) }
+    var strictNetwork by remember { mutableStateOf(false) }
+    var fragileData by remember { mutableStateOf(false) }
+    var memoryTagging by remember { mutableStateOf(false) }
+    var notDebuggable by remember { mutableStateOf(false) }
     var iconCheck by remember { mutableStateOf<IconCheck?>(null) }
     // Every permission starts kept. Switching one off marks it for removal,
     // so the default action leaves the app exactly as it was.
@@ -121,7 +126,8 @@ fun EditScreen(
     val targetChanged = targetSdk != null && targetSdk != info.targetSdk
     val iconOk = iconImage != null && iconCheck?.refusal == null
     val anyChange = nameChanged || minChanged || targetChanged || toRemove.isNotEmpty() || themed || iconOk || packageChanged ||
-        predictiveBack || localeConfig || nativeLibs
+        predictiveBack || localeConfig || nativeLibs ||
+        noBackup || strictNetwork || fragileData || memoryTagging || notDebuggable
     val spec = Tools.byId("apkeditor")
     // Verify hashes the jar, so it runs once per visit, not on every switch.
     val toolReady = remember { spec != null && Installer.status(root, spec).let { it is ToolStatus.Installed && Installer.verify(root, spec) } }
@@ -153,6 +159,11 @@ fun EditScreen(
                         predictiveBack = predictiveBack,
                         localeConfig = localeConfig,
                         nativeLibsFromApk = nativeLibs,
+                        noBackup = noBackup,
+                        strictNetwork = strictNetwork,
+                        fragileUserData = fragileData,
+                        memoryTagging = memoryTagging,
+                        notDebuggable = notDebuggable,
                     ),
                     key = key,
                     packageName = info.packageName,
@@ -298,6 +309,46 @@ fun EditScreen(
                 available = info.nativeLibs > 0 && !info.nativeLibsFromApk,
                 checked = nativeLibs,
                 onChange = { nativeLibs = it },
+            )
+        }
+
+        Zone(t("edit_zone_security")) {
+            ToggleRow(
+                t("edit_nobackup"),
+                t(if (info.allowsBackup) "edit_nobackup_d" else "edit_nobackup_done"),
+                available = info.allowsBackup,
+                checked = noBackup,
+                onChange = { noBackup = it },
+            )
+            // Always offered: whether the app's own network config allows
+            // plain http is only known once it is decoded.
+            ToggleRow(
+                t("edit_net"),
+                t("edit_net_d"),
+                available = true,
+                checked = strictNetwork,
+                onChange = { strictNetwork = it },
+            )
+            ToggleRow(
+                t("edit_fragile"),
+                t(if (info.fragileUserData) "edit_fragile_done" else "edit_fragile_d"),
+                available = !info.fragileUserData,
+                checked = fragileData,
+                onChange = { fragileData = it },
+            )
+            ToggleRow(
+                t("edit_memtag"),
+                t(if (info.memoryTagging) "edit_memtag_done" else "edit_memtag_d"),
+                available = !info.memoryTagging,
+                checked = memoryTagging,
+                onChange = { memoryTagging = it },
+            )
+            ToggleRow(
+                t("edit_debug"),
+                t(if (info.debuggable) "edit_debug_d" else "edit_debug_done"),
+                available = info.debuggable,
+                checked = notDebuggable,
+                onChange = { notDebuggable = it },
             )
         }
 

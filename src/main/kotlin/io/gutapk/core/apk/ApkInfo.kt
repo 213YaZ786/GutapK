@@ -35,6 +35,12 @@ data class ApkInfo(
     val predictiveBack: Boolean,
     val hasLocaleConfig: Boolean,
     val nativeLibsFromApk: Boolean,
+    // What the security tweaks would change. Android's defaults apply when
+    // the attribute is absent: backup allowed, not debuggable.
+    val allowsBackup: Boolean,
+    val debuggable: Boolean,
+    val fragileUserData: Boolean,
+    val memoryTagging: Boolean,
     val split: String?,
     val permissions: List<String>,
     val dexCount: Int,
@@ -57,6 +63,10 @@ object Attr {
     const val EXTRACT_NATIVE_LIBS = 0x010104ea
     const val LOCALE_CONFIG = 0x0101065b
     const val ON_BACK_INVOKED = 0x0101066c
+    const val ALLOW_BACKUP = 0x01010280
+    const val DEBUGGABLE = 0x0101000f
+    const val FRAGILE_USER_DATA = 0x0101059a
+    const val MEMTAG_MODE = 0x01010624
 }
 
 object ApkReader {
@@ -109,6 +119,11 @@ object ApkReader {
             predictiveBack = app?.attr(Attr.ON_BACK_INVOKED, "enableOnBackInvokedCallback")?.takeIf { it.type == ValueType.BOOLEAN }?.let { it.data != 0 } ?: false,
             hasLocaleConfig = app?.attr(Attr.LOCALE_CONFIG, "localeConfig") != null,
             nativeLibsFromApk = app?.attr(Attr.EXTRACT_NATIVE_LIBS, "extractNativeLibs")?.takeIf { it.type == ValueType.BOOLEAN }?.let { it.data == 0 } ?: false,
+            allowsBackup = flag(app, Attr.ALLOW_BACKUP, "allowBackup") ?: true,
+            debuggable = flag(app, Attr.DEBUGGABLE, "debuggable") ?: false,
+            fragileUserData = flag(app, Attr.FRAGILE_USER_DATA, "hasFragileUserData") ?: false,
+            // async is 1, sync 2, off 0, default -1.
+            memoryTagging = app?.attr(Attr.MEMTAG_MODE, "memtagMode")?.data?.let { it == 1 || it == 2 } ?: false,
             split = root.attrs.firstOrNull { it.name == "split" }?.raw,
             permissions = manifest.filter { it.depth == 2 && it.name == "uses-permission" }
                 .mapNotNull { it.attr(Attr.NAME, "name")?.raw }
@@ -126,6 +141,10 @@ object ApkReader {
         a.raw != null -> a.raw
         else -> a.data.toString()
     }
+
+    // A literal boolean on the element, null when absent or a reference.
+    private fun flag(e: XmlElement?, id: Int, name: String): Boolean? =
+        e?.attr(id, name)?.takeIf { it.type == ValueType.BOOLEAN }?.let { it.data != 0 }
 
     private fun int(a: XmlAttr): Int? = when (a.type) {
         ValueType.INT_DEC, ValueType.INT_HEX -> a.data

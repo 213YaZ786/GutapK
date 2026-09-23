@@ -35,6 +35,12 @@ data class Tweaks(
     val predictiveBack: Boolean = false,
     val localeConfig: Boolean = false,
     val nativeLibsFromApk: Boolean = false,
+    // Security.
+    val noBackup: Boolean = false,
+    val strictNetwork: Boolean = false,
+    val fragileUserData: Boolean = false,
+    val memoryTagging: Boolean = false,
+    val notDebuggable: Boolean = false,
 )
 
 class EditResult(val output: Path, val signature: SignatureInfo)
@@ -174,6 +180,26 @@ object Edit {
             storeNativeLibs(decoded, engine, sink)
         }
 
+        if (tweaks.noBackup) {
+            text = Modern.setAppAttr(text, "android:allowBackup", "false")
+            sink.emit(JobEvent.Line("backup off"))
+        }
+        if (tweaks.fragileUserData) {
+            text = Modern.setAppAttr(text, "android:hasFragileUserData", "true")
+            sink.emit(JobEvent.Line("uninstall asks whether to keep the data"))
+        }
+        if (tweaks.memoryTagging) {
+            text = Modern.setAppAttr(text, "android:memtagMode", "async")
+            sink.emit(JobEvent.Line("memory tagging async"))
+        }
+        if (tweaks.notDebuggable) {
+            text = Modern.setAppAttr(text, "android:debuggable", "false")
+            sink.emit(JobEvent.Line("debuggable off"))
+        }
+        if (tweaks.strictNetwork) {
+            text = strictNetwork(decoded, text, engine, sink)
+        }
+
         // Before the themed icon, so a monochrome layer it adds follows the
         // new picture, not the old foreground.
         if (tweaks.iconImage != null) {
@@ -228,6 +254,37 @@ object Edit {
         return Modern.setAppAttr(manifest, "android:localeConfig", "@xml/${Modern.LOCALES_NAME}")
     }
 
+    // A network security config wins over usesCleartextTraffic from
+    // Android 7, so the app's own config is tightened when it has one, and
+    // one is added when it has none. The attribute is set too, for Android 6.
+    private fun strictNetwork(decoded: Path, manifest: String, engine: Engine, sink: JobSink): String {
+        var text = Modern.setAppAttr(manifest, "android:usesCleartextTraffic", "false")
+        val ref = Regex("""android:networkSecurityConfig="@xml/([^"]+)"""").find(text)?.groupValues?.get(1)
+        if (ref != null) {
+            val files = resourceFiles(decoded, "xml", ref)
+            files.forEach { f -> Files.writeString(f, Security.strictNetworkConfig(Files.readString(f))) }
+            sink.emit(JobEvent.Line("network config tightened: ${files.size} file(s) for @xml/$ref"))
+            return text
+        }
+        val res = resDirs(decoded).firstOrNull() ?: throw CheckFailed("the decoded APK has no res folder")
+        val publicXml = res.resolve("values").resolve("public.xml")
+        if (Files.isRegularFile(publicXml)) {
+            val before = Files.readString(publicXml)
+            val after = withPublic(before, "xml", Security.NETWORK_NAME)
+            if (after == null && engine == Engine.APKEDITOR) {
+                sink.emit(JobEvent.Line("no xml resource to place a network config beside, plain http refused by the manifest only"))
+                return text
+            }
+            if (after != null && after != before) Files.writeString(publicXml, after)
+        }
+        val file = res.resolve("xml").resolve(Security.NETWORK_NAME + ".xml")
+        Files.createDirectories(file.parent)
+        Files.writeString(file, Security.newNetworkConfig())
+        text = Modern.setAppAttr(text, "android:networkSecurityConfig", "@xml/${Security.NETWORK_NAME}")
+        sink.emit(JobEvent.Line("network config added: no plain http, system certificates only"))
+        return text
+    }
+
     // extractNativeLibs false means the libraries are read from the APK,
     // which Android only accepts stored, not compressed.
     private fun storeNativeLibs(decoded: Path, engine: Engine, sink: JobSink) {
@@ -280,7 +337,7 @@ object Edit {
         if (refs.isEmpty()) throw CheckFailed("the manifest names no icon resource")
         var adaptive = 0
         refs.forEach { (type, name) ->
-            iconFiles(decoded, type, name).forEach { file ->
+            resourceFiles(decoded, type, name).forEach { file ->
                 val text = Files.readString(file)
                 if (!text.contains("<adaptive-icon")) return@forEach
                 adaptive++
@@ -322,7 +379,7 @@ object Edit {
 
         var adaptive = 0
         iconRefs(manifest).forEach { (refType, name) ->
-            iconFiles(decoded, refType, name).forEach { file ->
+            resourceFiles(decoded, refType, name).forEach { file ->
                 val text = Files.readString(file)
                 if (!text.contains("<adaptive-icon")) return@forEach
                 adaptive++
@@ -401,7 +458,7 @@ object Edit {
 
     // Every qualified variant of one resource, mipmap-anydpi-v26 and the
     // like, across the packages APKEditor decoded.
-    private fun iconFiles(decoded: Path, type: String, name: String): List<Path> =
+    private fun resourceFiles(decoded: Path, type: String, name: String): List<Path> =
         resDirs(decoded).flatMap { res ->
             Files.list(res).use { it.toList() }
                 .filter { dir -> dir.fileName.toString().let { it == type || it.startsWith("$type-") } }
