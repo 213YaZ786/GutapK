@@ -8,12 +8,17 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -269,6 +274,7 @@ private fun Header(l: Loaded) {
 
 @Composable
 private fun Body(l: Loaded, info: ApkInfo, original: Path) {
+    var showPermissions by remember { mutableStateOf(false) }
     val identity: @Composable () -> Unit = {
         Zone(t("ov_identity")) {
             ZoneRow(t("ov_package"), info.packageName)
@@ -278,6 +284,9 @@ private fun Body(l: Loaded, info: ApkInfo, original: Path) {
             if (info.split != null) ZoneRow(t("ov_split"), info.split)
         }
     }
+    // One row per fact, the fingerprint on its own row, so nothing is a raw
+    // block of text. The common name stands for the subject, the full
+    // subject is only useful when there is no CN.
     val signature: @Composable () -> Unit = {
         val sig = l.signature
         Zone(t("ov_signature")) {
@@ -294,30 +303,32 @@ private fun Body(l: Loaded, info: ApkInfo, original: Path) {
                         color = if (sig.verified) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
                     )
                 }
-                sig.signers.forEach { signer ->
-                    SelectionContainer {
-                        Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
-                            Text(signer.subject, style = MaterialTheme.typography.bodyMedium)
-                            Text(
-                                "SHA-256 " + signer.sha256,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Text(signer.algorithm, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                SelectionContainer {
+                    Column {
+                        sig.signers.forEach { signer ->
+                            val cn = Regex("""CN=([^,]+)""").find(signer.subject)?.groupValues?.get(1)
+                            ZoneRow(t("ov_signer"), cn ?: signer.subject)
+                            ZoneRow("SHA-256", signer.sha256)
+                            ZoneRow(t("ov_algorithm"), signer.algorithm)
                         }
                     }
                 }
-                sig.problems.take(5).forEach { BodyText(it) }
+                sig.problems.take(3).forEach { problem ->
+                    Text(
+                        problem,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                    )
+                }
             }
         }
     }
     val content: @Composable () -> Unit = {
         Zone(t("ov_content")) {
-            ZoneRow(t("ov_dex"), info.dexCount.toString())
+            ZoneRow(t("ov_code"), t("ov_code_detail", info.dexCount, info.nativeLibs))
             ZoneRow(t("ov_abis"), info.abis.joinToString(", ").ifEmpty { t("ov_none") })
-            ZoneRow(t("ov_libs"), info.nativeLibs.toString())
             ZoneRow(t("ov_engines"), info.engines.joinToString(", ").ifEmpty { t("ov_none") })
-            ZoneRow(t("ov_entries"), info.entries.toString())
         }
     }
     val file: @Composable () -> Unit = {
@@ -326,24 +337,28 @@ private fun Body(l: Loaded, info: ApkInfo, original: Path) {
                 Column {
                     ZoneRow(t("ov_location"), original.toString())
                     ZoneRow(t("dl_size"), humanSize(l.size))
+                    ZoneRow(t("ov_entries"), info.entries.toString())
                     ZoneRow("SHA-256", l.sha256)
                 }
             }
             BodyText(t("ov_licence_note"))
         }
     }
+    // A long list of permissions would be a wall of rows. The zone holds one
+    // row that names the first few and opens the full list.
     val permissions: @Composable () -> Unit = {
         Zone(t("ov_permissions", info.permissions.size)) {
             if (info.permissions.isEmpty()) {
-                BodyText(t("ov_none"))
+                ZoneRow(t("ov_permissions_none"), t("ov_permissions_none_detail"))
             } else {
-                SelectionContainer {
-                    Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        info.permissions.forEach { p ->
-                            Text(p.substringAfterLast('.'), style = MaterialTheme.typography.bodyMedium)
-                        }
-                    }
-                }
+                val names = info.permissions.map { it.substringAfterLast('.') }
+                val shown = names.take(3).joinToString(", ")
+                val more = names.size - 3
+                ZoneRow(
+                    t("ov_permissions_all"),
+                    if (more > 0) t("ov_permissions_more", shown, more) else shown,
+                    onClick = { showPermissions = true },
+                )
             }
         }
     }
@@ -371,4 +386,30 @@ private fun Body(l: Loaded, info: ApkInfo, original: Path) {
             }
         }
     }
+
+    if (showPermissions) PermissionsDialog(info.permissions, onClose = { showPermissions = false })
+}
+
+@Composable
+private fun PermissionsDialog(permissions: List<String>, onClose: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text(t("ov_permissions", permissions.size)) },
+        text = {
+            SelectionContainer {
+                Column(
+                    Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    permissions.forEach { p ->
+                        Column {
+                            Text(p.substringAfterLast('.'), style = MaterialTheme.typography.bodyLarge)
+                            Text(p, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onClose) { Text(t("close")) } },
+    )
 }
