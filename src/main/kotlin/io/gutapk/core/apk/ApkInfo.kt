@@ -14,6 +14,10 @@ data class SignatureInfo(
     val problems: List<String>,
 )
 
+// How the launcher icon is built, which decides what the icon tweaks can do.
+// THEMED means every adaptive variant already has a monochrome layer.
+enum class IconKind { NONE, LEGACY, ADAPTIVE, THEMED }
+
 data class ApkInfo(
     val packageName: String,
     val versionName: String?,
@@ -24,6 +28,7 @@ data class ApkInfo(
     // Path inside the APK of the best bitmap for the launcher icon, or null
     // when the icon exists only as a vector.
     val iconPath: String?,
+    val iconKind: IconKind,
     val split: String?,
     val permissions: List<String>,
     val dexCount: Int,
@@ -82,6 +87,9 @@ object ApkReader {
             iconPath = app?.attr(Attr.ICON, "icon")?.let { a ->
                 if (a.type == ValueType.REFERENCE && table != null) bitmap(a.data, table, zip, 0) else null
             },
+            iconKind = app?.attr(Attr.ICON, "icon")?.let { a ->
+                if (a.type == ValueType.REFERENCE && table != null) iconKind(a.data, table, zip) else IconKind.LEGACY
+            } ?: IconKind.NONE,
             split = root.attrs.firstOrNull { it.name == "split" }?.raw,
             permissions = manifest.filter { it.depth == 2 && it.name == "uses-permission" }
                 .mapNotNull { it.attr(Attr.NAME, "name")?.raw }
@@ -126,6 +134,28 @@ object ApkReader {
                 }
             }
         return null
+    }
+
+    // An icon with no adaptive variant is a plain bitmap to Android. One
+    // adaptive variant without a monochrome layer is enough to keep the
+    // themed icon tweak useful, since the launcher may pick that variant.
+    private fun iconKind(id: Int, table: ResourceTable, zip: ZipFile): IconKind {
+        var adaptive = 0
+        var themed = 0
+        table.strings(id).filter { it.second.endsWith(".xml") }.forEach { (_, path) ->
+            val entry = zip.getEntry(path) ?: return@forEach
+            val xml = runCatching { BinaryXml.parse(zip.getInputStream(entry).use { it.readBytes() }) }.getOrNull()
+                ?: return@forEach
+            if (xml.any { it.name == "adaptive-icon" }) {
+                adaptive++
+                if (xml.any { it.name == "monochrome" }) themed++
+            }
+        }
+        return when {
+            adaptive == 0 -> IconKind.LEGACY
+            themed == adaptive -> IconKind.THEMED
+            else -> IconKind.ADAPTIVE
+        }
     }
 
     // Engines worth knowing before editing: they change what can be edited

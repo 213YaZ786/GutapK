@@ -2,6 +2,7 @@ package io.gutapk
 
 import io.gutapk.core.apk.ApkReader
 import io.gutapk.core.apk.BinaryXml
+import io.gutapk.core.apk.IconKind
 import io.gutapk.core.apk.Packages
 import io.gutapk.core.apk.ResourceTable
 import io.gutapk.core.apk.Signatures
@@ -195,6 +196,7 @@ class ApkTest {
         assertEquals(2, info.dexCount)
         assertEquals(listOf("arm64-v8a"), info.abis)
         assertTrue("Unity IL2CPP" in info.engines)
+        assertEquals(IconKind.NONE, info.iconKind)
 
         // Unsigned is a result to show, not a crash.
         assertFalse(Signatures.verify(file).verified)

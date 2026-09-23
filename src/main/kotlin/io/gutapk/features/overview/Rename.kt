@@ -12,6 +12,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -23,6 +24,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import io.gutapk.core.apk.ApkInfo
+import io.gutapk.core.apk.IconKind
 import io.gutapk.core.edit.Edit
 import io.gutapk.core.edit.Tweaks
 import io.gutapk.core.sign.KeyChoice
@@ -65,6 +67,7 @@ fun RenameDialog(
     val toRemove = info.permissions.filter { kept[it] == false }.toSet()
     val minSdk = minText.trim().toIntOrNull()
     val targetSdk = targetText.trim().toIntOrNull()
+    var themed by remember { mutableStateOf(false) }
     // A field left as it was is not a change. An SDK field that does not
     // parse to a number blocks, so a typo cannot silently do nothing.
     val minBad = minText.isNotBlank() && minSdk == null
@@ -72,7 +75,7 @@ fun RenameDialog(
     val nameChanged = trimmed.isNotEmpty() && trimmed != info.label
     val minChanged = minSdk != null && minSdk != info.minSdk
     val targetChanged = targetSdk != null && targetSdk != info.targetSdk
-    val anyChange = nameChanged || minChanged || targetChanged || toRemove.isNotEmpty()
+    val anyChange = nameChanged || minChanged || targetChanged || toRemove.isNotEmpty() || themed
     val spec = Tools.byId("apkeditor")
     val toolReady = spec != null && Installer.status(root, spec).let { it is ToolStatus.Installed && Installer.verify(root, spec) }
     val ownMissing = choice == KeyChoice.OWN && !OwnKey.exists()
@@ -107,6 +110,28 @@ fun RenameDialog(
                         isError = targetBad,
                         modifier = Modifier.weight(1f),
                     )
+                }
+                // Shown for every icon kind, so an app that cannot get a
+                // themed icon says why instead of hiding the option.
+                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(t("edit_themed_icon"), style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            t(
+                                when (info.iconKind) {
+                                    IconKind.ADAPTIVE -> "edit_themed_note"
+                                    IconKind.THEMED -> "edit_themed_done"
+                                    IconKind.LEGACY -> "edit_themed_legacy"
+                                    IconKind.NONE -> "edit_themed_none"
+                                },
+                            ),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (info.iconKind == IconKind.ADAPTIVE) {
+                        Switch(checked = themed, onCheckedChange = { themed = it })
+                    }
                 }
                 if (info.permissions.isNotEmpty()) {
                     Text(t("edit_permissions"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
@@ -149,6 +174,7 @@ fun RenameDialog(
                             minSdk = if (minChanged) minSdk else null,
                             targetSdk = if (targetChanged) targetSdk else null,
                             removePermissions = toRemove,
+                            themedIcon = themed,
                         ),
                             key = signing,
                             keyName = key.name,

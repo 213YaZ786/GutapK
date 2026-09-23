@@ -24,6 +24,8 @@ data class Tweaks(
     // Permissions to remove, by their full name. Only removal, since 0.1.20:
     // adding a permission an app was not built to ask for grants nothing.
     val removePermissions: Set<String> = emptySet(),
+    // Adds a monochrome layer to every adaptive icon that lacks one.
+    val themedIcon: Boolean = false,
 )
 
 class EditResult(val output: Path, val signature: SignatureInfo)
@@ -115,7 +117,74 @@ object Edit {
             text = removePermissions(text, tweaks.removePermissions, sink)
         }
 
+        if (tweaks.themedIcon) {
+            addThemedIcon(decoded, text, sink)
+        }
+
         Files.writeString(manifest, text)
+    }
+
+    // Android 13 and later tint the monochrome layer of an adaptive icon with
+    // the wallpaper colours, and keep only its shape. So the foreground is
+    // reused as that layer. Every icon the manifest names is covered, round
+    // icons and activity icons too, since a launcher may show any of them.
+    private fun addThemedIcon(decoded: Path, manifest: String, sink: JobSink) {
+        val refs = Regex("""android:(?:icon|roundIcon)="@([a-z]+)/([^"]+)"""").findAll(manifest)
+            .map { it.groupValues[1] to it.groupValues[2] }
+            .distinct()
+            .toList()
+        if (refs.isEmpty()) throw CheckFailed("the manifest names no icon resource")
+        var adaptive = 0
+        refs.forEach { (type, name) ->
+            iconFiles(decoded, type, name).forEach { file ->
+                val text = Files.readString(file)
+                if (!text.contains("<adaptive-icon")) return@forEach
+                adaptive++
+                val where = decoded.relativize(file)
+                val changed = withMonochrome(text)
+                if (changed == null) {
+                    sink.emit(JobEvent.Line("foreground is not a resource reference, skipped: $where"))
+                } else if (changed == text) {
+                    sink.emit(JobEvent.Line("already themed: $where"))
+                } else {
+                    Files.writeString(file, changed)
+                    sink.emit(JobEvent.Line("monochrome layer added: $where"))
+                }
+            }
+        }
+        if (adaptive == 0) throw CheckFailed("the icon is not an adaptive icon")
+    }
+
+    // The adaptive icon with a monochrome layer that reuses the foreground,
+    // the same text when it already has one, or null when the foreground is
+    // drawn inline and has no reference to reuse.
+    internal fun withMonochrome(text: String): String? {
+        if (text.contains("<monochrome")) return text
+        val fg = Regex("""([ \t]*)<foreground\b[^>]*android:drawable="(@[^"]+)"""").find(text) ?: return null
+        val close = text.indexOf("</adaptive-icon>")
+        if (close < 0) return null
+        val layer = fg.groupValues[1] + "<monochrome android:drawable=\"" + fg.groupValues[2] + "\" />\n"
+        return text.substring(0, close) + layer + text.substring(close)
+    }
+
+    // Every qualified variant of one resource, mipmap-anydpi-v26 and the
+    // like, across the packages APKEditor decoded.
+    private fun iconFiles(decoded: Path, type: String, name: String): List<Path> =
+        resDirs(decoded).flatMap { res ->
+            Files.list(res).use { it.toList() }
+                .filter { dir -> dir.fileName.toString().let { it == type || it.startsWith("$type-") } }
+                .map { it.resolve("$name.xml") }
+                .filter { Files.isRegularFile(it) }
+        }
+
+    private fun resDirs(decoded: Path): List<Path> {
+        val packages = decoded.resolve("resources")
+        val decodedPackages = if (Files.isDirectory(packages)) {
+            Files.list(packages).use { it.toList() }.map { it.resolve("res") }.filter { Files.isDirectory(it) }
+        } else {
+            emptyList()
+        }
+        return decodedPackages + listOf(decoded.resolve("res")).filter { Files.isDirectory(it) }
     }
 
     // minSdkVersion and targetSdkVersion live on a uses-sdk element. Each is
