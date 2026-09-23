@@ -34,6 +34,7 @@ import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.unit.dp
 import io.gutapk.core.apk.ApkInfo
 import io.gutapk.core.apk.ApkReader
+import io.gutapk.core.apk.DexClasses
 import io.gutapk.core.apk.Packages
 import io.gutapk.core.apk.SignatureInfo
 import io.gutapk.core.apk.Signatures
@@ -60,6 +61,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.zip.ZipFile
 
 object OverviewFeature : Feature {
     override val id = "overview"
@@ -74,6 +76,8 @@ private data class Loaded(
     val size: Long,
     val sha256: String,
     val icon: ImageBitmap?,
+    // Sorted class names from every dex, for the tracker check.
+    val classes: List<String>,
 )
 
 private sealed interface State {
@@ -118,6 +122,7 @@ private fun load(original: Path): Loaded {
         size = Files.size(original),
         sha256 = Hash.of(original, "SHA-256"),
         icon = bitmap,
+        classes = runCatching { ZipFile(original.toFile()).use { DexClasses.read(it) } }.getOrDefault(emptyList()),
     )
 }
 
@@ -200,7 +205,7 @@ fun OverviewScreen(
             onBack = { editing = false },
         )
     } else {
-        OverviewPage(dir, loaded, info, original, running, actionRow, onBack)
+        OverviewPage(dir, root, loaded, info, original, running, actionRow, onBack)
     }
 
     if (info != null && !editing) {
@@ -258,6 +263,7 @@ fun OverviewScreen(
 @Composable
 private fun OverviewPage(
     dir: Path,
+    root: Path?,
     loaded: Loaded?,
     info: ApkInfo?,
     original: Path,
@@ -277,7 +283,7 @@ private fun OverviewPage(
         when {
             loaded == null -> BodyText(t("ov_reading"))
             info == null -> Zone(t("ov_error")) { BodyText(loaded.error ?: "") }
-            else -> Body(loaded, info, original)
+            else -> Body(loaded, info, original, root)
         }
     }
 }
@@ -311,7 +317,7 @@ private fun Header(l: Loaded) {
 }
 
 @Composable
-private fun Body(l: Loaded, info: ApkInfo, original: Path) {
+private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?) {
     var showPermissions by remember { mutableStateOf(false) }
     val identity: @Composable () -> Unit = {
         Zone(t("ov_identity")) {
@@ -408,6 +414,7 @@ private fun Body(l: Loaded, info: ApkInfo, original: Path) {
                     identity()
                     content()
                     permissions()
+                    if (root != null) TrackersZone(root, l.classes)
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(24.dp)) {
                     signature()
@@ -420,6 +427,7 @@ private fun Body(l: Loaded, info: ApkInfo, original: Path) {
                 signature()
                 content()
                 permissions()
+                if (root != null) TrackersZone(root, l.classes)
                 file()
             }
         }

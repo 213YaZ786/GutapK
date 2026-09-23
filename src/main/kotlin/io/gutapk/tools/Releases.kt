@@ -154,7 +154,7 @@ object Releases {
         return "${conn.url.host} answered $code"
     }
 
-    private fun fetchText(url: String, headers: Map<String, String> = emptyMap()): String {
+    internal fun fetchText(url: String, headers: Map<String, String> = emptyMap()): String {
         val conn = URI(url).toURL().openConnection() as HttpURLConnection
         conn.connectTimeout = 20_000
         conn.readTimeout = 30_000

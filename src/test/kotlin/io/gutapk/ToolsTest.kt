@@ -1,5 +1,6 @@
 package io.gutapk
 
+import io.gutapk.core.apk.Trackers
 import io.gutapk.job.JobEvent
 import io.gutapk.job.JobSink
 import io.gutapk.tools.CheckFailed
@@ -12,6 +13,7 @@ import io.gutapk.tools.Release
 import io.gutapk.tools.Releases
 import io.gutapk.tools.SelfUpdate
 import io.gutapk.tools.Storage
+import io.gutapk.tools.TrackerList
 import io.gutapk.tools.ToolSource
 import io.gutapk.tools.ToolSpec
 import io.gutapk.tools.ToolStatus
@@ -323,5 +325,27 @@ class ToolsTest {
         assertEquals("a990e08765d172aca9a58ad059a73b22c643ee82262d7b8d0b6f7b425a9041ba", r.sha256)
         assertTrue(Releases.compare("0.1.29", "0.1.28") > 0)
         assertTrue(Releases.compare("0.1.28", "0.1.28") == 0)
+    }
+
+    // The Exodus answer, trimmed to two trackers and one with no signature.
+    @Test
+    fun readsTheTrackerListAndMatchesPrefixes() {
+        val json = """
+            {"trackers": {
+              "1": {"id": 1, "name": "Teemo", "code_signature": "com.databerries.|com.geolocstation.", "categories": ["Analytics"]},
+              "2": {"id": 2, "name": "Google Firebase Analytics", "code_signature": "com.google.firebase.analytics.FirebaseAnalytics|com.google.android.gms.measurement.", "categories": ["Analytics"]},
+              "3": {"id": 3, "name": "Nothing to match", "code_signature": "", "categories": []}
+            }}
+        """.trimIndent()
+        val list = TrackerList.parse(json)
+        assertEquals(listOf("Google Firebase Analytics", "Teemo"), list.map { it.name })
+        val classes = listOf(
+            "a00",
+            "com.example.MainActivity",
+            "com.google.android.gms.measurement.AppMeasurementService",
+            "com.google.firebase.FirebaseApp",
+        ).sorted()
+        assertEquals(listOf("Google Firebase Analytics"), Trackers.detect(classes, list).map { it.name })
+        assertTrue(Trackers.detect(listOf("com.example.App"), list).isEmpty())
     }
 }
