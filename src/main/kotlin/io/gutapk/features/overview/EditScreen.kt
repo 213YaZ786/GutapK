@@ -24,6 +24,8 @@ import io.gutapk.core.edit.Edit
 import io.gutapk.core.edit.IconCheck
 import io.gutapk.core.edit.IconImage
 import io.gutapk.core.edit.IconRefusal
+import io.gutapk.core.edit.PackageId
+import io.gutapk.core.edit.PackageIdRefusal
 import io.gutapk.core.edit.Tweaks
 import io.gutapk.core.sign.KeyChoice
 import io.gutapk.core.sign.OwnKey
@@ -62,6 +64,7 @@ fun EditScreen(
     onBack: () -> Unit,
 ) {
     var name by remember { mutableStateOf(info.label ?: "") }
+    var packageId by remember { mutableStateOf(info.packageName) }
     var minSdk by remember { mutableStateOf(info.minSdk) }
     var targetSdk by remember { mutableStateOf(info.targetSdk) }
     var themed by remember { mutableStateOf(false) }
@@ -75,10 +78,11 @@ fun EditScreen(
     val trimmed = name.trim()
     val toRemove = info.permissions.filter { kept[it] == false }.toSet()
     val nameChanged = trimmed.isNotEmpty() && trimmed != info.label
+    val packageChanged = packageId != info.packageName && PackageId.check(packageId) == null
     val minChanged = minSdk != null && minSdk != info.minSdk
     val targetChanged = targetSdk != null && targetSdk != info.targetSdk
     val iconOk = iconImage != null && iconCheck?.refusal == null
-    val anyChange = nameChanged || minChanged || targetChanged || toRemove.isNotEmpty() || themed || iconOk
+    val anyChange = nameChanged || minChanged || targetChanged || toRemove.isNotEmpty() || themed || iconOk || packageChanged
     val spec = Tools.byId("apkeditor")
     // Verify hashes the jar, so it runs once per visit, not on every switch.
     val toolReady = remember { spec != null && Installer.status(root, spec).let { it is ToolStatus.Installed && Installer.verify(root, spec) } }
@@ -108,6 +112,7 @@ fun EditScreen(
                             removePermissions = toRemove,
                             themedIcon = themed,
                             iconImage = if (iconOk) iconImage else null,
+                            packageId = if (packageChanged) packageId else null,
                         ),
                         key = signing,
                         keyName = key.name,
@@ -152,6 +157,13 @@ fun EditScreen(
                 onClick = { dialog = "name" },
                 trailing = if (nameChanged) changed else null,
             )
+            ZoneRow(
+                t("edit_package"),
+                packageId,
+                onClick = { dialog = "package" },
+                trailing = if (packageChanged) changed else null,
+            )
+            if (packageChanged) BodyText(t("edit_package_note"))
         }
 
         Zone(t("edit_zone_sdk")) {
@@ -259,6 +271,23 @@ fun EditScreen(
             },
             onDismiss = { dialog = null },
         )
+        "package" -> ValueDialog(
+            title = t("edit_package"),
+            initial = packageId,
+            digits = false,
+            problem = { v ->
+                when (PackageId.check(v)) {
+                    PackageIdRefusal.FORMAT -> t("edit_package_format")
+                    PackageIdRefusal.RESERVED -> t("edit_package_reserved")
+                    null -> null
+                }
+            },
+            onDone = {
+                packageId = it.ifEmpty { info.packageName }
+                dialog = null
+            },
+            onDismiss = { dialog = null },
+        )
         "min" -> ValueDialog(
             title = t("ov_min_sdk"),
             initial = minSdk?.toString() ?: "",
@@ -319,8 +348,12 @@ private fun ValueDialog(
     digits: Boolean,
     onDone: (String) -> Unit,
     onDismiss: () -> Unit,
+    // Says what is wrong with an answer, null when it is fine. OK waits for
+    // a valid answer, so a bad value never reaches the plan.
+    problem: @Composable (String) -> String? = { null },
 ) {
     var value by remember { mutableStateOf(initial) }
+    val issue = if (value.isBlank()) null else problem(value.trim())
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
@@ -329,10 +362,16 @@ private fun ValueDialog(
                 value = value,
                 onValueChange = { value = if (digits) it.filter(Char::isDigit) else it },
                 singleLine = true,
+                isError = issue != null,
+                supportingText = if (issue != null) {
+                    { Text(issue) }
+                } else {
+                    null
+                },
                 modifier = Modifier.fillMaxWidth(),
             )
         },
-        confirmButton = { TextButton(onClick = { onDone(value.trim()) }) { Text(t("ok")) } },
+        confirmButton = { TextButton(onClick = { onDone(value.trim()) }, enabled = issue == null) { Text(t("ok")) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text(t("cancel")) } },
     )
 }

@@ -3,6 +3,8 @@ package io.gutapk
 import io.gutapk.core.edit.Edit
 import io.gutapk.core.edit.IconImage
 import io.gutapk.core.edit.IconRefusal
+import io.gutapk.core.edit.PackageId
+import io.gutapk.core.edit.PackageIdRefusal
 import io.gutapk.tools.Storage
 import java.awt.image.BufferedImage
 import java.nio.file.Files
@@ -10,6 +12,7 @@ import java.nio.file.Path
 import javax.imageio.ImageIO
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -116,5 +119,54 @@ class EditTest {
         } finally {
             Storage.deleteTree(dir, dir.parent)
         }
+    }
+
+    @Test
+    fun checksPackageIds() {
+        assertNull(PackageId.check("com.example.clone"))
+        assertEquals(PackageIdRefusal.FORMAT, PackageId.check("example"))
+        assertEquals(PackageIdRefusal.FORMAT, PackageId.check("com.Example.app"))
+        assertEquals(PackageIdRefusal.FORMAT, PackageId.check("com.1example"))
+        assertEquals(PackageIdRefusal.RESERVED, PackageId.check("com.google.clone"))
+        assertEquals(PackageIdRefusal.RESERVED, PackageId.check("android.clone"))
+        assertEquals(PackageIdRefusal.RESERVED, PackageId.check("org.lineageos.x"))
+        assertNull(PackageId.check("com.googlex.app"))
+    }
+
+    // Identity moves, code does not: class names stay, relative ones become
+    // absolute, the app's own permission and authorities follow the new id.
+    @Test
+    fun renamesThePackage() {
+        val sep = PackageId.AUTHORITY_SEPARATOR
+        val manifest = """
+            <manifest android:versionCode="42"
+                      package="com.old.app" xmlns:android="http://schemas.android.com/apk/res/android">
+              <permission android:name="com.old.app.OWN_PERMISSION" android:protectionLevel="signature" />
+              <uses-permission android:name="com.old.app.OWN_PERMISSION" />
+              <uses-permission android:name="android.permission.INTERNET" />
+              <application android:name=".App" android:label="@string/app_name">
+                <activity android:name="com.old.app.MainActivity" />
+                <activity android:name="Settings" />
+                <provider android:name="androidx.startup.InitializationProvider"
+                          android:authorities="com.old.app.androidx-startup${sep}com.other.lib" />
+                <meta-data android:name="preloaded" android:value="x" />
+              </application>
+            </manifest>
+        """.trimIndent()
+        val r = PackageId.rename(manifest, "com.new.clone")
+        assertEquals("com.old.app", r.from)
+        assertTrue(r.text.contains("package=\"com.new.clone\""))
+        assertTrue(r.text.contains("android:name=\"com.old.app.App\""))
+        assertTrue(r.text.contains("android:name=\"com.old.app.MainActivity\""))
+        assertTrue(r.text.contains("android:name=\"com.old.app.Settings\""))
+        assertTrue(r.text.contains("<permission android:name=\"com.new.clone.OWN_PERMISSION\""))
+        assertTrue(r.text.contains("<uses-permission android:name=\"com.new.clone.OWN_PERMISSION\""))
+        assertTrue(r.text.contains("android.permission.INTERNET"))
+        assertTrue(r.text.contains("android:authorities=\"com.new.clone.androidx-startup${sep}com.other.lib\""))
+        assertTrue(r.text.contains("<meta-data android:name=\"preloaded\""))
+        assertFalse(r.text.contains("package=\"com.old.app\""))
+        assertEquals(1, r.permissions)
+        assertEquals(1, r.authorities)
+        assertEquals(2, r.expanded)
     }
 }

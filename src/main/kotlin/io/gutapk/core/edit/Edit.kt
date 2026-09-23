@@ -29,6 +29,8 @@ data class Tweaks(
     val themedIcon: Boolean = false,
     // A square PNG checked by IconImage, to replace the icon's foreground.
     val iconImage: Path? = null,
+    // A new package id, checked by PackageId, to install beside the original.
+    val packageId: String? = null,
 )
 
 class EditResult(val output: Path, val signature: SignatureInfo)
@@ -77,7 +79,7 @@ object Edit {
             if (!Files.isRegularFile(rebuilt)) throw CheckFailed("APKEditor produced no APK")
 
             sink.emit(JobEvent.Step("sign", 4, 4))
-            val out = ApkSigning.output(packageDir, packageName, version, keyChoiceSuffix(keyName))
+            val out = ApkSigning.output(packageDir, tweaks.packageId ?: packageName, version, keyChoiceSuffix(keyName))
             // The signing floor follows the tweak: a lowered minSdk means v1
             // is needed for the older versions it now installs on.
             val signMin = tweaks.minSdk ?: minSdk
@@ -132,6 +134,14 @@ object Edit {
 
         if (tweaks.themedIcon) {
             addThemedIcon(decoded, text, sink)
+        }
+
+        // Last, once every other step has read the manifest as it was.
+        if (tweaks.packageId != null) {
+            val renamed = PackageId.rename(text, tweaks.packageId)
+            text = renamed.text
+            sink.emit(JobEvent.Line("package id ${renamed.from} to ${tweaks.packageId}"))
+            sink.emit(JobEvent.Line("own permissions renamed: ${renamed.permissions}, authorities: ${renamed.authorities}, relative class names made absolute: ${renamed.expanded}"))
         }
 
         Files.writeString(manifest, text)
