@@ -105,13 +105,23 @@ sealed interface SignReport {
 // The result is read back from the file itself, not from what the job
 // believed it wrote.
 @Composable
-fun SignReportDialog(report: SignReport, onClose: () -> Unit) {
+fun SignReportDialog(report: SignReport, onClose: () -> Unit, onRetry: (() -> Unit)? = null) {
     AlertDialog(
         onDismissRequest = onClose,
         title = { Text(t(if (report is SignReport.Done) "signed_title" else "sign_failed")) },
         text = {
             when (report) {
-                is SignReport.Failed -> Text(report.message, style = MaterialTheme.typography.bodyMedium)
+                is SignReport.Failed -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(report.message, style = MaterialTheme.typography.bodyMedium)
+                    // The second engine is offered, never switched to alone.
+                    if (onRetry != null) {
+                        Text(
+                            t("edit_retry_note"),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
                 is SignReport.Done -> {
                     val check by produceState<SignatureInfo?>(null, report.file) {
                         value = withContext(Dispatchers.IO) { Signatures.verify(report.file) }
@@ -133,6 +143,8 @@ fun SignReportDialog(report: SignReport, onClose: () -> Unit) {
         dismissButton = {
             if (report is SignReport.Done) {
                 TextButton(onClick = { showInFolder(report.file) }) { Text(t("show_folder")) }
+            } else if (onRetry != null) {
+                TextButton(onClick = onRetry) { Text(t("edit_retry")) }
             }
         },
     )

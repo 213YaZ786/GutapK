@@ -37,6 +37,7 @@ import io.gutapk.core.apk.ApkReader
 import io.gutapk.core.apk.Packages
 import io.gutapk.core.apk.SignatureInfo
 import io.gutapk.core.apk.Signatures
+import io.gutapk.core.edit.Engine
 import io.gutapk.core.sign.KeyChoice
 import io.gutapk.core.sign.keyChoiceOf
 import io.gutapk.job.Job
@@ -138,6 +139,10 @@ fun OverviewScreen(
     // instance, must not open this screen's report.
     var started by remember { mutableStateOf<Job?>(null) }
     var report by remember { mutableStateOf<SignReport?>(null) }
+    // The edit behind the running job, and the one a failed APKEditor run
+    // offers to retry with apktool.
+    var lastPlan by remember { mutableStateOf<EditPlan?>(null) }
+    var retryPlan by remember { mutableStateOf<EditPlan?>(null) }
     val view = currentJobView()
     LaunchedEffect(view) {
         val job = started
@@ -145,10 +150,13 @@ fun OverviewScreen(
             when (view.state) {
                 JobState.DONE -> {
                     started = null
+                    lastPlan = null
                     report = SignReport.Done(Path.of(view.message))
                 }
                 JobState.FAILED -> {
                     started = null
+                    retryPlan = lastPlan?.takeIf { it.engine == Engine.APKEDITOR }
+                    lastPlan = null
                     report = SignReport.Failed(view.message)
                 }
                 JobState.CANCELLED -> {
@@ -183,8 +191,9 @@ fun OverviewScreen(
             choice = choice,
             version = version,
             onSignKey = onSignKey,
-            onStarted = {
-                started = it
+            onStarted = { job, plan ->
+                started = job
+                lastPlan = plan
                 editing = false
             },
             onBack = { editing = false },
@@ -204,6 +213,7 @@ fun OverviewScreen(
                 onChangeKey = { dialog = "key" },
                 onStarted = {
                     started = it
+                    lastPlan = null
                     dialog = null
                 },
                 onDismiss = { dialog = null },
@@ -218,7 +228,30 @@ fun OverviewScreen(
             )
         }
     }
-    report?.let { SignReportDialog(it, onClose = { report = null }) }
+    val plan = retryPlan
+    val retry: (() -> Unit)? = if (plan == null) {
+        null
+    } else {
+        {
+            val next = plan.copy(engine = Engine.APKTOOL)
+            startEdit(next)?.let {
+                started = it
+                lastPlan = next
+            }
+            report = null
+            retryPlan = null
+        }
+    }
+    report?.let {
+        SignReportDialog(
+            it,
+            onClose = {
+                report = null
+                retryPlan = null
+            },
+            onRetry = retry,
+        )
+    }
 }
 
 @Composable

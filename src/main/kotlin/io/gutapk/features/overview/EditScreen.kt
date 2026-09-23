@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import io.gutapk.core.apk.ApkInfo
 import io.gutapk.core.apk.IconKind
 import io.gutapk.core.edit.Edit
+import io.gutapk.core.edit.Engine
 import io.gutapk.core.edit.IconCheck
 import io.gutapk.core.edit.IconImage
 import io.gutapk.core.edit.IconRefusal
@@ -48,6 +49,41 @@ import javax.swing.filechooser.FileNameExtensionFilter
 
 const val RENAME_JOB = "rename"
 
+// Everything one rebuild needs, kept so a failure can be retried with the
+// other engine without asking the questions again.
+data class EditPlan(
+    val root: Path,
+    val packageDir: Path,
+    val original: Path,
+    val tweaks: Tweaks,
+    val key: KeyChoice,
+    val packageName: String,
+    val versionName: String?,
+    val minSdk: Int?,
+    val appVersion: String,
+    val engine: Engine,
+)
+
+fun startEdit(plan: EditPlan): Job? = JobQueue.start(RENAME_JOB) { job ->
+    val signing = if (plan.key == KeyChoice.OWN) OwnKey.load() else TestKey.load()
+    val result = Edit.run(
+        root = plan.root,
+        packageDir = plan.packageDir,
+        input = plan.original,
+        tweaks = plan.tweaks,
+        key = signing,
+        keyName = plan.key.name,
+        packageName = plan.packageName,
+        version = plan.versionName,
+        minSdk = plan.minSdk,
+        appVersion = plan.appVersion,
+        sink = job,
+        cancelled = { job.cancelRequested },
+        engine = plan.engine,
+    )
+    job.result = result.output.toString()
+}
+
 // A page rather than a dialog, so each tweak gets its own zone and the list
 // can grow. Ask first, do after: every row only records an answer, the disk
 // is touched once the pill action runs, and Back leaves the app untouched.
@@ -60,7 +96,7 @@ fun EditScreen(
     choice: KeyChoice?,
     version: String,
     onSignKey: (KeyChoice) -> Unit,
-    onStarted: (Job) -> Unit,
+    onStarted: (Job, EditPlan) -> Unit,
     onBack: () -> Unit,
 ) {
     var name by remember { mutableStateOf(info.label ?: "") }
@@ -99,33 +135,27 @@ fun EditScreen(
         if (ready) {
             FilledTonalButton(onClick = {
                 val key = choice ?: return@FilledTonalButton
-                val job = JobQueue.start(RENAME_JOB) { job ->
-                    val signing = if (key == KeyChoice.OWN) OwnKey.load() else TestKey.load()
-                    val result = Edit.run(
-                        root = root,
-                        packageDir = packageDir,
-                        input = original,
-                        tweaks = Tweaks(
-                            label = if (nameChanged) trimmed else null,
-                            minSdk = if (minChanged) minSdk else null,
-                            targetSdk = if (targetChanged) targetSdk else null,
-                            removePermissions = toRemove,
-                            themedIcon = themed,
-                            iconImage = if (iconOk) iconImage else null,
-                            packageId = if (packageChanged) packageId else null,
-                        ),
-                        key = signing,
-                        keyName = key.name,
-                        packageName = info.packageName,
-                        version = info.versionName,
-                        minSdk = info.minSdk,
-                        appVersion = version,
-                        sink = job,
-                        cancelled = { job.cancelRequested },
-                    )
-                    job.result = result.output.toString()
-                }
-                if (job != null) onStarted(job)
+                val plan = EditPlan(
+                    root = root,
+                    packageDir = packageDir,
+                    original = original,
+                    tweaks = Tweaks(
+                        label = if (nameChanged) trimmed else null,
+                        minSdk = if (minChanged) minSdk else null,
+                        targetSdk = if (targetChanged) targetSdk else null,
+                        removePermissions = toRemove,
+                        themedIcon = themed,
+                        iconImage = if (iconOk) iconImage else null,
+                        packageId = if (packageChanged) packageId else null,
+                    ),
+                    key = key,
+                    packageName = info.packageName,
+                    versionName = info.versionName,
+                    minSdk = info.minSdk,
+                    appVersion = version,
+                    engine = Engine.APKEDITOR,
+                )
+                startEdit(plan)?.let { onStarted(it, plan) }
             }) { Text(t("rename_go")) }
         } else {
             Text(

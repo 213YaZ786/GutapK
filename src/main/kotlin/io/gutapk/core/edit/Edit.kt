@@ -35,11 +35,16 @@ data class Tweaks(
 
 class EditResult(val output: Path, val signature: SignatureInfo)
 
-// Decode with APKEditor to XML, apply the tweaks to the decoded files,
-// rebuild, then sign. APKEditor is downloaded and verified first if it is
-// not ready. All work is under the package folder, swept on the way out.
+// APKEditor first, apktool when the user retries with it. The id is the
+// tool's row in tools.tsv.
+enum class Engine(val id: String) { APKEDITOR("apkeditor"), APKTOOL("apktool") }
+
+// Decode to text, apply the tweaks to the decoded files, rebuild, then sign.
+// The tweaks are one plan, each engine's decoded layout gets it the same
+// way except where the layouts differ. The engine is downloaded and
+// verified first if it is not ready. All work is under the package folder,
+// swept on the way out.
 object Edit {
-    private const val APKEDITOR = "apkeditor"
 
     // Stable, so editing an app GutapK already changed replaces the picture
     // instead of adding a second one.
@@ -58,8 +63,9 @@ object Edit {
         appVersion: String,
         sink: JobSink,
         cancelled: () -> Boolean,
+        engine: Engine = Engine.APKEDITOR,
     ): EditResult {
-        val spec = Tools.byId(APKEDITOR) ?: throw IOException("apkeditor is not in the tool table")
+        val spec = Tools.byId(engine.id) ?: throw IOException("${engine.id} is not in the tool table")
         val jar = Resolve.tool(root, spec, sink, cancelled)
 
         val work = packageDir.resolve("work-rename")
@@ -67,16 +73,30 @@ object Edit {
         Files.createDirectories(work)
         try {
             val decoded = work.resolve("decoded")
+            val rebuilt = work.resolve("rebuilt.apk")
+            // apktool's framework and the aapt2 it extracts stay in the
+            // work folder, never in ~/.local or /tmp.
+            val framework = work.resolve("framework")
+            val (decode, build) = when (engine) {
+                Engine.APKEDITOR -> Pair(
+                    listOf("d", "-i", input.toString(), "-o", decoded.toString(), "-f"),
+                    listOf("b", "-i", decoded.toString(), "-o", rebuilt.toString(), "-f"),
+                )
+                Engine.APKTOOL -> Pair(
+                    listOf("d", "-f", "-p", framework.toString(), "-o", decoded.toString(), input.toString()),
+                    listOf("b", "-f", "-p", framework.toString(), "-o", rebuilt.toString(), decoded.toString()),
+                )
+            }
+
             sink.emit(JobEvent.Step("decode", 1, 4))
-            apkEditor(jar, listOf("d", "-i", input.toString(), "-o", decoded.toString(), "-f"), sink, cancelled)
+            runEngine(jar, engine, work, decode, sink, cancelled)
 
             sink.emit(JobEvent.Step("edit", 2, 4))
-            apply(decoded, tweaks, sink)
+            apply(decoded, tweaks, engine, sink)
 
             sink.emit(JobEvent.Step("build", 3, 4))
-            val rebuilt = work.resolve("rebuilt.apk")
-            apkEditor(jar, listOf("b", "-i", decoded.toString(), "-o", rebuilt.toString(), "-f"), sink, cancelled)
-            if (!Files.isRegularFile(rebuilt)) throw CheckFailed("APKEditor produced no APK")
+            runEngine(jar, engine, work, build, sink, cancelled)
+            if (!Files.isRegularFile(rebuilt)) throw CheckFailed("${engine.id} produced no APK")
 
             sink.emit(JobEvent.Step("sign", 4, 4))
             val out = ApkSigning.output(packageDir, tweaks.packageId ?: packageName, version, keyChoiceSuffix(keyName))
@@ -100,7 +120,7 @@ object Edit {
     // language's own name unless it overrides it, which is what a rename
     // should do. A label set to a literal in the manifest is handled by
     // rewriting the manifest attribute instead.
-    private fun apply(decoded: Path, tweaks: Tweaks, sink: JobSink) {
+    private fun apply(decoded: Path, tweaks: Tweaks, engine: Engine, sink: JobSink) {
         val manifest = decoded.resolve("AndroidManifest.xml")
         if (!Files.isRegularFile(manifest)) throw CheckFailed("decoded APK has no AndroidManifest.xml")
         var text = Files.readString(manifest)
@@ -118,8 +138,20 @@ object Edit {
             }
         }
 
+        // apktool decodes the SDK levels into apktool.yml and gives them to
+        // aapt2 at build, its manifest has no uses-sdk.
         if (tweaks.minSdk != null || tweaks.targetSdk != null) {
-            text = setSdk(text, tweaks.minSdk, tweaks.targetSdk, sink)
+            if (engine == Engine.APKTOOL) {
+                val yml = decoded.resolve("apktool.yml")
+                if (!Files.isRegularFile(yml)) throw CheckFailed("the decoded APK has no apktool.yml")
+                var y = Files.readString(yml)
+                y = yamlSdk(y, "minSdkVersion", tweaks.minSdk)
+                y = yamlSdk(y, "targetSdkVersion", tweaks.targetSdk)
+                Files.writeString(yml, y)
+                sink.emit(JobEvent.Line("apktool.yml sdkInfo: min ${tweaks.minSdk ?: "kept"}, target ${tweaks.targetSdk ?: "kept"}"))
+            } else {
+                text = setSdk(text, tweaks.minSdk, tweaks.targetSdk, sink)
+            }
         }
 
         if (tweaks.removePermissions.isNotEmpty()) {
@@ -218,18 +250,33 @@ object Edit {
     // public.xml with an entry for this name, the same text when the entry
     // exists, or null when the type has no entry to take its id from. The
     // entries are not sorted, so the next id is one past the highest of the
-    // type, never one past the last line, which could collide.
+    // type, never one past the last line, which could collide. Attributes
+    // are read by name: APKEditor writes id first, apktool writes it last.
     internal fun withPublic(text: String, type: String, name: String): String? {
-        if (Regex("""type="$type" name="${Regex.escape(name)}"""").containsMatchIn(text)) return text
-        val ids = Regex("""<public id="0x([0-9a-fA-F]{8})" type="$type"""").findAll(text)
-            .map { it.groupValues[1].toLong(16) }
-            .toList()
+        val ofType = Regex("""<public\b[^>]*>""").findAll(text).map { it.value }.filter { xmlAttr(it, "type") == type }.toList()
+        if (ofType.any { xmlAttr(it, "name") == name }) return text
+        val ids = ofType.mapNotNull { xmlAttr(it, "id")?.removePrefix("0x")?.toLongOrNull(16) }
         if (ids.isEmpty()) return null
         val close = text.lastIndexOf("</resources>")
         if (close < 0) return null
         val id = "0x" + "%08x".format(ids.max() + 1)
         val entry = "  <public id=\"$id\" type=\"$type\" name=\"$name\" />\n"
         return text.substring(0, close) + entry + text.substring(close)
+    }
+
+    private fun xmlAttr(tag: String, name: String): String? =
+        Regex("""\s$name="([^"]*)"""").find(tag)?.groupValues?.get(1)
+
+    // One sdkInfo key of apktool.yml set, added under sdkInfo when missing,
+    // the section added when there is none.
+    internal fun yamlSdk(text: String, key: String, value: Int?): String {
+        if (value == null) return text
+        val line = Regex("""(?m)^([ \t]+$key:).*$""")
+        val found = line.find(text)
+        if (found != null) return text.replaceRange(found.range, found.groupValues[1] + " " + value)
+        val section = Regex("""(?m)^sdkInfo:[ \t]*$""").find(text)
+            ?: return text.trimEnd('\n') + "\nsdkInfo:\n  $key: $value\n"
+        return text.substring(0, section.range.last + 1) + "\n  $key: $value" + text.substring(section.range.last + 1)
     }
 
     // The foreground and monochrome layers pointed at the new picture, or
@@ -358,12 +405,13 @@ object Edit {
         .replace("\"", "&quot;")
         .replace("'", "\\'")
 
-    private fun apkEditor(jar: Path, args: List<String>, sink: JobSink, cancelled: () -> Boolean) {
-        // apktool extracts aapt2 through createTempFile, so java.io.tmpdir is
-        // kept under the root by the caller. APKEditor needs no such thing,
-        // but the flag is harmless and shared by the pipeline.
-        val cmd = listOf(javaBin(), "-jar", jar.toString()) + args
-        sink.emit(JobEvent.Line(args.first() + " with apkeditor"))
+    private fun runEngine(jar: Path, engine: Engine, work: Path, args: List<String>, sink: JobSink, cancelled: () -> Boolean) {
+        // apktool extracts aapt2 through createTempFile, so java.io.tmpdir
+        // points into the work folder. Harmless for APKEditor.
+        val tmp = work.resolve("tmp")
+        Files.createDirectories(tmp)
+        val cmd = listOf(javaBin(), "-Djava.io.tmpdir=$tmp", "-jar", jar.toString()) + args
+        sink.emit(JobEvent.Line(args.first() + " with " + engine.id))
         val process = ProcessBuilder(cmd).redirectErrorStream(true).start()
         process.inputStream.bufferedReader().useLines { lines ->
             lines.forEach { line ->
@@ -375,7 +423,7 @@ object Edit {
             }
         }
         val code = process.waitFor()
-        if (code != 0) throw CheckFailed("apkeditor ${args.first()} exited with $code")
+        if (code != 0) throw CheckFailed("${engine.id} ${args.first()} exited with $code")
     }
 
     // The java that runs GutapK, so the child uses the same bundled runtime.

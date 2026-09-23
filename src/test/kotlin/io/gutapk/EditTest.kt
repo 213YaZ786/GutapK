@@ -169,4 +169,37 @@ class EditTest {
         assertEquals(1, r.authorities)
         assertEquals(2, r.expanded)
     }
+
+    // apktool writes the id last, APKEditor first. Both must give the same
+    // next id.
+    @Test
+    fun readsApktoolPublicXml() {
+        val apktool = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <resources>
+                <public type="drawable" name="ic_unarchive" id="0x7f04001e" />
+                <public type="color" name="ic_launcher_background" id="0x7f020004" />
+                <public type="drawable" name="ic_settings" id="0x7f04001d" />
+            </resources>
+        """.trimIndent()
+        val out = Edit.withPublic(apktool, "drawable", "gutapk_icon")!!
+        assertTrue(out.contains("id=\"0x7f04001f\""))
+        assertEquals(out, Edit.withPublic(out, "drawable", "gutapk_icon"))
+    }
+
+    // apktool keeps the SDK levels in apktool.yml.
+    @Test
+    fun setsSdkInApktoolYml() {
+        val yml = "version: 3.0.3\nsdkInfo:\n  minSdkVersion: 31\n  targetSdkVersion: 37\nversionInfo:\n  versionCode: 42\n"
+        val lowered = Edit.yamlSdk(yml, "minSdkVersion", 26)
+        assertTrue(lowered.contains("  minSdkVersion: 26\n"))
+        assertTrue(lowered.contains("  targetSdkVersion: 37\n"))
+        assertEquals(yml, Edit.yamlSdk(yml, "minSdkVersion", null))
+
+        val noTarget = "sdkInfo:\n  minSdkVersion: 31\nversionInfo:\n  versionCode: 42\n"
+        assertTrue(Edit.yamlSdk(noTarget, "targetSdkVersion", 35).contains("sdkInfo:\n  targetSdkVersion: 35\n  minSdkVersion: 31"))
+
+        val noSection = "version: 3.0.3\n"
+        assertEquals("version: 3.0.3\nsdkInfo:\n  minSdkVersion: 26\n", Edit.yamlSdk(noSection, "minSdkVersion", 26))
+    }
 }
