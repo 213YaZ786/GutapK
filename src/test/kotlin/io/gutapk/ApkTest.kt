@@ -2,7 +2,13 @@ package io.gutapk
 
 import io.gutapk.core.apk.ApkReader
 import io.gutapk.core.apk.BinaryXml
+import io.gutapk.core.apk.IconArtReader
+import io.gutapk.core.apk.IconColour
+import io.gutapk.core.apk.IconGroup
 import io.gutapk.core.apk.IconKind
+import io.gutapk.core.apk.IconPath
+import io.gutapk.core.apk.XmlAttr
+import io.gutapk.core.apk.XmlElement
 import io.gutapk.core.apk.Packages
 import io.gutapk.core.apk.ResourceTable
 import io.gutapk.core.apk.Signatures
@@ -240,5 +246,28 @@ class ApkTest {
         assertTrue(first.startsWith(root.resolve("packages")))
         assertTrue(Files.isRegularFile(first.resolve(Packages.ORIGINAL)))
         assertEquals(listOf("My App"), Packages.recent(root, 6).map { it.label })
+    }
+
+    // A group, a path inside it, a path after it: the flat list the reader
+    // gives is rebuilt by depth. An RGB colour is opaque, a system colour
+    // keeps its palette and tone for the UI to resolve.
+    @Test
+    fun rebuildsAVectorIcon() {
+        fun f(v: Float) = java.lang.Float.floatToRawIntBits(v)
+        val xml = listOf(
+            XmlElement(1, "vector", listOf(XmlAttr(0x01010402, "viewportWidth", 0x04, f(108f), null), XmlAttr(0x01010403, "viewportHeight", 0x04, f(108f), null))),
+            XmlElement(2, "group", listOf(XmlAttr(0x0101045a, "translateX", 0x04, f(10f), null))),
+            XmlElement(3, "path", listOf(XmlAttr(0x01010405, "pathData", 0x03, 0, "M0,0h10v10z"), XmlAttr(0x01010404, "fillColor", 0x1d, 0x00ff0000, null))),
+            XmlElement(2, "path", listOf(XmlAttr(0x01010405, "pathData", 0x03, 0, "M1,1h2v2z"), XmlAttr(0x01010404, "fillColor", 0x01, 0x0106003a, null))),
+        )
+        val art = IconArtReader.vector(xml, null)
+        assertEquals(108f, art.viewportWidth)
+        assertEquals(2, art.root.children.size)
+        val group = art.root.children[0] as IconGroup
+        assertEquals(10f, group.translateX)
+        val red = group.children.single() as IconPath
+        assertEquals(IconColour.Argb(0xffff0000.toInt()), red.fill)
+        val themed = art.root.children[1] as IconPath
+        assertEquals(IconColour.System(2, 90), themed.fill)
     }
 }

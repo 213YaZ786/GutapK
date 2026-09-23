@@ -46,6 +46,7 @@ import io.gutapk.job.JobState
 import io.gutapk.registry.Feature
 import io.gutapk.registry.Source
 import io.gutapk.tools.Hash
+import io.gutapk.ui.AppIcon
 import io.gutapk.ui.BodyText
 import io.gutapk.ui.Page
 import io.gutapk.ui.Zone
@@ -286,11 +287,9 @@ private fun Header(l: Loaded) {
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         val img = l.icon
         val shape = MaterialTheme.shapes.large
-        if (img != null) {
-            Image(img, contentDescription = null, modifier = Modifier.size(96.dp).clip(shape))
-        } else {
-            // A vector-only icon has no bitmap to show yet. The first letter
-            // stands in, on the same shape.
+        // The first letter stands in, on the same shape, for an icon that is
+        // neither a bitmap nor a vector GutapK can draw.
+        val letter: @Composable () -> Unit = {
             Box(
                 Modifier.size(96.dp).clip(shape).background(MaterialTheme.colorScheme.primaryContainer),
                 contentAlignment = Alignment.Center,
@@ -301,6 +300,12 @@ private fun Header(l: Loaded) {
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
             }
+        }
+        val art = l.info?.iconArt
+        when {
+            img != null -> Image(img, contentDescription = null, modifier = Modifier.size(96.dp).clip(shape))
+            art != null -> AppIcon(art, 96.dp, shape, letter)
+            else -> letter()
         }
     }
 }

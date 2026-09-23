@@ -7,7 +7,9 @@ import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -17,6 +19,14 @@ import com.materialkolor.hct.Hct
 import com.materialkolor.scheme.SchemeTonalSpot
 
 enum class ThemeChoice { SYSTEM, LIGHT, DARK }
+
+// The seed the app is coloured from, null for the reference palette. An
+// app icon drawn with Android's Material You colours takes its tones from
+// it, as the phone takes them from the wallpaper.
+val LocalAccentSeed = staticCompositionLocalOf<Int?> { null }
+
+// The reference palette's own seed, Material 3's baseline purple.
+const val REFERENCE_SEED = 0xFF6750A4.toInt()
 
 // GNOME's nine accent colours, in the order its settings panel shows them.
 // SYSTEM reads the one GNOME has set.
@@ -161,9 +171,11 @@ fun GutapkTheme(
     val colours = remember(seed, dark) {
         if (seed != null) accentScheme(seed, dark) else if (dark) DarkScheme else LightScheme
     }
-    MaterialTheme(
-        colorScheme = colours,
-        shapes = GutapkShapes,
-        content = content,
-    )
+    CompositionLocalProvider(LocalAccentSeed provides seed) {
+        MaterialTheme(
+            colorScheme = colours,
+            shapes = GutapkShapes,
+            content = content,
+        )
+    }
 }

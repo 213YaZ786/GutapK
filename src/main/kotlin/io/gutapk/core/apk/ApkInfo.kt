@@ -28,6 +28,8 @@ data class ApkInfo(
     // Path inside the APK of the best bitmap for the launcher icon, or null
     // when the icon exists only as a vector.
     val iconPath: String?,
+    // The icon as vectors and colours, read only when there is no bitmap.
+    val iconArt: IconArt?,
     val iconKind: IconKind,
     val split: String?,
     val permissions: List<String>,
@@ -76,6 +78,14 @@ object ApkReader {
         val abis = names.filter { it.startsWith("lib/") && it.count { c -> c == '/' } == 2 }
             .map { it.split('/')[1] }.distinct().sorted()
         val libs = names.filter { it.startsWith("lib/") && it.endsWith(".so") }
+        val icon = app?.attr(Attr.ICON, "icon")
+        val iconPath = if (icon != null && icon.type == ValueType.REFERENCE && table != null) bitmap(icon.data, table, zip, 0) else null
+        // A drawing it cannot read leaves the letter in place, never an error.
+        val iconArt = if (iconPath == null && icon != null && icon.type == ValueType.REFERENCE && table != null) {
+            runCatching { IconArtReader.read(icon.data, table, zip) }.getOrNull()
+        } else {
+            null
+        }
 
         ApkInfo(
             packageName = root.attrs.firstOrNull { it.name == "package" }?.raw ?: "",
@@ -84,9 +94,8 @@ object ApkReader {
             minSdk = sdk?.attr(Attr.MIN_SDK, "minSdkVersion")?.let { int(it) },
             targetSdk = sdk?.attr(Attr.TARGET_SDK, "targetSdkVersion")?.let { int(it) },
             label = app?.attr(Attr.LABEL, "label")?.let { text(it, table) },
-            iconPath = app?.attr(Attr.ICON, "icon")?.let { a ->
-                if (a.type == ValueType.REFERENCE && table != null) bitmap(a.data, table, zip, 0) else null
-            },
+            iconPath = iconPath,
+            iconArt = iconArt,
             iconKind = app?.attr(Attr.ICON, "icon")?.let { a ->
                 if (a.type == ValueType.REFERENCE && table != null) iconKind(a.data, table, zip) else IconKind.LEGACY
             } ?: IconKind.NONE,
