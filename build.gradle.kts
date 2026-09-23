@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "io.gutapk"
-version = "0.1.23"
+version = "0.1.24"
 
 kotlin {
     jvmToolchain(21)
@@ -20,6 +20,7 @@ dependencies {
     implementation(libs.apksig)
     implementation(libs.dbus.java.core)
     implementation(libs.dbus.java.transport)
+    implementation(libs.materialkolor.utilities)
     testImplementation(kotlin("test"))
 }
 

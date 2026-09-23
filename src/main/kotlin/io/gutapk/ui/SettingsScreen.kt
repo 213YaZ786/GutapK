@@ -28,6 +28,8 @@ fun SettingsScreen(
     lang: Lang,
     theme: ThemeChoice,
     detected: SystemMode,
+    accent: AccentChoice,
+    systemAccent: String?,
     version: String,
     root: java.nio.file.Path?,
     onChange: (Settings) -> Unit,
@@ -43,6 +45,7 @@ fun SettingsScreen(
         Zone(t("set_general")) {
             ZoneRow(t("set_language"), lang.native, onClick = { dialog = "lang" })
             ZoneRow(t("set_theme"), themeLabel(theme, detected), onClick = { dialog = "theme" })
+            ZoneRow(t("set_accent"), accentLabel(accent, systemAccent), onClick = { dialog = "accent" })
         }
     }
     val storage: @Composable () -> Unit = {
@@ -122,6 +125,16 @@ fun SettingsScreen(
             },
             onDismiss = { dialog = null },
         )
+        "accent" -> ChoiceDialog(
+            title = t("set_accent"),
+            options = AccentChoice.entries.map { it to accentLabel(it, systemAccent) },
+            current = accent,
+            onPick = {
+                onChange(settings.copy(accent = it.name))
+                dialog = null
+            },
+            onDismiss = { dialog = null },
+        )
         "theme" -> ChoiceDialog(
             title = t("set_theme"),
             options = ThemeChoice.entries.map { it to themeLabel(it, detected) },
@@ -134,6 +147,16 @@ fun SettingsScreen(
         )
     }
 }
+
+// SYSTEM names the colour GNOME has set, so the user sees what follows.
+@Composable
+fun accentLabel(choice: AccentChoice, systemAccent: String?): String = when (choice) {
+    AccentChoice.SYSTEM -> accentOf(systemAccent)?.let { t("accent_system_named", accentName(it)) } ?: t("accent_system")
+    else -> accentName(choice)
+}
+
+@Composable
+private fun accentName(choice: AccentChoice): String = t("accent_" + choice.name.lowercase())
 
 @Composable
 fun themeLabel(choice: ThemeChoice, detected: SystemMode): String = when (choice) {

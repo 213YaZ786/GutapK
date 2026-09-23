@@ -12,6 +12,8 @@ import java.util.Properties
 data class Settings(
     val lang: String? = null,
     val theme: String = "SYSTEM",
+    // SYSTEM follows GNOME's accent colour, any other value is a fixed one.
+    val accent: String = "SYSTEM",
     val legalRev: Int = 0,
     val root: String? = null,
     // Asks the publishers of installed tools for newer releases at launch.
@@ -37,6 +39,7 @@ object SettingsStore {
         return Settings(
             lang = p.getProperty("lang")?.takeIf { it.isNotBlank() },
             theme = p.getProperty("theme") ?: "SYSTEM",
+            accent = p.getProperty("accent") ?: "SYSTEM",
             legalRev = p.getProperty("legal")?.toIntOrNull() ?: 0,
             root = p.getProperty("root")?.takeIf { it.isNotBlank() },
             checkUpdates = p.getProperty("updates") != "false",
@@ -49,6 +52,7 @@ object SettingsStore {
         val p = Properties()
         s.lang?.let { p.setProperty("lang", it) }
         p.setProperty("theme", s.theme)
+        p.setProperty("accent", s.accent)
         p.setProperty("legal", s.legalRev.toString())
         s.root?.let { p.setProperty("root", it) }
         p.setProperty("updates", s.checkUpdates.toString())

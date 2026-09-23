@@ -114,6 +114,7 @@ fun Shell(
 ) {
     // gsettings is a process spawn. Once per run, never once per recomposition.
     val detected = remember { readSystemMode() }
+    val systemAccent = remember { readSystemAccent() }
     // Computed once. A step list recomputed on every change would drop the
     // licence the moment the language is saved.
     val steps = remember { firstSteps(settings) }
@@ -192,10 +193,11 @@ fun Shell(
 
     val lang = langOf(settings.lang) ?: detectLang()
     val theme = ThemeChoice.entries.firstOrNull { it.name == settings.theme } ?: ThemeChoice.SYSTEM
+    val accent = AccentChoice.entries.firstOrNull { it.name == settings.accent } ?: AccentChoice.SYSTEM
     val direction = if (lang.rtl) LayoutDirection.Rtl else LayoutDirection.Ltr
 
     CompositionLocalProvider(LocalLang provides lang, LocalLayoutDirection provides direction) {
-        GutapkTheme(theme, detected) {
+        GutapkTheme(theme, detected, accent, systemAccent) {
             Surface(
                 color = MaterialTheme.colorScheme.background,
                 modifier = Modifier.fillMaxSize().dragAndDropTarget(
@@ -271,6 +273,8 @@ fun Shell(
                             lang = lang,
                             theme = theme,
                             detected = detected,
+                            accent = accent,
+                            systemAccent = systemAccent,
                             version = version,
                             root = RunSession.root,
                             onChange = onChange,
