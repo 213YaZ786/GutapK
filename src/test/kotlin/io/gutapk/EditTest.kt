@@ -4,6 +4,7 @@ import io.gutapk.core.edit.Edit
 import io.gutapk.core.edit.IconImage
 import io.gutapk.core.edit.IconRefusal
 import io.gutapk.core.edit.Modern
+import io.gutapk.core.edit.Neutralise
 import io.gutapk.core.edit.PackageId
 import io.gutapk.core.edit.PackageIdRefusal
 import io.gutapk.core.edit.Security
@@ -304,5 +305,42 @@ class EditTest {
         val base = "<network-security-config>\n  <base-config>\n  </base-config>\n</network-security-config>"
         assertTrue(Security.strictNetworkConfig(base).contains("<base-config cleartextTrafficPermitted=\"false\">"))
         assertTrue(Security.newNetworkConfig().contains("<certificates src=\"system\" />"))
+    }
+
+    // Only the tracker's own components are disabled, the app's and
+    // Firebase's init provider stay. Opt-outs follow the chosen trackers.
+    @Test
+    fun silencesATracker() {
+        val manifest = """
+            <manifest package="com.example.app">
+              <application android:label="x">
+                <activity android:name=".MainActivity" android:exported="true">
+                </activity>
+                <service android:name="com.google.android.gms.measurement.AppMeasurementService" android:exported="false" />
+                <receiver android:name="com.google.android.gms.measurement.AppMeasurementReceiver">
+                </receiver>
+                <provider android:name="com.google.firebase.provider.FirebaseInitProvider" android:authorities="x.firebaseinitprovider" />
+                <meta-data android:name="google_analytics_adid_collection_enabled" android:value="true" />
+              </application>
+            </manifest>
+        """.trimIndent()
+        val prefixes = setOf("com.google.firebase.analytics.FirebaseAnalytics", "com.google.android.gms.measurement.")
+        val (out, n) = Neutralise.disableComponents(manifest, prefixes)
+        assertEquals(2, n)
+        assertTrue(out.contains("AppMeasurementService\" android:exported=\"false\" android:enabled=\"false\" />"))
+        assertTrue(out.contains("AppMeasurementReceiver\" android:enabled=\"false\">"))
+        assertFalse(out.contains("FirebaseInitProvider\" android:authorities=\"x.firebaseinitprovider\" android:enabled"))
+        assertFalse(out.contains("MainActivity\" android:exported=\"true\" android:enabled"))
+
+        val opts = Neutralise.optOuts(prefixes)
+        assertEquals("true", opts["firebase_analytics_collection_deactivated"])
+        assertEquals("false", opts["google_analytics_adid_collection_enabled"])
+        assertNull(opts["firebase_crashlytics_collection_enabled"])
+
+        var meta = out
+        opts.forEach { (k, v) -> meta = Neutralise.setMetaData(meta, k, v) }
+        assertTrue(meta.contains("<meta-data android:name=\"google_analytics_adid_collection_enabled\" android:value=\"false\" />"))
+        assertTrue(meta.contains("<meta-data android:name=\"firebase_analytics_collection_deactivated\" android:value=\"true\" />"))
+        assertEquals(1, Regex("google_analytics_adid_collection_enabled").findAll(meta).count())
     }
 }

@@ -188,8 +188,10 @@ fun OverviewScreen(
             FilledTonalButton(onClick = { dialog = "sign" }) { Text(t("sign_action")) }
         }
     }
+    val detection = if (root != null && loaded != null) rememberDetection(root, loaded.classes) else null
     if (editing && info != null && root != null) {
         EditScreen(
+            detection = detection,
             root = root,
             packageDir = dir,
             original = original,
@@ -205,7 +207,7 @@ fun OverviewScreen(
             onBack = { editing = false },
         )
     } else {
-        OverviewPage(dir, root, loaded, info, original, running, actionRow, onBack)
+        OverviewPage(dir, root, loaded, info, original, detection, running, actionRow, onBack)
     }
 
     if (info != null && !editing) {
@@ -267,6 +269,7 @@ private fun OverviewPage(
     loaded: Loaded?,
     info: ApkInfo?,
     original: Path,
+    detection: Detection?,
     running: (@Composable () -> Unit)?,
     actionRow: @Composable () -> Unit,
     onBack: () -> Unit,
@@ -283,7 +286,7 @@ private fun OverviewPage(
         when {
             loaded == null -> BodyText(t("ov_reading"))
             info == null -> Zone(t("ov_error")) { BodyText(loaded.error ?: "") }
-            else -> Body(loaded, info, original, root)
+            else -> Body(loaded, info, original, root, detection)
         }
     }
 }
@@ -317,7 +320,7 @@ private fun Header(l: Loaded) {
 }
 
 @Composable
-private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?) {
+private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?, detection: Detection?) {
     var showPermissions by remember { mutableStateOf(false) }
     val identity: @Composable () -> Unit = {
         Zone(t("ov_identity")) {
@@ -414,7 +417,7 @@ private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?) {
                     identity()
                     content()
                     permissions()
-                    if (root != null) TrackersZone(root, l.classes)
+                    if (root != null) TrackersZone(root, detection)
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(24.dp)) {
                     signature()
@@ -427,7 +430,7 @@ private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?) {
                 signature()
                 content()
                 permissions()
-                if (root != null) TrackersZone(root, l.classes)
+                if (root != null) TrackersZone(root, detection)
                 file()
             }
         }

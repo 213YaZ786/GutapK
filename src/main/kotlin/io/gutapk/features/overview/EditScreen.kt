@@ -48,6 +48,8 @@ import java.nio.file.Path
 
 const val RENAME_JOB = "rename"
 
+private const val AD_ID = "com.google.android.gms.permission.AD_ID"
+
 // Everything one rebuild needs, kept so a failure can be retried with the
 // other engine without asking the questions again.
 data class EditPlan(
@@ -88,6 +90,7 @@ fun startEdit(plan: EditPlan): Job? = JobQueue.start(RENAME_JOB) { job ->
 // is touched once the pill action runs, and Back leaves the app untouched.
 @Composable
 fun EditScreen(
+    detection: Detection?,
     root: Path,
     packageDir: Path,
     original: Path,
@@ -112,6 +115,9 @@ fun EditScreen(
     var fragileData by remember { mutableStateOf(false) }
     var memoryTagging by remember { mutableStateOf(false) }
     var notDebuggable by remember { mutableStateOf(false) }
+    // Tracker names switched on for silencing. None by default.
+    val silenced = remember { mutableStateMapOf<String, Boolean>() }
+    val silencedPrefixes = detection?.found.orEmpty().filter { silenced[it.name] == true }.flatMap { it.prefixes }.toSet()
     var iconCheck by remember { mutableStateOf<IconCheck?>(null) }
     // Every permission starts kept. Switching one off marks it for removal,
     // so the default action leaves the app exactly as it was.
@@ -127,7 +133,8 @@ fun EditScreen(
     val iconOk = iconImage != null && iconCheck?.refusal == null
     val anyChange = nameChanged || minChanged || targetChanged || toRemove.isNotEmpty() || themed || iconOk || packageChanged ||
         predictiveBack || localeConfig || nativeLibs ||
-        noBackup || strictNetwork || fragileData || memoryTagging || notDebuggable
+        noBackup || strictNetwork || fragileData || memoryTagging || notDebuggable ||
+        silencedPrefixes.isNotEmpty()
     val spec = Tools.byId("apkeditor")
     // Verify hashes the jar, so it runs once per visit, not on every switch.
     val toolReady = remember { spec != null && Installer.status(root, spec).let { it is ToolStatus.Installed && Installer.verify(root, spec) } }
@@ -164,6 +171,7 @@ fun EditScreen(
                         fragileUserData = fragileData,
                         memoryTagging = memoryTagging,
                         notDebuggable = notDebuggable,
+                        trackerPrefixes = silencedPrefixes,
                     ),
                     key = key,
                     packageName = info.packageName,
@@ -350,6 +358,44 @@ fun EditScreen(
                 checked = notDebuggable,
                 onChange = { notDebuggable = it },
             )
+        }
+
+        Zone(t("ov_trackers")) {
+            val found = detection?.found
+            when {
+                found == null -> BodyText(t("edit_trk_first"))
+                found.isEmpty() -> BodyText(t("edit_trk_none"))
+                else -> {
+                    BodyText(t("edit_trk_note"))
+                    found.forEach { tr ->
+                        val parts = info.components.count { c -> tr.prefixes.any { c.startsWith(it) } }
+                        val detail = buildString {
+                            append(tr.categories.joinToString(", ").ifEmpty { t("ov_trk_uncat") })
+                            append(". ")
+                            append(if (parts > 0) t("edit_trk_parts", parts) else t("edit_trk_no_parts"))
+                            if ("Advertisement" in tr.categories) append(" ").append(t("edit_trk_ads"))
+                        }
+                        ToggleRow(
+                            tr.name,
+                            detail,
+                            available = true,
+                            checked = silenced[tr.name] == true,
+                            onChange = { silenced[tr.name] = it },
+                        )
+                    }
+                }
+            }
+            // The same switch as in the permission list, placed where a user
+            // looking at trackers expects it.
+            if (AD_ID in info.permissions) {
+                ToggleRow(
+                    t("edit_adid"),
+                    t("edit_adid_d"),
+                    available = true,
+                    checked = kept[AD_ID] == false,
+                    onChange = { kept[AD_ID] = !it },
+                )
+            }
         }
 
         if (info.permissions.isNotEmpty()) {

@@ -41,6 +41,8 @@ data class Tweaks(
     val fragileUserData: Boolean = false,
     val memoryTagging: Boolean = false,
     val notDebuggable: Boolean = false,
+    // Class prefixes of the trackers to silence, from Exodus Privacy's list.
+    val trackerPrefixes: Set<String> = emptySet(),
 )
 
 class EditResult(val output: Path, val signature: SignatureInfo)
@@ -198,6 +200,15 @@ object Edit {
         }
         if (tweaks.strictNetwork) {
             text = strictNetwork(decoded, text, engine, sink)
+        }
+        if (tweaks.trackerPrefixes.isNotEmpty()) {
+            val (disabled, count) = Neutralise.disableComponents(text, tweaks.trackerPrefixes)
+            text = disabled
+            sink.emit(JobEvent.Line("tracker components disabled: $count"))
+            Neutralise.optOuts(tweaks.trackerPrefixes).forEach { (key, value) ->
+                text = Neutralise.setMetaData(text, key, value)
+                sink.emit(JobEvent.Line("opt-out $key = $value"))
+            }
         }
 
         // Before the themed icon, so a monochrome layer it adds follows the

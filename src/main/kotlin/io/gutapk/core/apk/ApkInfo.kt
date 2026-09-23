@@ -43,6 +43,8 @@ data class ApkInfo(
     val memoryTagging: Boolean,
     val split: String?,
     val permissions: List<String>,
+    // Activities, services, receivers and providers, full class names.
+    val components: List<String>,
     val dexCount: Int,
     val abis: List<String>,
     val nativeLibs: Int,
@@ -128,12 +130,24 @@ object ApkReader {
             permissions = manifest.filter { it.depth == 2 && it.name == "uses-permission" }
                 .mapNotNull { it.attr(Attr.NAME, "name")?.raw }
                 .distinct(),
+            components = manifest.filter { it.depth == 3 && it.name in COMPONENT_TAGS }
+                .mapNotNull { it.attr(Attr.NAME, "name")?.raw }
+                .map { n -> absoluteName(root.attrs.firstOrNull { it.name == "package" }?.raw.orEmpty(), n) },
             dexCount = names.count { it.matches(Regex("""classes\d*\.dex""")) },
             abis = abis,
             nativeLibs = libs.size,
             engines = engines(names),
             entries = names.size,
         )
+    }
+
+    private val COMPONENT_TAGS = setOf("activity", "activity-alias", "service", "receiver", "provider")
+
+    // Android's rule: a leading dot, or no dot at all, is inside the package.
+    private fun absoluteName(pkg: String, name: String): String = when {
+        name.startsWith(".") -> pkg + name
+        !name.contains('.') -> "$pkg.$name"
+        else -> name
     }
 
     private fun text(a: XmlAttr, table: ResourceTable?): String? = when {

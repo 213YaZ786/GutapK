@@ -31,28 +31,34 @@ import java.nio.file.Path
 
 const val TRACKERS_JOB = "exodus"
 
-// The app's classes against Exodus Privacy's tracker list. Without the list,
-// one row offers it, and nothing is fetched before its facts are shown.
+class Detection(val all: List<Tracker>, val found: List<Tracker>)
+
+// The app's classes against Exodus Privacy's tracker list, null while the
+// list is not downloaded. Read again when the download job ends.
 @Composable
-fun TrackersZone(root: Path, classes: List<String>) {
+fun rememberDetection(root: Path, classes: List<String>): Detection? {
     val view = currentJobView()
-    // Read again when the download job ends, so the result shows at once.
     val downloaded = view?.title == TRACKERS_JOB && view.state == JobState.DONE
     val list by produceState<List<Tracker>?>(null, root, downloaded) {
         value = withContext(Dispatchers.IO) { TrackerList.load(root) }
     }
+    return remember(list, classes) { list?.let { Detection(it, Trackers.detect(classes, it)) } }
+}
+
+// Without the list, one row offers it, and nothing is fetched before its
+// facts are shown.
+@Composable
+fun TrackersZone(root: Path, detection: Detection?) {
     var asking by remember { mutableStateOf(false) }
-    val found = remember(list, classes) { list?.let { Trackers.detect(classes, it) } }
 
     Zone(t("ov_trackers")) {
-        val all = list
-        if (all == null || found == null) {
+        if (detection == null) {
             ZoneRow(t("ov_trk_look"), t("ov_trk_look_d"), onClick = { asking = true })
         } else {
-            if (found.isEmpty()) {
-                ZoneRow(t("ov_trk_none"), t("ov_trk_none_d", all.size))
+            if (detection.found.isEmpty()) {
+                ZoneRow(t("ov_trk_none"), t("ov_trk_none_d", detection.all.size))
             }
-            found.forEach { tr ->
+            detection.found.forEach { tr ->
                 ZoneRow(tr.name, tr.categories.joinToString(", ").ifEmpty { t("ov_trk_uncat") })
             }
             BodyText(t("ov_trk_credit", TrackerList.date(root) ?: "?"))
