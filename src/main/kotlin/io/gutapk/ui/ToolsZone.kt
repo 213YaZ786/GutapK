@@ -28,6 +28,7 @@ import io.gutapk.job.JobView
 import io.gutapk.tools.Installer
 import io.gutapk.tools.Release
 import io.gutapk.tools.Releases
+import io.gutapk.tools.SelfUpdate
 import io.gutapk.tools.ToolSpec
 import io.gutapk.tools.ToolStatus
 import io.gutapk.tools.Tools
@@ -77,6 +78,7 @@ private fun stepKey(step: String): String = when (step) {
     "edit" -> "job_edit"
     "build" -> "job_build"
     "verify" -> "job_verify"
+    "replace" -> "job_replace"
     else -> "job_download"
 }
 
@@ -309,5 +311,56 @@ fun UpdateDialog(root: Path, updates: List<Update>, onClose: () -> Unit) {
                 TextButton(onClick = onClose) { Text(t("upd_later")) }
             }
         },
+    )
+}
+
+sealed interface SelfResult {
+    data class Done(val file: String) : SelfResult
+    data class Failed(val message: String) : SelfResult
+}
+
+// The facts first, the replacement only on Update. The file it replaces is
+// named, since it lives outside the root.
+@Composable
+fun SelfUpdateDialog(release: Release, current: String, onUpdate: () -> Unit, onSkip: () -> Unit, onLater: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onLater,
+        title = { Text(t("self_title", release.version)) },
+        text = {
+            SelectionContainer {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Fact(t("dl_version"), "$current  →  ${release.version}")
+                    Fact(t("dl_from"), release.url)
+                    Fact(t("dl_size"), humanSize(release.size))
+                    Fact(t("self_replaces"), SelfUpdate.target()?.toString() ?: "?")
+                    Text(t("self_body"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onUpdate) { Text(t("upd_go")) } },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onSkip) { Text(t("upd_skip")) }
+                TextButton(onClick = onLater) { Text(t("upd_later")) }
+            }
+        },
+    )
+}
+
+@Composable
+fun SelfResultDialog(result: SelfResult, onClose: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text(t(if (result is SelfResult.Done) "self_done_title" else "self_failed_title")) },
+        text = {
+            Text(
+                when (result) {
+                    is SelfResult.Done -> t("self_done", result.file)
+                    is SelfResult.Failed -> t("self_failed", result.message)
+                },
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        },
+        confirmButton = { TextButton(onClick = onClose) { Text(t("close")) } },
     )
 }

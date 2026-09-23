@@ -10,6 +10,7 @@ import io.gutapk.tools.Json
 import io.gutapk.tools.NO_EXEC_DIR
 import io.gutapk.tools.Release
 import io.gutapk.tools.Releases
+import io.gutapk.tools.SelfUpdate
 import io.gutapk.tools.Storage
 import io.gutapk.tools.ToolSource
 import io.gutapk.tools.ToolSpec
@@ -299,5 +300,28 @@ class ToolsTest {
         assertFailsWith<CheckFailed> { Installer.install(root, spec, release, quiet) { false } }
         assertFalse(Files.exists(root.resolve("dependencies/evil")))
         assertFalse(Files.exists(Installer.content(root, spec, release.version)))
+    }
+
+    // GutapK's release carries the AppImage and its .sha256 side by side.
+    // The pattern must pick the AppImage whatever the order of the assets.
+    @Test
+    fun picksGutapkAppImageNotItsChecksum() {
+        val json = """
+            {"tag_name": "v0.1.29", "draft": false, "prerelease": false, "assets": [
+              {"name": "GutapK-x86_64.AppImage.sha256", "size": 89,
+               "browser_download_url": "https://github.com/213YaZ786/GutapK/releases/download/v0.1.29/GutapK-x86_64.AppImage.sha256",
+               "digest": "sha256:f8a57abb60c5668718dc5019e45108082626fa5a8271d3b4041b9ebbe8dafc30"},
+              {"name": "GutapK-x86_64.AppImage", "size": 66869752,
+               "browser_download_url": "https://github.com/213YaZ786/GutapK/releases/download/v0.1.29/GutapK-x86_64.AppImage",
+               "digest": "sha256:a990e08765d172aca9a58ad059a73b22c643ee82262d7b8d0b6f7b425a9041ba"}
+            ]}
+        """.trimIndent()
+        val r = assertNotNull(Releases.parseGithub(json, SelfUpdate.spec.pkg))
+        assertEquals("0.1.29", r.version)
+        assertEquals(66869752L, r.size)
+        assertEquals("GutapK-x86_64.AppImage", r.fileName)
+        assertEquals("a990e08765d172aca9a58ad059a73b22c643ee82262d7b8d0b6f7b425a9041ba", r.sha256)
+        assertTrue(Releases.compare("0.1.29", "0.1.28") > 0)
+        assertTrue(Releases.compare("0.1.28", "0.1.28") == 0)
     }
 }

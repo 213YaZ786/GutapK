@@ -34,7 +34,9 @@ import java.awt.datatransfer.Transferable
 import java.io.File
 import java.net.URI
 import io.gutapk.settings.SettingsStore
+import io.gutapk.tools.Release
 import io.gutapk.tools.RunSession
+import io.gutapk.tools.SelfUpdate
 import io.gutapk.tools.Storage
 import io.gutapk.tools.Update
 import io.gutapk.tools.Updates
@@ -58,6 +60,7 @@ private fun firstSteps(s: Settings): List<FirstStep> = buildList {
 }
 
 private const val IMPORT_JOB = "import"
+private const val SELF_JOB = "gutapk"
 
 // X11 file managers offer a file list, some only a text/uri-list. Both are
 // read so a drop never depends on which one the user dragged from.
@@ -119,9 +122,25 @@ fun Shell(
     // The job already acted on, so going back to Home does not reopen the
     // same package or show the same error twice.
     var handled by remember { mutableStateOf<Any?>(null) }
+    // GutapK's own release found at launch, and what its update came to.
+    var selfRelease by remember { mutableStateOf<Release?>(null) }
+    var selfResult by remember { mutableStateOf<SelfResult?>(null) }
     val jobView = currentJobView()
     LaunchedEffect(jobView) {
         val job = JobQueue.current.value
+        if (jobView != null && jobView.title == SELF_JOB && job != null && handled !== job) {
+            when (jobView.state) {
+                JobState.DONE -> {
+                    handled = job
+                    selfResult = SelfResult.Done(jobView.message)
+                }
+                JobState.FAILED -> {
+                    handled = job
+                    selfResult = SelfResult.Failed(jobView.message)
+                }
+                else -> {}
+            }
+        }
         if (jobView != null && jobView.title == IMPORT_JOB && job != null && handled !== job) {
             when (jobView.state) {
                 JobState.DONE -> {
@@ -176,6 +195,7 @@ fun Shell(
     LaunchedEffect(setupDone, root, settings.checkUpdates) {
         if (setupDone && root != null && settings.checkUpdates) {
             updates = withContext(Dispatchers.IO) { runCatching { Updates.check(root) }.getOrDefault(emptyList()) }
+            selfRelease = withContext(Dispatchers.IO) { SelfUpdate.check(version, settings.selfSkip) }
         }
     }
 
@@ -311,9 +331,29 @@ fun Shell(
                             confirmButton = { TextButton(onClick = { dropRejected = false }) { Text(t("close")) } },
                         )
                     }
-                    if (updates.isNotEmpty() && root != null) {
+                    // GutapK's own update first, the tools' after it, never two
+                    // popups on top of each other.
+                    val self = selfRelease
+                    if (self != null) {
+                        SelfUpdateDialog(
+                            release = self,
+                            current = version,
+                            onUpdate = {
+                                selfRelease = null
+                                JobQueue.start(SELF_JOB) { job ->
+                                    job.result = SelfUpdate.apply(self, job) { job.cancelRequested }.toString()
+                                }
+                            },
+                            onSkip = {
+                                onChange(settings.copy(selfSkip = self.version))
+                                selfRelease = null
+                            },
+                            onLater = { selfRelease = null },
+                        )
+                    } else if (updates.isNotEmpty() && root != null) {
                         UpdateDialog(root, updates, onClose = { updates = emptyList() })
                     }
+                    selfResult?.let { SelfResultDialog(it, onClose = { selfResult = null }) }
                 }
             }
         }

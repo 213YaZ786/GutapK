@@ -14,6 +14,8 @@ data class Settings(
     val theme: String = "SYSTEM",
     // SYSTEM follows GNOME's accent colour, any other value is a fixed one.
     val accent: String = "SYSTEM",
+    // A GutapK release the user chose to skip at the launch popup.
+    val selfSkip: String? = null,
     val legalRev: Int = 0,
     val root: String? = null,
     // Asks the publishers of installed tools for newer releases at launch.
@@ -40,6 +42,7 @@ object SettingsStore {
             lang = p.getProperty("lang")?.takeIf { it.isNotBlank() },
             theme = p.getProperty("theme") ?: "SYSTEM",
             accent = p.getProperty("accent") ?: "SYSTEM",
+            selfSkip = p.getProperty("selfskip")?.takeIf { it.isNotBlank() },
             legalRev = p.getProperty("legal")?.toIntOrNull() ?: 0,
             root = p.getProperty("root")?.takeIf { it.isNotBlank() },
             checkUpdates = p.getProperty("updates") != "false",
@@ -53,6 +56,7 @@ object SettingsStore {
         s.lang?.let { p.setProperty("lang", it) }
         p.setProperty("theme", s.theme)
         p.setProperty("accent", s.accent)
+        s.selfSkip?.let { p.setProperty("selfskip", it) }
         p.setProperty("legal", s.legalRev.toString())
         s.root?.let { p.setProperty("root", it) }
         p.setProperty("updates", s.checkUpdates.toString())

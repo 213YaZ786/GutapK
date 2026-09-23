@@ -212,7 +212,7 @@ object Installer {
     // Resumes from the .part when the server honours the range, restarts it
     // otherwise. HttpURLConnection because java.net.http is not in the
     // bundled runtime.
-    private fun fetch(release: Release, part: Path, sink: JobSink, cancelled: () -> Boolean) {
+    internal fun fetch(release: Release, part: Path, sink: JobSink, cancelled: () -> Boolean) {
         val have = if (Files.isRegularFile(part)) Files.size(part) else 0L
         val conn = URI(release.url).toURL().openConnection() as HttpURLConnection
         conn.connectTimeout = 20_000
