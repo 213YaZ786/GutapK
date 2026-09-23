@@ -75,7 +75,7 @@ private sealed interface State {
 }
 
 // Android API levels by name, for the ones a reader is likely to meet.
-private fun apiName(level: Int?): String {
+internal fun apiName(level: Int?): String {
     if (level == null) return "?"
     val name = when (level) {
         21 -> "5.0"
@@ -128,12 +128,11 @@ fun OverviewScreen(
         value = State.Ready(withContext(Dispatchers.IO) { load(original) })
     }
     var dialog by remember { mutableStateOf<String?>(null) }
+    var editing by remember { mutableStateOf(false) }
     // The job this screen started. Another job finishing, a tool update for
     // instance, must not open this screen's report.
     var started by remember { mutableStateOf<Job?>(null) }
     var report by remember { mutableStateOf<SignReport?>(null) }
-    // Change key is reached from either dialog, and returns to that one.
-    var keyReturnsTo by remember { mutableStateOf("sign") }
     val view = currentJobView()
     LaunchedEffect(view) {
         val job = started
@@ -160,16 +159,73 @@ fun OverviewScreen(
     val info = loaded?.info
     val choice = keyChoiceOf(signKey)
     val running = jobPill(view)
-    // Rename first, it is the fuller action, Sign to its right. Both open a
-    // dialog, and while a job runs the pill replaces the whole row.
+    // Edit first, it is the fuller action, Sign to its right. Edit opens its
+    // own screen, Sign a dialog. While a job runs the pill replaces the row.
     val actionRow: @Composable () -> Unit = {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             if (root != null) {
-                FilledTonalButton(onClick = { dialog = "rename" }) { Text(t("rename_action")) }
+                FilledTonalButton(onClick = { editing = true }) { Text(t("rename_action")) }
             }
             FilledTonalButton(onClick = { dialog = "sign" }) { Text(t("sign_action")) }
         }
     }
+    if (editing && info != null && root != null) {
+        EditScreen(
+            root = root,
+            packageDir = dir,
+            original = original,
+            info = info,
+            choice = choice,
+            version = version,
+            onSignKey = onSignKey,
+            onStarted = {
+                started = it
+                editing = false
+            },
+            onBack = { editing = false },
+        )
+    } else {
+        OverviewPage(dir, loaded, info, original, running, actionRow, onBack)
+    }
+
+    if (info != null && !editing) {
+        when (dialog) {
+            "sign" -> SignDialog(
+                dir = dir,
+                original = original,
+                info = info,
+                choice = choice,
+                version = version,
+                onChangeKey = { dialog = "key" },
+                onStarted = {
+                    started = it
+                    dialog = null
+                },
+                onDismiss = { dialog = null },
+            )
+            "key" -> KeyChooser(
+                current = choice,
+                onChosen = {
+                    onSignKey(it)
+                    dialog = "sign"
+                },
+                onDismiss = { dialog = "sign" },
+            )
+        }
+    }
+    report?.let { SignReportDialog(it, onClose = { report = null }) }
+}
+
+@Composable
+private fun OverviewPage(
+    dir: Path,
+    loaded: Loaded?,
+    info: ApkInfo?,
+    original: Path,
+    running: (@Composable () -> Unit)?,
+    actionRow: @Composable () -> Unit,
+    onBack: () -> Unit,
+) {
     Page(
         title = info?.label ?: info?.packageName ?: dir.fileName.toString(),
         width = 1040.dp,
@@ -185,55 +241,6 @@ fun OverviewScreen(
             else -> Body(loaded, info, original)
         }
     }
-
-    if (info != null) {
-        when (dialog) {
-            "sign" -> SignDialog(
-                dir = dir,
-                original = original,
-                info = info,
-                choice = choice,
-                version = version,
-                onChangeKey = {
-                    keyReturnsTo = "sign"
-                    dialog = "key"
-                },
-                onStarted = {
-                    started = it
-                    dialog = null
-                },
-                onDismiss = { dialog = null },
-            )
-            "rename" -> if (root != null) {
-                RenameDialog(
-                    root = root,
-                    packageDir = dir,
-                    original = original,
-                    info = info,
-                    choice = choice,
-                    version = version,
-                    onChangeKey = {
-                        keyReturnsTo = "rename"
-                        dialog = "key"
-                    },
-                    onStarted = {
-                        started = it
-                        dialog = null
-                    },
-                    onDismiss = { dialog = null },
-                )
-            }
-            "key" -> KeyChooser(
-                current = choice,
-                onChosen = {
-                    onSignKey(it)
-                    dialog = keyReturnsTo
-                },
-                onDismiss = { dialog = keyReturnsTo },
-            )
-        }
-    }
-    report?.let { SignReportDialog(it, onClose = { report = null }) }
 }
 
 @Composable
