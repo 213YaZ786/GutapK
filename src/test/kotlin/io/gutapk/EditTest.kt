@@ -168,6 +168,14 @@ class EditTest {
         assertEquals(1, r.permissions)
         assertEquals(1, r.authorities)
         assertEquals(2, r.expanded)
+        assertEquals(
+            mapOf(
+                "com.old.app" to "com.new.clone",
+                "com.old.app.OWN_PERMISSION" to "com.new.clone.OWN_PERMISSION",
+                "com.old.app.androidx-startup" to "com.new.clone.androidx-startup",
+            ),
+            r.map,
+        )
     }
 
     // apktool writes the id last, APKEditor first. Both must give the same
@@ -201,5 +209,31 @@ class EditTest {
 
         val noSection = "version: 3.0.3\n"
         assertEquals("version: 3.0.3\nsdkInfo:\n  minSdkVersion: 26\n", Edit.yamlSdk(noSection, "minSdkVersion", 26))
+    }
+
+    // Whole strings follow the rename, longer ones that only start with the
+    // old id stay: a class name, a preferences file.
+    @Test
+    fun renamesWholeLiteralsOnly() {
+        val map = mapOf("com.old.app" to "com.new.clone", "com.old.app.files" to "com.new.clone.files")
+        val smali = """
+            const-string v0, "com.old.app"
+            const-string v1, "com.old.app.files"
+            const-string v2, "content://com.old.app.files/shared/a.png"
+            const-string v3, "com.old.app.MainActivity"
+            const-string v4, "com.old.app_preferences"
+        """.trimIndent()
+        val (out, n) = PackageId.renameLiterals(smali, map)
+        assertEquals(3, n)
+        assertTrue(out.contains("const-string v0, \"com.new.clone\""))
+        assertTrue(out.contains("const-string v1, \"com.new.clone.files\""))
+        assertTrue(out.contains("\"content://com.new.clone.files/shared/a.png\""))
+        assertTrue(out.contains("\"com.old.app.MainActivity\""))
+        assertTrue(out.contains("\"com.old.app_preferences\""))
+
+        val strings = "<string name=\"authority\">com.old.app.files</string>"
+        assertEquals("<string name=\"authority\">com.new.clone.files</string>", PackageId.renameLiterals(strings, map).first)
+        val json = "\"package_name\": \"com.old.app\","
+        assertEquals("\"package_name\": \"com.new.clone\",", PackageId.renameLiterals(json, map).first)
     }
 }

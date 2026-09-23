@@ -174,9 +174,41 @@ object Edit {
             text = renamed.text
             sink.emit(JobEvent.Line("package id ${renamed.from} to ${tweaks.packageId}"))
             sink.emit(JobEvent.Line("own permissions renamed: ${renamed.permissions}, authorities: ${renamed.authorities}, relative class names made absolute: ${renamed.expanded}"))
+            renameInFiles(decoded, renamed.map, sink)
         }
 
         Files.writeString(manifest, text)
+    }
+
+    // The code and the resources follow the manifest: every whole string
+    // the rename changed is changed in smali, in resource XML and in
+    // APKEditor's package.json, which also renames the resource package the
+    // way aapt2 does for apktool. The manifest itself is already done.
+    // Only the code and resource folders are walked: beside them sit copies
+    // of original binary files, apktool's original/ for one, never text.
+    private fun renameInFiles(decoded: Path, map: Map<String, String>, sink: JobSink) {
+        var files = 0
+        var strings = 0
+        val folders = Files.list(decoded).use { it.toList() }.filter { dir ->
+            Files.isDirectory(dir) && dir.fileName.toString().let { it.startsWith("smali") || it == "res" || it == "resources" }
+        }
+        val targets = folders.flatMap { folder ->
+            Files.walk(folder).use { all ->
+                all.filter { p -> Files.isRegularFile(p) && p.fileName.toString().let { it.endsWith(".smali") || it.endsWith(".xml") || it == "package.json" } }
+                    .toList()
+            }
+        }
+        targets.forEach { file ->
+            val text = runCatching { Files.readString(file) }.getOrNull() ?: return@forEach
+            if (map.keys.none { text.contains(it) }) return@forEach
+            val (out, n) = PackageId.renameLiterals(text, map)
+            if (n > 0) {
+                Files.writeString(file, out)
+                files++
+                strings += n
+            }
+        }
+        sink.emit(JobEvent.Line("strings renamed in code and resources: $strings, in $files files"))
     }
 
     // Android 13 and later tint the monochrome layer of an adaptive icon with

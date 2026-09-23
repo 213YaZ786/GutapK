@@ -4,7 +4,16 @@ import io.gutapk.tools.CheckFailed
 
 enum class PackageIdRefusal { FORMAT, RESERVED }
 
-class Renamed(val text: String, val from: String, val permissions: Int, val authorities: Int, val expanded: Int)
+// map holds every whole string that changed: the id, each authority and
+// each permission, old to new. The code and resources follow the same map.
+class Renamed(
+    val text: String,
+    val from: String,
+    val permissions: Int,
+    val authorities: Int,
+    val expanded: Int,
+    val map: Map<String, String>,
+)
 
 // A new package id makes a clone that installs beside the original. Only
 // the app's identity moves: class names name code and stay as they are.
@@ -51,7 +60,12 @@ object PackageId {
             .map { it.groupValues[1] }
             .filter { it.startsWith("$from.") }
             .toSet()
-        declared.forEach { name -> out = out.replace("\"$name\"", "\"" + to + name.removePrefix(from) + "\"") }
+        val map = linkedMapOf(Pair(from, to))
+        declared.forEach { name ->
+            val renamed = to + name.removePrefix(from)
+            map[name] = renamed
+            out = out.replace("\"$name\"", "\"$renamed\"")
+        }
 
         // Two installed apps cannot share an authority, so the ones built
         // from the old id follow the new one.
@@ -60,7 +74,9 @@ object PackageId {
             val list = m.groupValues[2].split(AUTHORITY_SEPARATOR).map { a ->
                 if (a == from || a.startsWith("$from.")) {
                     authorities++
-                    to + a.removePrefix(from)
+                    val renamed = to + a.removePrefix(from)
+                    map[a] = renamed
+                    renamed
                 } else {
                     a
                 }
@@ -70,7 +86,31 @@ object PackageId {
 
         val tag = Regex("""<manifest\b[^>]*>""").find(out)!!
         out = out.replaceRange(tag.range, tag.value.replace("package=\"$from\"", "package=\"$to\""))
-        return Renamed(out, from, declared.size, authorities, expanded)
+        return Renamed(out, from, declared.size, authorities, expanded, map)
+    }
+
+    // Whole strings only: a quoted literal, as smali, XML attributes and
+    // JSON write them, an XML text node, or a content URI on a renamed
+    // authority. A longer string that merely starts with the old id, a
+    // class name or a preferences file for instance, is left alone.
+    // Returns the new text and the number of replacements.
+    fun renameLiterals(text: String, map: Map<String, String>): Pair<String, Int> {
+        var out = text
+        var count = 0
+        fun swap(old: String, new: String) {
+            val n = out.split(old).size - 1
+            if (n > 0) {
+                out = out.replace(old, new)
+                count += n
+            }
+        }
+        map.entries.sortedByDescending { it.key.length }.forEach { (old, new) ->
+            swap("\"$old\"", "\"$new\"")
+            swap(">$old<", ">$new<")
+            swap("\"content://$old\"", "\"content://$new\"")
+            swap("\"content://$old/", "\"content://$new/")
+        }
+        return out to count
     }
 
     // Android's own rule: a leading dot, or no dot at all, means inside the
