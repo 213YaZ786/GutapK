@@ -2,6 +2,8 @@ package io.gutapk.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -19,7 +21,13 @@ import androidx.compose.ui.draganddrop.DragAndDropTarget
 import androidx.compose.ui.draganddrop.awtTransferable
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.dp
+import io.gutapk.core.apk.GatheredSet
 import io.gutapk.core.apk.Packages
+import io.gutapk.core.apk.SetIncomplete
+import io.gutapk.core.apk.SetProblem
+import io.gutapk.core.apk.SplitSet
+import io.gutapk.core.edit.Edit
 import io.gutapk.features.overview.OverviewScreen
 import io.gutapk.job.JobQueue
 import io.gutapk.job.JobState
@@ -37,11 +45,16 @@ import io.gutapk.settings.SettingsStore
 import io.gutapk.tools.Release
 import io.gutapk.tools.RunSession
 import io.gutapk.tools.SelfUpdate
+import io.gutapk.tools.Installer
 import io.gutapk.tools.Storage
+import io.gutapk.tools.ToolStatus
+import io.gutapk.tools.Tools
 import io.gutapk.tools.Update
 import io.gutapk.tools.Updates
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.IOException
+import javax.swing.SwingUtilities
 
 private enum class Screen { HOME, SETTINGS, ROOT, DISK, LICENCE, LEGAL, OVERVIEW }
 
@@ -82,10 +95,48 @@ private fun droppedFiles(t: Transferable): List<Path> {
     }.getOrDefault(emptyList())
 }
 
-private fun isApk(p: Path): Boolean = p.fileName?.toString()?.lowercase()?.endsWith(".apk") == true
+private fun isOpenable(p: Path): Boolean = SplitSet.extension(p) in SplitSet.OPENABLE
 
-private fun startImport(root: Path, source: Path) {
-    JobQueue.start(IMPORT_JOB) { job -> job.result = Packages.importApk(root, source, job).toString() }
+// What an import stopped on. The files given so far are kept, so the user
+// answers and the import goes on without picking them again.
+private sealed interface ImportNeed {
+    val sources: List<Path>
+
+    data class Parts(override val sources: List<Path>, val set: GatheredSet) : ImportNeed
+
+    data class Merger(override val sources: List<Path>) : ImportNeed
+}
+
+private class MergerMissing : Exception("APKEditor is not installed")
+
+// An ordinary APK takes the short path. A lone split, a base that needs its
+// splits, several files or an archive go the set way. A job that stops on a
+// need finishes with no result and hands the need to the shell.
+private fun startImport(root: Path, sources: List<Path>, onNeed: (ImportNeed) -> Unit) {
+    JobQueue.start(IMPORT_JOB) { job ->
+        val single = sources.singleOrNull()?.takeIf { SplitSet.extension(it) == "apk" }
+        // The sha is not needed to choose the path, importApk computes it.
+        if (single != null && SplitSet.standalone(SplitSet.part(single, sha256 = ""))) {
+            job.result = Packages.importApk(root, single, job).toString()
+        } else {
+            val work = RunSession.workDir?.resolve("import") ?: throw IOException("no work folder for this run")
+            Storage.deleteTree(work, work.parent)
+            try {
+                job.result = Packages.importSet(root, sources, work, job, { job.cancelRequested }) { parts, out ->
+                    val spec = Tools.byId("apkeditor") ?: throw IOException("apkeditor is not in the tool table")
+                    val status = Installer.status(root, spec) as? ToolStatus.Installed
+                    if (status == null || !Installer.verify(root, spec)) throw MergerMissing()
+                    Edit.merge(Installer.entry(root, spec, status.version), parts, out, work, job) { job.cancelRequested }
+                }.toString()
+            } catch (e: SetIncomplete) {
+                SwingUtilities.invokeLater { onNeed(ImportNeed.Parts(sources, e.set)) }
+            } catch (e: MergerMissing) {
+                SwingUtilities.invokeLater { onNeed(ImportNeed.Merger(sources)) }
+            } finally {
+                Storage.deleteTree(work, work.parent)
+            }
+        }
+    }
 }
 
 private fun stepLabelKey(step: FirstStep): String = when (step) {
@@ -114,6 +165,9 @@ fun Shell(
     var updates by remember { mutableStateOf<List<Update>>(emptyList()) }
     var overviewDir by remember { mutableStateOf<Path?>(null) }
     var importError by remember { mutableStateOf<String?>(null) }
+    var importNeed by remember { mutableStateOf<ImportNeed?>(null) }
+    // Files waiting for APKEditor's download to end.
+    var afterMerger by remember { mutableStateOf<List<Path>?>(null) }
     var dropping by remember { mutableStateOf(false) }
     var dropRejected by remember { mutableStateOf(false) }
     // The licence opens from the Home footer and from Settings. Back returns
@@ -145,12 +199,32 @@ fun Shell(
             when (jobView.state) {
                 JobState.DONE -> {
                     handled = job
-                    overviewDir = Path.of(jobView.message)
-                    screen = Screen.OVERVIEW
+                    if (jobView.message.isNotEmpty()) {
+                        overviewDir = Path.of(jobView.message)
+                        screen = Screen.OVERVIEW
+                    }
                 }
                 JobState.FAILED -> {
                     handled = job
                     importError = jobView.message
+                }
+                else -> {}
+            }
+        }
+    }
+    // The download the import asked for ended, the import goes on with the
+    // same files. A failed or cancelled download drops them.
+    LaunchedEffect(jobView) {
+        val waiting = afterMerger
+        val r = RunSession.root
+        if (waiting != null && r != null && jobView != null && jobView.title == "apkeditor") {
+            when (jobView.state) {
+                JobState.DONE -> {
+                    afterMerger = null
+                    startImport(r, waiting) { importNeed = it }
+                }
+                JobState.FAILED, JobState.CANCELLED -> {
+                    afterMerger = null
                 }
                 else -> {}
             }
@@ -177,12 +251,12 @@ fun Shell(
             override fun onDrop(event: DragAndDropEvent): Boolean {
                 dropping = false
                 val r = RunSession.root ?: return false
-                val apk = droppedFiles(event.awtTransferable).firstOrNull { isApk(it) }
-                if (apk == null) {
+                val files = droppedFiles(event.awtTransferable).filter { isOpenable(it) }
+                if (files.isEmpty()) {
                     dropRejected = true
                     return false
                 }
-                startImport(r, apk)
+                startImport(r, files) { importNeed = it }
                 return true
             }
         }
@@ -255,8 +329,8 @@ fun Shell(
                             onSource = { source ->
                                 // The user's file is only read, the copy lands under the root.
                                 if (source == Source.APK && root != null) {
-                                    Chooser.file(Strings.get(lang, "choose_apk"), "APK", "apk") { picked ->
-                                        picked?.let { startImport(root, it) }
+                                    Chooser.files(Strings.get(lang, "choose_apk"), Strings.get(lang, "apk_filter"), SplitSet.OPENABLE.toList()) { picked ->
+                                        if (picked.isNotEmpty()) startImport(root, picked) { importNeed = it }
                                     }
                                 }
                             },
@@ -323,6 +397,29 @@ fun Shell(
                             confirmButton = { TextButton(onClick = { importError = null }) { Text(t("close")) } },
                         )
                     }
+                    val need = importNeed
+                    if (need is ImportNeed.Parts && root != null) {
+                        PartsDialog(
+                            set = need.set,
+                            onAdd = {
+                                importNeed = null
+                                Chooser.files(Strings.get(lang, "choose_apk"), Strings.get(lang, "apk_filter"), SplitSet.OPENABLE.toList()) { picked ->
+                                    if (picked.isNotEmpty()) startImport(root, need.sources + picked) { importNeed = it }
+                                }
+                            },
+                            onDismiss = { importNeed = null },
+                        )
+                    }
+                    val merger = Tools.byId("apkeditor")
+                    if (need is ImportNeed.Merger && root != null && merger != null) {
+                        LookupDialog(
+                            root = root,
+                            spec = merger,
+                            onDismiss = { importNeed = null },
+                            why = t("set_merge_needs"),
+                            onStarted = { afterMerger = need.sources },
+                        )
+                    }
                     if (dropRejected) {
                         AlertDialog(
                             onDismissRequest = { dropRejected = false },
@@ -358,4 +455,45 @@ fun Shell(
             }
         }
     }
+}
+
+// Says what is missing in words, lists what was found, and offers to add
+// files. The files already given stay part of the set.
+@Composable
+private fun PartsDialog(set: GatheredSet, onAdd: () -> Unit, onDismiss: () -> Unit) {
+    val found = set.parts.joinToString(", ") { it.split ?: "base" }.ifEmpty { "-" }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(t("set_incomplete")) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(problemText(set.problem))
+                Text(t("set_found", found), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        confirmButton = { TextButton(onClick = onAdd) { Text(t("set_add")) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(t("cancel")) } },
+    )
+}
+
+@Composable
+private fun problemText(p: SetProblem?): String = when (p) {
+    null, SetProblem.NoApk -> t("set_no_apk")
+    SetProblem.NoBase -> t("set_no_base")
+    SetProblem.SeveralBases -> t("set_several_bases")
+    is SetProblem.MixedPackages -> t("set_mixed_packages", p.names.joinToString(", "))
+    SetProblem.MixedVersions -> t("set_mixed_versions")
+    is SetProblem.DuplicateSplit -> t("set_duplicate", p.split)
+    is SetProblem.SplitsMissing ->
+        if (p.types.isEmpty()) t("set_missing_unknown") else t("set_missing_types", p.types.joinToString(", ") { typeName(it) })
+    SetProblem.UnityLibMissing -> t("set_unity_lib")
+}
+
+// bundletool names split types module__dimension, base__abi for instance.
+@Composable
+private fun typeName(type: String): String = when (type.substringAfterLast("__")) {
+    "abi" -> t("set_type_abi")
+    "density" -> t("set_type_density")
+    "language", "locale" -> t("set_type_language")
+    else -> type
 }

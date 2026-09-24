@@ -50,10 +50,10 @@ class PortalFilter(
     @field:Position(1) val patterns: List<PortalPattern>,
 ) : Struct()
 
-// A file or a folder, picked in the system dialog. The portal runs on a
+// Files or a folder, picked in the system dialog. The portal runs on a
 // background thread so the window keeps drawing while the user browses.
 // When no portal answers, Swing's chooser is shown instead. Cancelling is a
-// normal answer, the callback gets null.
+// normal answer, the callback gets null or an empty list.
 object Chooser {
     private const val BUS = "org.freedesktop.portal.Desktop"
     private const val ROOT = "/org/freedesktop/portal/desktop"
@@ -63,17 +63,33 @@ object Chooser {
     private const val WAIT_MIN = 60L
 
     fun file(title: String, filterName: String, extension: String, onPicked: (Path?) -> Unit) {
-        val filter = PortalFilter(filterName, listOf(PortalPattern(UInt32(0), "*.$extension")))
+        pick(title, filterName, listOf(extension), multiple = false) { onPicked(it.firstOrNull()) }
+    }
+
+    // Several files at once, for a split set given as loose APKs. An empty
+    // list is a cancel.
+    fun files(title: String, filterName: String, extensions: List<String>, onPicked: (List<Path>) -> Unit) {
+        pick(title, filterName, extensions, multiple = true, onPicked)
+    }
+
+    private fun pick(title: String, filterName: String, extensions: List<String>, multiple: Boolean, onPicked: (List<Path>) -> Unit) {
+        val filter = PortalFilter(filterName, extensions.map { PortalPattern(UInt32(0), "*.$it") })
         val options = mapOf<String, Variant<*>>(
             "filters" to Variant(listOf(filter), "a(sa(us))"),
             "current_filter" to Variant(filter, "(sa(us))"),
+            "multiple" to Variant(multiple),
         )
         ask(title, options, onPicked) {
             val chooser = JFileChooser().apply {
                 fileSelectionMode = JFileChooser.FILES_ONLY
-                fileFilter = FileNameExtensionFilter(filterName, extension)
+                fileFilter = FileNameExtensionFilter(filterName, *extensions.toTypedArray())
+                isMultiSelectionEnabled = multiple
             }
-            if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) chooser.selectedFile.toPath() else null
+            when {
+                chooser.showOpenDialog(null) != JFileChooser.APPROVE_OPTION -> emptyList()
+                multiple -> chooser.selectedFiles.map { it.toPath() }
+                else -> listOf(chooser.selectedFile.toPath())
+            }
         }
     }
 
@@ -85,20 +101,20 @@ object Chooser {
             // The spec wants a null terminated byte string here.
             if (start != null) put("current_folder", Variant(start.absolutePath.toByteArray() + byteArrayOf(0), "ay"))
         }
-        ask(title, options, onPicked) {
+        ask(title, options, { onPicked(it.firstOrNull()) }) {
             val chooser = JFileChooser(start).apply {
                 fileSelectionMode = JFileChooser.DIRECTORIES_ONLY
                 isAcceptAllFileFilterUsed = false
             }
-            if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) chooser.selectedFile.toPath() else null
+            if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) listOf(chooser.selectedFile.toPath()) else emptyList()
         }
     }
 
-    private fun ask(title: String, options: Map<String, Variant<*>>, onPicked: (Path?) -> Unit, swing: () -> Path?) {
+    private fun ask(title: String, options: Map<String, Variant<*>>, onPicked: (List<Path>) -> Unit, swing: () -> List<Path>) {
         thread(isDaemon = true, name = "gutapk-chooser") {
             val portal = runCatching { portal(title, options) }
             SwingUtilities.invokeLater {
-                if (portal.isSuccess) onPicked(portal.getOrNull()) else onPicked(swing())
+                if (portal.isSuccess) onPicked(portal.getOrDefault(emptyList())) else onPicked(swing())
             }
         }
     }
@@ -106,7 +122,7 @@ object Chooser {
     // The answer comes as a signal on a request object whose path is known
     // in advance from our bus name and a token, so the handler is in place
     // before the call and cannot miss a fast answer.
-    private fun portal(title: String, options: Map<String, Variant<*>>): Path? {
+    private fun portal(title: String, options: Map<String, Variant<*>>): List<Path> {
         DBusConnectionBuilder.forSessionBus().build().use { c ->
             val token = "gutapk_" + UUID.randomUUID().toString().replace("-", "")
             val sender = c.uniqueName.removePrefix(":").replace('.', '_')
@@ -121,8 +137,8 @@ object Chooser {
                 // 0 is a choice, 1 a cancel. Anything else is the portal
                 // failing, which falls back to Swing.
                 return when (r.response.toInt()) {
-                    0 -> firstUri(r.results["uris"]?.value)?.let { Path.of(URI(it)) }
-                    1 -> null
+                    0 -> uris(r.results["uris"]?.value).map { Path.of(URI(it)) }
+                    1 -> emptyList()
                     else -> throw IllegalStateException("portal answered ${r.response}")
                 }
             }
@@ -131,9 +147,9 @@ object Chooser {
 
     // dbus-java hands an "as" back as a list or as an array depending on
     // how it was nested.
-    private fun firstUri(value: Any?): String? = when (value) {
-        is List<*> -> value.firstOrNull()?.toString()
-        is Array<*> -> value.firstOrNull()?.toString()
-        else -> null
+    private fun uris(value: Any?): List<String> = when (value) {
+        is List<*> -> value.mapNotNull { it?.toString() }
+        is Array<*> -> value.mapNotNull { it?.toString() }
+        else -> emptyList()
     }
 }

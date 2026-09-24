@@ -616,6 +616,12 @@ object Edit {
         .replace("\"", "&quot;")
         .replace("'", "\\'")
 
+    // -clean-meta drops the parts' signatures, they no longer match the
+    // merged APK and the user signs it after editing anyway.
+    fun merge(jar: Path, parts: Path, out: Path, work: Path, sink: JobSink, cancelled: () -> Boolean) {
+        runEngine(jar, Engine.APKEDITOR, work, listOf("m", "-i", parts.toString(), "-o", out.toString(), "-f", "-clean-meta"), sink, cancelled)
+    }
+
     private fun runEngine(jar: Path, engine: Engine, work: Path, args: List<String>, sink: JobSink, cancelled: () -> Boolean) {
         // apktool extracts aapt2 through createTempFile, so java.io.tmpdir
         // points into the work folder. Harmless for APKEditor.

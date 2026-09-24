@@ -79,6 +79,7 @@ private fun stepKey(step: String): String = when (step) {
     "build" -> "job_build"
     "verify" -> "job_verify"
     "replace" -> "job_replace"
+    "merge" -> "job_merge"
     else -> "job_download"
 }
 
@@ -207,9 +208,10 @@ private sealed interface Lookup {
 }
 
 // Opened by a click, so the lookup at the publisher is the user's own
-// request. The tool itself is fetched only after Download.
+// request. The tool itself is fetched only after Download. why says what
+// asked for the tool when it is not the Tools zone.
 @Composable
-private fun LookupDialog(root: Path, spec: ToolSpec, onDismiss: () -> Unit) {
+fun LookupDialog(root: Path, spec: ToolSpec, onDismiss: () -> Unit, why: String? = null, onStarted: () -> Unit = {}) {
     var attempt by remember { mutableStateOf(0) }
     val installed = remember(root, spec) { Installer.status(root, spec) as? ToolStatus.Installed }
     val lookup by produceState<Lookup>(Lookup.Busy, spec, attempt) {
@@ -231,7 +233,10 @@ private fun LookupDialog(root: Path, spec: ToolSpec, onDismiss: () -> Unit) {
                     l is Lookup.Busy -> Text(t("dl_looking", spec.host))
                     l is Lookup.Failed -> Text(t("dl_lookup_failed", spec.host, l.message), color = MaterialTheme.colorScheme.error)
                     upToDate && l is Lookup.Found -> Text(t("upd_none", l.release.version))
-                    l is Lookup.Found -> ReleaseFacts(root, spec, l.release, installed?.version)
+                    l is Lookup.Found -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        if (why != null) Text(why)
+                        ReleaseFacts(root, spec, l.release, installed?.version)
+                    }
                 }
             }
         },
@@ -242,6 +247,7 @@ private fun LookupDialog(root: Path, spec: ToolSpec, onDismiss: () -> Unit) {
                     onClick = {
                         onDismiss()
                         startInstall(root, listOf(spec to l.release))
+                        onStarted()
                     },
                 ) { Text(t(if (installed != null) "upd_go" else "dl_go")) }
                 else -> TextButton(onClick = onDismiss) { Text(t("close")) }

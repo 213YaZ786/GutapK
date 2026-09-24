@@ -36,6 +36,7 @@ import io.gutapk.core.apk.ApkInfo
 import io.gutapk.core.apk.ApkReader
 import io.gutapk.core.apk.DexClasses
 import io.gutapk.core.apk.Packages
+import io.gutapk.core.apk.SetRecord
 import io.gutapk.core.apk.SignatureInfo
 import io.gutapk.core.apk.Signatures
 import io.gutapk.core.edit.Engine
@@ -78,6 +79,8 @@ private data class Loaded(
     val icon: ImageBitmap?,
     // Sorted class names from every dex, for the tracker check.
     val classes: List<String>,
+    // What a merged split set was made of, null for a single APK.
+    val set: SetRecord?,
 )
 
 private sealed interface State {
@@ -123,6 +126,7 @@ private fun load(original: Path): Loaded {
         sha256 = Hash.of(original, "SHA-256"),
         icon = bitmap,
         classes = runCatching { ZipFile(original.toFile()).use { DexClasses.read(it) } }.getOrDefault(emptyList()),
+        set = original.parent?.let { Packages.setRecord(it) },
     )
 }
 
@@ -386,8 +390,16 @@ private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?, detectio
                     ZoneRow(t("dl_size"), humanSize(l.size))
                     ZoneRow(t("ov_entries"), info.entries.toString())
                     ZoneRow("SHA-256", l.sha256)
+                    val set = l.set
+                    if (set != null) {
+                        ZoneRow(t("ov_set"), t("ov_set_d", set.parts.size.toString(), set.parts.joinToString(", ")))
+                    }
+                    if (set != null && set.obbs.isNotEmpty()) {
+                        ZoneRow(t("ov_obb"), set.obbs.joinToString(", "))
+                    }
                 }
             }
+            if (l.set?.obbs?.isNotEmpty() == true) BodyText(t("ov_obb_note"))
             BodyText(t("ov_licence_note"))
         }
     }
