@@ -485,7 +485,7 @@ private fun problemText(p: SetProblem?): String = when (p) {
     SetProblem.MixedVersions -> t("set_mixed_versions")
     is SetProblem.DuplicateSplit -> t("set_duplicate", p.split)
     is SetProblem.SplitsMissing ->
-        if (p.types.isEmpty()) t("set_missing_unknown") else t("set_missing_types", p.types.joinToString(", ") { typeName(it) })
+        if (p.types.isEmpty()) t("set_missing_unknown") else t("set_missing_types", p.types.map { typeName(it) }.joinToString(", "))
     SetProblem.UnityLibMissing -> t("set_unity_lib")
 }
 
