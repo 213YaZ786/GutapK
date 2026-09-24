@@ -95,6 +95,41 @@ sys.exit('no asset matching %s' % pattern)
 PY
 }
 
+# Same rules as Releases.parseGithubList: drafts skipped, pre-releases
+# taken, highest version among the releases holding a matching asset.
+github_pre_latest() {
+    python3 - "$1" "$2" <<'PY'
+import json, re, sys
+path, pattern = sys.argv[1], sys.argv[2]
+def key(v):
+    return [int(x) if x.isdigit() else 0 for x in re.split(r'[.-]', v)]
+best = None
+for d in json.load(open(path)):
+    if d.get('draft'):
+        continue
+    version = d['tag_name'].strip()
+    for p in ('v', 'V'):
+        if version.startswith(p):
+            version = version[1:]
+    if not version or not version[0].isdigit():
+        continue
+    for a in d.get('assets', []):
+        if re.fullmatch(pattern, a['name']):
+            url = a['browser_download_url']
+            if not url.startswith('https://'):
+                continue
+            digest = (a.get('digest') or '').strip().lower()
+            sha = digest[7:] if re.fullmatch(r'sha256:[0-9a-f]{64}', digest) else '-'
+            cand = (key(version), version, url, a['size'], sha)
+            if best is None or cand[0] > best[0]:
+                best = cand
+            break
+if best is None:
+    sys.exit('no asset matching %s' % pattern)
+print(best[1], best[2], best[3], best[4])
+PY
+}
+
 # The app asks GitHub without an account, 60 lookups an hour. CI shares its
 # addresses with other jobs, so it uses the job token when one is given.
 gh_auth=()
@@ -133,6 +168,23 @@ while IFS=$'\t' read -r id source index pkg entry execdir licence licenceurl wha
                 continue
             fi
             if ! line="$(github_latest "$SCRATCH/release.json" "$pkg")"; then
+                echo "::error::$id lookup failed in the release answer"
+                fail=1
+                continue
+            fi
+            read -r version url size sha256 <<< "$line"
+            sha1=-
+            ;;
+        github-pre)
+            repo="${index#https://github.com/}"
+            if ! curl -fsSL --retry 3 --retry-delay 5 "${gh_auth[@]}" \
+                    -H "Accept: application/vnd.github+json" \
+                    -o "$SCRATCH/release.json" "https://api.github.com/repos/$repo/releases?per_page=20"; then
+                echo "::error::$id release lookup failed on the GitHub API"
+                fail=1
+                continue
+            fi
+            if ! line="$(github_pre_latest "$SCRATCH/release.json" "$pkg")"; then
                 echo "::error::$id lookup failed in the release answer"
                 fail=1
                 continue
@@ -179,6 +231,7 @@ while IFS=$'\t' read -r id source index pkg entry execdir licence licenceurl wha
 
     # The entry the app will run must exist, or the install succeeds and the
     # tool is missing. A single jar is its own entry, it must be a sound zip.
+    # A single native program must be an ELF file.
     case "$url" in
         *.zip)
             if ! unzip -l "$file" "$entry" > /dev/null 2>&1; then
@@ -187,7 +240,12 @@ while IFS=$'\t' read -r id source index pkg entry execdir licence licenceurl wha
             fi
             ;;
         *)
-            if ! unzip -tq "$file" > /dev/null 2>&1; then
+            if [ "$execdir" = "." ]; then
+                if [ "$(head -c 4 "$file" | od -An -tx1 | tr -d ' \n')" != "7f454c46" ]; then
+                    echo "::error::$id $version is not an ELF program"
+                    fail=1
+                fi
+            elif ! unzip -tq "$file" > /dev/null 2>&1; then
                 echo "::error::$id $version is not a sound jar"
                 fail=1
             fi

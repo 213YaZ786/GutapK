@@ -27,7 +27,16 @@ object Releases {
             parseGithub(fetchText(api, githubHeaders()), spec.pkg)
                 ?: throw IOException("no asset matching ${spec.pkg} in the latest release of $repo")
         }
+        ToolSource.GITHUB_PRE -> {
+            val repo = githubRepo(spec.index)
+            val api = "https://api.github.com/repos/$repo/releases?per_page=$PRE_PAGE"
+            parseGithubList(fetchText(api, githubHeaders()), spec.pkg)
+                ?: throw IOException("no asset matching ${spec.pkg} in the recent releases of $repo")
+        }
     }
+
+    // Enough to reach past a few releases without the asset, one lookup.
+    private const val PRE_PAGE = 20
 
     // owner/name out of https://github.com/owner/name, refused otherwise so
     // the table cannot point the lookup at another host.
@@ -48,9 +57,18 @@ object Releases {
     // The answer of /releases/latest, which already skips drafts and
     // pre-releases. The asset is chosen by name pattern. The sha256 is the
     // one GitHub computed at upload, when it publishes it.
-    fun parseGithub(json: String, pattern: String): Release? {
-        val root = Json.parse(json) as? Map<*, *> ?: return null
-        if (root["draft"] == true || root["prerelease"] == true) return null
+    fun parseGithub(json: String, pattern: String): Release? =
+        (Json.parse(json) as? Map<*, *>)?.let { githubRelease(it, pattern, preAllowed = false) }
+
+    // The answer of /releases, newest first but not promised so. Drafts are
+    // skipped, pre-releases taken, and the highest version wins.
+    fun parseGithubList(json: String, pattern: String): Release? =
+        (Json.parse(json) as? List<*>)?.filterIsInstance<Map<*, *>>()
+            ?.mapNotNull { githubRelease(it, pattern, preAllowed = true) }
+            ?.maxWithOrNull { a, b -> compare(a.version, b.version) }
+
+    private fun githubRelease(root: Map<*, *>, pattern: String, preAllowed: Boolean): Release? {
+        if (root["draft"] == true || (root["prerelease"] == true && !preAllowed)) return null
         val tag = (root["tag_name"] as? String)?.trim() ?: return null
         val version = tag.removePrefix("v").removePrefix("V")
         if (version.isEmpty() || !version[0].isDigit()) return null

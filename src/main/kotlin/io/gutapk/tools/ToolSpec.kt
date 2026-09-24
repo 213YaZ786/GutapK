@@ -3,10 +3,13 @@ package io.gutapk.tools
 enum class ToolSource(val tag: String) {
     GOOGLE_REPO("google-repo"),
     GITHUB("github"),
+    // Like github, for a publisher that only ships pre-releases. Chosen per
+    // tool in the table, never as a fallback.
+    GITHUB_PRE("github-pre"),
 }
 
 // In the execDir column, a tool whose program is a single file, a jar, with
-// nothing to mark executable.
+// nothing to mark executable. A single native program uses "." instead.
 const val NO_EXEC_DIR = "-"
 
 // What a tool is and where its publisher lists releases. Never a version:
@@ -57,7 +60,7 @@ object Tools {
                 ?: throw IllegalArgumentException("unknown source ${f[1]}")
             // For GitHub the package column is the asset name pattern. A bad
             // pattern fails here, at load, not at the first lookup.
-            if (source == ToolSource.GITHUB) Regex(f[3])
+            if (source == ToolSource.GITHUB || source == ToolSource.GITHUB_PRE) Regex(f[3])
             ToolSpec(
                 id = f[0],
                 source = source,

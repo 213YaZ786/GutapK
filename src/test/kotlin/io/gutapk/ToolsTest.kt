@@ -47,11 +47,12 @@ class ToolsTest {
         assertTrue(Tools.known.isNotEmpty())
         Tools.known.forEach {
             assertTrue(it.index.startsWith("https://"), "index not https for ${it.id}")
-            if (it.execDir != NO_EXEC_DIR) {
+            if (it.execDir != NO_EXEC_DIR && it.execDir != ".") {
                 assertTrue(it.entry.startsWith(it.execDir + "/"), "entry outside execDir for ${it.id}")
             }
-            if (it.source == ToolSource.GITHUB) Releases.githubRepo(it.index)
+            if (it.source == ToolSource.GITHUB || it.source == ToolSource.GITHUB_PRE) Releases.githubRepo(it.index)
         }
+        assertNotNull(Tools.byId("cpp2il"))
         assertNotNull(Tools.byId("platform-tools"))
         assertNotNull(Tools.byId("apkeditor"))
         assertNotNull(Tools.byId("apktool"))
@@ -159,6 +160,33 @@ class ToolsTest {
         val noDigest = github.replace(Regex(""""digest": "[^"]*","""), "")
         assertNull(assertNotNull(Releases.parseGithub(noDigest, "APKEditor-[0-9][0-9.]*\\.jar")).sha256)
         assertNull(Releases.parseGithub(github.replace("\"prerelease\": false", "\"prerelease\": true"), ".*"))
+    }
+
+    // Shape of GET /repos/{owner}/{repo}/releases, with Cpp2IL's values as
+    // GitHub served them on 2026-09-24. Only pre-releases exist.
+    private val githubList = """
+        [{"tag_name": "2022.1.0-pre-release.20", "draft": false, "prerelease": true,
+          "assets": [{"name": "Cpp2IL-2022.1.0-pre-release.20-Linux", "size": 17239882,
+            "digest": "sha256:8514eda778f3a3051a93884d856658a8ea0bcd3e8cc0139e500d3c4697d1332e",
+            "browser_download_url": "https://github.com/SamboyCoding/Cpp2IL/releases/download/2022.1.0-pre-release.20/Cpp2IL-2022.1.0-pre-release.20-Linux"}]},
+         {"tag_name": "2022.1.0-pre-release.21", "draft": false, "prerelease": true,
+          "assets": [
+            {"name": "Cpp2IL-2022.1.0-pre-release.21-Linux-ARM64", "size": 16608573,
+             "browser_download_url": "https://github.com/SamboyCoding/Cpp2IL/releases/download/2022.1.0-pre-release.21/Cpp2IL-2022.1.0-pre-release.21-Linux-ARM64"},
+            {"name": "Cpp2IL-2022.1.0-pre-release.21-Linux", "size": 17257994,
+             "digest": "sha256:526998e593c52c029c5a6215c5c6c9f9d963706bfc409fc9ff80a95c4c500349",
+             "browser_download_url": "https://github.com/SamboyCoding/Cpp2IL/releases/download/2022.1.0-pre-release.21/Cpp2IL-2022.1.0-pre-release.21-Linux"}]},
+         {"tag_name": "2099.0.0", "draft": true, "prerelease": false, "assets": []}]
+    """.trimIndent()
+
+    @Test
+    fun readsGithubPreReleases() {
+        val pattern = assertNotNull(Tools.byId("cpp2il")).pkg
+        val r = assertNotNull(Releases.parseGithubList(githubList, pattern))
+        assertEquals("2022.1.0-pre-release.21", r.version)
+        assertEquals("Cpp2IL-2022.1.0-pre-release.21-Linux", r.fileName)
+        assertEquals("526998e593c52c029c5a6215c5c6c9f9d963706bfc409fc9ff80a95c4c500349", r.sha256)
+        assertNull(Releases.parseGithubList("[]", pattern))
     }
 
     @Test

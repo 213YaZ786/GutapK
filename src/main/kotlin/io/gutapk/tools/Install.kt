@@ -149,6 +149,7 @@ object Installer {
                 spec.execDirOrNull?.let { markExecutable(staging.resolve(it)) }
             } else {
                 placeSingle(archive, staging, spec.entry)
+                spec.execDirOrNull?.let { markExecutable(staging.resolve(it)) }
             }
             Files.move(staging, content, StandardCopyOption.ATOMIC_MOVE)
         } finally {
@@ -176,7 +177,8 @@ object Installer {
         val deps = root.resolve("dependencies")
         if (!Files.isDirectory(deps)) return
         val prefix = "${spec.id}-"
-        val versionLike = Regex("""^\d+(\.\d+)*$""")
+        // Pre-release tags carry a suffix, 2022.1.0-pre-release.21 for one.
+        val versionLike = Regex("""^\d+(\.\d+)*(-[A-Za-z0-9.-]+)?$""")
         Files.list(deps).use { it.toList() }
             .filter { Files.isDirectory(it) }
             .filter { d ->

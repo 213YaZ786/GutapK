@@ -150,6 +150,7 @@ fun OverviewScreen(
     }
     var dialog by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf(false) }
+    var methods by remember { mutableStateOf(false) }
     // The job this screen started. Another job finishing, a tool update for
     // instance, must not open this screen's report.
     var started by remember { mutableStateOf<Job?>(null) }
@@ -215,11 +216,13 @@ fun OverviewScreen(
             },
             onBack = { editing = false },
         )
+    } else if (methods) {
+        MethodsScreen(dir, onBack = { methods = false })
     } else {
-        OverviewPage(dir, root, loaded, info, original, detection, running, actionRow, onBack)
+        OverviewPage(dir, root, loaded, info, original, detection, running, actionRow, onBack, onMethods = { methods = true })
     }
 
-    if (info != null && !editing) {
+    if (info != null && !editing && !methods) {
         when (dialog) {
             "sign" -> SignDialog(
                 dir = dir,
@@ -282,6 +285,7 @@ private fun OverviewPage(
     running: (@Composable () -> Unit)?,
     actionRow: @Composable () -> Unit,
     onBack: () -> Unit,
+    onMethods: () -> Unit,
 ) {
     Page(
         title = info?.label ?: info?.packageName ?: dir.fileName.toString(),
@@ -295,7 +299,7 @@ private fun OverviewPage(
         when {
             loaded == null -> BodyText(t("ov_reading"))
             info == null -> Zone(t("ov_error")) { BodyText(loaded.error ?: "") }
-            else -> Body(loaded, info, original, root, detection)
+            else -> Body(loaded, info, original, root, detection, onMethods)
         }
     }
 }
@@ -329,7 +333,7 @@ private fun Header(l: Loaded) {
 }
 
 @Composable
-private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?, detection: Detection?) {
+private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?, detection: Detection?, onMethods: () -> Unit) {
     var showPermissions by remember { mutableStateOf(false) }
     val identity: @Composable () -> Unit = {
         Zone(t("ov_identity")) {
@@ -438,7 +442,7 @@ private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?, detectio
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(24.dp)) {
                     signature()
-                    l.unity?.let { UnityZone(it) }
+                    l.unity?.let { UnityZone(it, root, original.parent, original, onMethods) }
                     file()
                 }
             }
@@ -447,7 +451,7 @@ private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?, detectio
                 identity()
                 signature()
                 content()
-                l.unity?.let { UnityZone(it) }
+                l.unity?.let { UnityZone(it, root, original.parent, original, onMethods) }
                 permissions()
                 if (root != null) TrackersZone(root, detection)
                 file()
