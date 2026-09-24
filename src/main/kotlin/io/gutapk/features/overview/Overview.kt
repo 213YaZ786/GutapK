@@ -39,6 +39,8 @@ import io.gutapk.core.apk.Packages
 import io.gutapk.core.apk.SetRecord
 import io.gutapk.core.apk.SignatureInfo
 import io.gutapk.core.apk.Signatures
+import io.gutapk.core.apk.UnityInfo
+import io.gutapk.core.apk.UnityReader
 import io.gutapk.core.edit.Engine
 import io.gutapk.core.sign.KeyChoice
 import io.gutapk.core.sign.keyChoiceOf
@@ -81,6 +83,8 @@ private data class Loaded(
     val classes: List<String>,
     // What a merged split set was made of, null for a single APK.
     val set: SetRecord?,
+    // Null for anything that is not a Unity game.
+    val unity: UnityInfo?,
 )
 
 private sealed interface State {
@@ -127,6 +131,7 @@ private fun load(original: Path): Loaded {
         icon = bitmap,
         classes = runCatching { ZipFile(original.toFile()).use { DexClasses.read(it) } }.getOrDefault(emptyList()),
         set = original.parent?.let { Packages.setRecord(it) },
+        unity = runCatching { ZipFile(original.toFile()).use { UnityReader.read(it) } }.getOrNull(),
     )
 }
 
@@ -433,6 +438,7 @@ private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?, detectio
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(24.dp)) {
                     signature()
+                    l.unity?.let { UnityZone(it) }
                     file()
                 }
             }
@@ -441,6 +447,7 @@ private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?, detectio
                 identity()
                 signature()
                 content()
+                l.unity?.let { UnityZone(it) }
                 permissions()
                 if (root != null) TrackersZone(root, detection)
                 file()
