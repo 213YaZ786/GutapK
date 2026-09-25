@@ -72,17 +72,27 @@ object Chooser {
         pick(title, filterName, extensions, multiple = true, onPicked)
     }
 
+    // Any file at all, for files sent to a phone.
+    fun anyFiles(title: String, onPicked: (List<Path>) -> Unit) {
+        pick(title, "", emptyList(), multiple = true, onPicked)
+    }
+
+    // No extension means no filter, every file is offered.
     private fun pick(title: String, filterName: String, extensions: List<String>, multiple: Boolean, onPicked: (List<Path>) -> Unit) {
-        val filter = PortalFilter(filterName, extensions.map { PortalPattern(UInt32(0), "*.$it") })
-        val options = mapOf<String, Variant<*>>(
-            "filters" to Variant(listOf(filter), "a(sa(us))"),
-            "current_filter" to Variant(filter, "(sa(us))"),
-            "multiple" to Variant(multiple),
-        )
+        val options = buildMap<String, Variant<*>> {
+            if (extensions.isNotEmpty()) {
+                val filter = PortalFilter(filterName, extensions.map { PortalPattern(UInt32(0), "*.$it") })
+                put("filters", Variant(listOf(filter), "a(sa(us))"))
+                put("current_filter", Variant(filter, "(sa(us))"))
+            }
+            put("multiple", Variant(multiple))
+        }
         ask(title, options, onPicked) {
             val chooser = JFileChooser().apply {
                 fileSelectionMode = JFileChooser.FILES_ONLY
-                fileFilter = FileNameExtensionFilter(filterName, *extensions.toTypedArray())
+                if (extensions.isNotEmpty()) {
+                    fileFilter = FileNameExtensionFilter(filterName, *extensions.toTypedArray())
+                }
                 isMultiSelectionEnabled = multiple
             }
             when {

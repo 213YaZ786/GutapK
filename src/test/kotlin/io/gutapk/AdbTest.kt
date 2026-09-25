@@ -5,6 +5,8 @@ import io.gutapk.device.AppAction
 import io.gutapk.device.AppActions
 import io.gutapk.device.BatteryStatus
 import io.gutapk.device.DeviceApps
+import io.gutapk.device.DeviceFiles
+import io.gutapk.device.EntryKind
 import io.gutapk.device.DeviceInstall
 import io.gutapk.device.DeviceReader
 import io.gutapk.device.DeviceState
@@ -230,5 +232,32 @@ class AdbTest {
         assertNull(AppActions.failed("Package com.x.y new state: disabled-user\n"))
         assertEquals("Failure [DELETE_FAILED_INTERNAL_ERROR]", AppActions.failed("Failure [DELETE_FAILED_INTERNAL_ERROR]\n"))
         assertEquals("Exception occurred while executing 'grant':", AppActions.failed("Exception occurred while executing 'grant':\njava.lang.SecurityException: x\n"))
+    }
+
+    // toybox ls -la on /sdcard/, names with spaces, a link, and the dot
+    // entries that are not shown.
+    @Test
+    fun readsDirectoryListings() {
+        val out = listOf(
+            "total 72",
+            "drwxrws--- 18 u0_a123 media_rw 3452 2026-09-01 10:00 .",
+            "drwx--x--x  4 root    sdcard_rw 4096 2026-01-01 00:00 ..",
+            "drwxrws---  2 u0_a123 media_rw 3452 2026-09-20 18:04 Download",
+            "-rw-rw----  1 u0_a123 media_rw 104857 2026-09-21 09:12 My Photo 1.jpg",
+            "lrwxrwxrwx  1 root    root          21 2026-01-01 00:00 sdcard -> /storage/self/primary",
+            "ls: ./secret: Permission denied",
+        ).joinToString("\n")
+        val e = DeviceFiles.parseLs(out)
+        assertEquals(listOf("Download", "My Photo 1.jpg", "sdcard"), e.map { it.name })
+        assertEquals(listOf(EntryKind.DIR, EntryKind.FILE, EntryKind.LINK), e.map { it.kind })
+        assertEquals(104857L, e[1].size)
+        assertEquals("2026-09-21 09:12", e[1].date)
+        assertEquals("/sdcard/Download", DeviceFiles.child("/sdcard/", "Download"))
+        assertEquals("/sdcard", DeviceFiles.parent("/sdcard/Download"))
+        assertEquals("/", DeviceFiles.parent("/sdcard"))
+        assertEquals("rm -r '/sdcard/it'\\''s'", DeviceFiles.deleteCommand("/sdcard/it's"))
+        assertEquals(false, DeviceFiles.validName("a/b"))
+        assertEquals(false, DeviceFiles.validName(".."))
+        assertEquals(true, DeviceFiles.validName("New folder"))
     }
 }
