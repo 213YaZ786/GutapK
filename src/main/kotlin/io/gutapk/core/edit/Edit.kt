@@ -156,9 +156,10 @@ object Edit {
 
         val label = tweaks.label?.takeIf { it.isNotBlank() }
         if (label != null) {
-            val plan = runCatching { Label.plan(text, xmlEscape(label)) }.getOrElse { throw CheckFailed(it.message ?: "label not changed") }
+            val escaped = Label.escape(label, aapt = engine == Engine.APKTOOL)
+            val plan = runCatching { Label.plan(text, escaped) }.getOrElse { throw CheckFailed(it.message ?: "label not changed") }
             text = plan.manifest
-            plan.strings.forEach { setStringResource(decoded, "string/$it", label, sink) }
+            plan.strings.forEach { setStringResource(decoded, "string/$it", label, escaped, sink) }
             sink.emit(JobEvent.Line("label set: ${plan.strings.size} string resources, ${plan.literals} manifest attributes"))
         }
 
@@ -644,24 +645,17 @@ object Edit {
 
     // A @string/name reference, resolved to the file and entry APKEditor
     // decoded it to. The default strings.xml is res/values/strings.xml.
-    private fun setStringResource(decoded: Path, ref: String, value: String, sink: JobSink) {
+    private fun setStringResource(decoded: Path, ref: String, value: String, escaped: String, sink: JobSink) {
         val name = ref.substringAfter('/')
         val strings = mainResDir(decoded)?.resolve("values")?.resolve("strings.xml")
         if (strings == null || !Files.isRegularFile(strings)) throw CheckFailed("the decoded APK has no strings.xml for $ref")
         val text = Files.readString(strings)
         val pattern = Regex("""(<string name="${Regex.escape(name)}"[^>]*>)(.*?)(</string>)""", RegexOption.DOT_MATCHES_ALL)
         val match = pattern.find(text) ?: throw CheckFailed("string $name not found in strings.xml")
-        val replaced = text.replaceRange(match.range, match.groupValues[1] + xmlEscape(value) + match.groupValues[3])
+        val replaced = text.replaceRange(match.range, match.groupValues[1] + escaped + match.groupValues[3])
         Files.writeString(strings, replaced)
         sink.emit(JobEvent.Line("label string $name set to \"$value\""))
     }
-
-    private fun xmlEscape(s: String): String = s
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace("\"", "&quot;")
-        .replace("'", "\\'")
 
     // -clean-meta drops the parts' signatures, they no longer match the
     // merged APK and the user signs it after editing anyway.

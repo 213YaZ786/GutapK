@@ -42,6 +42,25 @@ object Label {
         return LabelPlan(text, strings, literals)
     }
 
+    // The name as the engine reads it back, checked on the compiled bytes of
+    // real rebuilds (2026-09-25). APKEditor 1.4.9 keeps the text exactly as
+    // XML gives it, a backslash included. apktool hands it to aapt2, which
+    // reads a backslash, a quote and a leading @ or ? as its own syntax.
+    // Both then need the XML escapes, the value may sit in an attribute.
+    fun escape(value: String, aapt: Boolean): String {
+        val text = if (!aapt) {
+            value
+        } else {
+            buildString {
+                value.forEachIndexed { i, c ->
+                    if (c == '\\' || c == '\'' || c == '"' || (i == 0 && (c == '@' || c == '?'))) append('\\')
+                    append(c)
+                }
+            }
+        }
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+    }
+
     // Activities and aliases whose intent filter has MAIN and LAUNCHER.
     // A self-closing element has no filter.
     internal fun launchers(manifest: String): List<IntRange> = COMPONENT.findAll(manifest).mapNotNull { open ->

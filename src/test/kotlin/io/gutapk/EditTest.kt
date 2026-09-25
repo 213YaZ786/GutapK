@@ -543,4 +543,15 @@ class EditTest {
             out,
         )
     }
+
+    // What each engine needs for the name to compile to itself, as read
+    // from the bytes of real rebuilds of an APK on 2026-09-25.
+    @Test
+    fun labelEscapesPerEngine() {
+        assertEquals("Bob's &quot;Clock&quot; &amp; @y", Label.escape("Bob's \"Clock\" & @y", aapt = false))
+        assertEquals("@Home", Label.escape("@Home", aapt = false))
+        assertEquals("\\@Ann\\'s \\&quot;X\\&quot; &amp; Z", Label.escape("@Ann's \"X\" & Z", aapt = true))
+        assertEquals("\\?a\\\\b @c ?d", Label.escape("?a\\b @c ?d", aapt = true))
+        assertEquals("&lt;b&gt;", Label.escape("<b>", aapt = true))
+    }
 }
