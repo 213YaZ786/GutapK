@@ -151,4 +151,13 @@ class AdbTest {
         assertEquals(listOf("/data/app/x/base.apk", "/data/app/x/split_config.arm64_v8a.apk"), d.apks)
         assertNull(DeviceApps.parseDetails("installerPackageName=null", emptyList()).installer)
     }
+
+    // Whole 4096 byte blocks around the range, and where the range starts
+    // in what dd returns.
+    @Test
+    fun readsRangesInWholeBlocks() {
+        assertEquals("dd if='/a b.apk' bs=4096 skip=0 count=1 2>/dev/null" to 10, DeviceApps.ddCommand("'/a b.apk'", 10, 30))
+        assertEquals("dd if='/x' bs=4096 skip=1 count=2 2>/dev/null" to 4000, DeviceApps.ddCommand("'/x'", 8096, 200))
+        assertEquals("dd if='/x' bs=4096 skip=2 count=1 2>/dev/null" to 0, DeviceApps.ddCommand("'/x'", 8192, 4096))
+    }
 }

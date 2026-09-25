@@ -33,6 +33,25 @@ object Adb {
         return AdbResult(process.exitValue(), out.toString())
     }
 
+    // stdout alone, as bytes, for exec-out: binary data must not meet the
+    // text reader or adb's own messages.
+    fun runBytes(adb: Path, args: List<String>, timeoutS: Long = 60): ByteArray {
+        val process = ProcessBuilder(listOf(adb.toString()) + args)
+            .redirectError(ProcessBuilder.Redirect.DISCARD)
+            .start()
+        var bytes = ByteArray(0)
+        val reader = Thread { bytes = process.inputStream.use { it.readBytes() } }
+        reader.isDaemon = true
+        reader.start()
+        if (!process.waitFor(timeoutS, TimeUnit.SECONDS)) {
+            process.destroyForcibly()
+            throw IOException("adb ${args.joinToString(" ")} did not answer within $timeoutS s")
+        }
+        reader.join(5000)
+        if (process.exitValue() != 0) throw IOException("adb ${args.joinToString(" ")} exited with ${process.exitValue()}")
+        return bytes
+    }
+
     fun devices(adb: Path): List<AdbDevice> = parseDevices(run(adb, listOf("devices", "-l")).out)
 
     // command is read by the device's shell. Anything that did not come

@@ -59,6 +59,8 @@ fun ZoneRow(
     detail: String,
     onClick: (() -> Unit)? = null,
     trailing: (@Composable () -> Unit)? = null,
+    // An app's icon, for lists of apps.
+    leading: (@Composable () -> Unit)? = null,
 ) {
     val base = Modifier
         .fillMaxWidth()
@@ -70,6 +72,7 @@ fun ZoneRow(
         horizontalArrangement = Arrangement.spacedBy(16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        leading?.invoke()
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.bodyLarge)
             Text(

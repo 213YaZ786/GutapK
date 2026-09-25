@@ -11,6 +11,9 @@ import io.gutapk.core.apk.IconPath
 import io.gutapk.core.apk.XmlAttr
 import io.gutapk.core.apk.XmlElement
 import io.gutapk.core.apk.Packages
+import io.gutapk.core.apk.PartialZip
+import io.gutapk.core.apk.RangeReader
+import io.gutapk.core.apk.RemoteIcons
 import io.gutapk.core.apk.ResourceTable
 import io.gutapk.core.apk.Signatures
 import io.gutapk.core.apk.Tracker
@@ -329,5 +332,47 @@ class ApkTest {
         val absent = Tracker("Absent", emptyList(), listOf("com.absent.", "com.google.firebase.analytics.FirebaseAnalyticsX", "zzz."))
         assertEquals(listOf("Flurry", "Firebase Analytics"), Trackers.detect(classes, listOf(flurry, firebase, absent)).map { it.name })
         assertEquals(emptyList(), Trackers.detect(emptyList(), listOf(flurry)))
+    }
+
+    // A phone's APK read in pieces, here from a local file through the same
+    // reader interface, with a counter to show the whole file is not read.
+    @Test
+    fun readsAnApkInPieces() = withDir { dir ->
+        // Larger than the 64 KB read at the end, with an asset that must
+        // never be fetched.
+        val file = dir.resolve("app.apk")
+        ZipOutputStream(Files.newOutputStream(file)).use { z ->
+            fun put(name: String, data: ByteArray) {
+                z.putNextEntry(ZipEntry(name))
+                z.write(data)
+                z.closeEntry()
+            }
+            put("AndroidManifest.xml", manifest())
+            put("assets/big.bin", ByteArray(400_000).also { java.util.Random(7).nextBytes(it) })
+            put("resources.arsc", table("My App"))
+            put("classes.dex", emptyDex())
+        }
+        val bytes = Files.readAllBytes(file)
+        var read = 0L
+        val reader = RangeReader { offset, length ->
+            val end = minOf(bytes.size.toLong(), offset + length).toInt()
+            read += end - offset
+            bytes.copyOfRange(offset.toInt(), end)
+        }
+        val entries = PartialZip.directory(bytes.size.toLong(), reader)
+        java.util.zip.ZipFile(file.toFile()).use { zip ->
+            assertEquals(zip.entries().toList().map { it.name }, entries.keys.toList())
+            listOf("AndroidManifest.xml", "classes.dex").forEach { name ->
+                val whole = zip.getInputStream(zip.getEntry(name)).use { it.readBytes() }
+                assertTrue(whole.contentEquals(PartialZip.entry(entries.getValue(name), reader)), name)
+            }
+        }
+
+        read = 0
+        val icon = RemoteIcons.read(bytes.size.toLong(), reader, dir.resolve("work"))
+        assertEquals("My App", icon.label)
+        // Manifest and table only: no dex, no library, no asset.
+        assertTrue(read < bytes.size, "read $read of ${bytes.size}")
+        assertFailsWith<io.gutapk.core.apk.ApkFormatError> { PartialZip.directory(8, RangeReader { _, _ -> ByteArray(8) }) }
     }
 }

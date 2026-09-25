@@ -1,5 +1,8 @@
 package io.gutapk.device
 
+import io.gutapk.core.apk.RangeReader
+import io.gutapk.core.apk.RemoteIcon
+import io.gutapk.core.apk.RemoteIcons
 import io.gutapk.job.JobEvent
 import io.gutapk.job.JobSink
 import io.gutapk.tools.CancelledByUser
@@ -68,6 +71,35 @@ object DeviceApps {
     // "package:/data/app/.../base.apk", one line per APK of the app.
     internal fun parsePaths(text: String): List<String> =
         text.lineSequence().map { it.trim() }.filter { it.startsWith("package:/") }.map { it.removePrefix("package:") }.toList()
+
+    // The name and icon of an installed app, from a few pieces of its APK
+    // read in place. The path came from the device, so it is quoted.
+    fun icon(adb: Path, serial: String, apk: String, work: Path): RemoteIcon {
+        val quoted = Adb.quote(apk)
+        val size = Adb.shell(adb, serial, "stat -c %s $quoted").out.trim().toLongOrNull()
+            ?: throw IOException("cannot read the size of $apk")
+        return RemoteIcons.read(size, reader(adb, serial, quoted), work)
+    }
+
+    // dd in whole blocks, the one form every toybox dd has, then cut to the
+    // bytes asked for.
+    private const val BLOCK = 4096
+
+    internal fun ddCommand(quotedPath: String, offset: Long, length: Int): Pair<String, Int> {
+        val first = offset / BLOCK
+        val last = (offset + length + BLOCK - 1) / BLOCK
+        return "dd if=$quotedPath bs=$BLOCK skip=$first count=${last - first} 2>/dev/null" to (offset - first * BLOCK).toInt()
+    }
+
+    private fun reader(adb: Path, serial: String, quotedPath: String) = RangeReader { offset, length ->
+        if (length <= 0) {
+            ByteArray(0)
+        } else {
+            val (command, cut) = ddCommand(quotedPath, offset, length)
+            val bytes = Adb.runBytes(adb, listOf("-s", serial, "exec-out", command))
+            if (cut >= bytes.size) ByteArray(0) else bytes.copyOfRange(cut, minOf(bytes.size, cut + length))
+        }
+    }
 
     // Every APK of the app into dir, under its own file name. adb pull
     // takes the path as an argument, no shell reads it.

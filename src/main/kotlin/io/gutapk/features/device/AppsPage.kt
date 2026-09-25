@@ -1,6 +1,10 @@
 package io.gutapk.features.device
 
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -13,13 +17,19 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import io.gutapk.core.apk.IconArt
 import io.gutapk.device.AdbDevice
 import io.gutapk.device.AppDetails
 import io.gutapk.device.DeviceApps
@@ -29,6 +39,7 @@ import io.gutapk.job.JobQueue
 import io.gutapk.job.JobState
 import io.gutapk.tools.CheckFailed
 import io.gutapk.tools.RunSession
+import io.gutapk.ui.AppIcon
 import io.gutapk.ui.BodyText
 import io.gutapk.ui.Page
 import io.gutapk.ui.Zone
@@ -41,6 +52,11 @@ import kotlinx.coroutines.withContext
 import java.nio.file.Path
 
 private const val PULL_JOB = "pull"
+private val ICON = 40.dp
+
+// What the list knows of an app once a few pieces of its APK were read.
+// Empty when they could not be, the row then keeps its letter.
+private class ListIcon(val label: String?, val image: ImageBitmap?, val art: IconArt?)
 private const val SHOWN = 200
 
 private sealed interface AppsState {
@@ -80,6 +96,27 @@ fun AppsPage(adb: Path, d: AdbDevice, onPulled: (List<Path>) -> Unit, onBack: ()
             if (apps != null) AppsState.Ready(apps) else AppsState.Failed(read.exceptionOrNull()?.message ?: "adb")
         }
     }
+    // Filled row by row in the background, the list usable meanwhile. Kept
+    // while the page is open, so the switch and the search reuse it.
+    val icons = remember(d.serial) { mutableStateMapOf<String, ListIcon>() }
+    val apps = (state as? AppsState.Ready)?.apps.orEmpty()
+    val words = query.lowercase().split(' ').filter { it.isNotEmpty() }
+    val hits = apps.filter { a -> words.all { w -> w in a.packageName.lowercase() || icons[a.packageName]?.label?.lowercase()?.contains(w) == true } }
+    val shown = hits.take(SHOWN)
+    LaunchedEffect(shown.map { it.packageName }) {
+        val work = RunSession.workDir?.resolve("icons") ?: return@LaunchedEffect
+        for (a in shown) {
+            if (icons.containsKey(a.packageName)) continue
+            icons[a.packageName] = withContext(Dispatchers.IO) {
+                runCatching {
+                    val r = DeviceApps.icon(adb, d.serial, a.path, work)
+                    val image = r.bitmap?.let { b -> runCatching { org.jetbrains.skia.Image.makeFromEncoded(b).toComposeImageBitmap() }.getOrNull() }
+                    ListIcon(r.label, image, r.art)
+                }.getOrElse { ListIcon(null, null, null) }
+            }
+        }
+    }
+
     val view = currentJobView()
     LaunchedEffect(view) {
         val job = JobQueue.current.value
@@ -128,12 +165,17 @@ fun AppsPage(adb: Path, d: AdbDevice, onPulled: (List<Path>) -> Unit, onBack: ()
             AppsState.Reading -> BodyText(t("ov_reading"))
             is AppsState.Failed -> Zone(t("ov_error")) { BodyText(s.message) }
             is AppsState.Ready -> {
-                val words = query.lowercase().split(' ').filter { it.isNotEmpty() }
-                val hits = s.apps.filter { a -> words.all { it in a.packageName.lowercase() } }
                 Zone(t("ap_count", hits.size.toString())) {
                     if (hits.isEmpty()) BodyText(t("me_none"))
-                    hits.take(SHOWN).forEach { a ->
-                        ZoneRow(a.packageName, a.path.substringBeforeLast('/'), onClick = { open = a })
+                    shown.forEach { a ->
+                        val icon = icons[a.packageName]
+                        val label = icon?.label
+                        ZoneRow(
+                            label ?: a.packageName,
+                            if (label != null) a.packageName else a.path.substringBeforeLast('/'),
+                            onClick = { open = a },
+                            leading = { RowIcon(icon, label ?: a.packageName) },
+                        )
                     }
                     if (hits.size > SHOWN) BodyText(t("me_more", SHOWN.toString()))
                 }
@@ -162,6 +204,28 @@ fun AppsPage(adb: Path, d: AdbDevice, onPulled: (List<Path>) -> Unit, onBack: ()
             text = { Text(f) },
             confirmButton = { TextButton(onClick = { failure = null }) { Text(t("close")) } },
         )
+    }
+}
+
+// The icon as the launcher would show it, the first letter until it is
+// read or when it cannot be.
+@Composable
+private fun RowIcon(icon: ListIcon?, name: String) {
+    val shape = MaterialTheme.shapes.medium
+    val letter: @Composable () -> Unit = {
+        Box(
+            Modifier.size(ICON).clip(shape).background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(name.take(1).uppercase(), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
+        }
+    }
+    val image = icon?.image
+    val art = icon?.art
+    when {
+        image != null -> Image(image, contentDescription = null, modifier = Modifier.size(ICON).clip(shape))
+        art != null -> AppIcon(art, ICON, shape, letter)
+        else -> letter()
     }
 }
 
