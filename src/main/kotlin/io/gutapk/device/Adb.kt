@@ -1,5 +1,6 @@
 package io.gutapk.device
 
+import io.gutapk.job.CancelWatch
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -17,20 +18,25 @@ class AdbResult(val code: Int, val out: String)
 // phone already authorised for the system's adb stays authorised and the
 // two never fight over the USB device.
 object Adb {
-    fun run(adb: Path, args: List<String>, timeoutS: Long = 30): AdbResult {
+    // cancelled is the job's flag. A long transfer stops when it is set,
+    // with CancelledByUser, instead of running to its end.
+    fun run(adb: Path, args: List<String>, timeoutS: Long = 30, cancelled: () -> Boolean = { false }): AdbResult {
         val process = ProcessBuilder(listOf(adb.toString()) + args).redirectErrorStream(true).start()
-        val out = StringBuilder()
+        val out = StringBuffer()
         val reader = Thread {
             process.inputStream.bufferedReader().use { r -> r.lineSequence().forEach { out.append(it).append('\n') } }
         }
         reader.isDaemon = true
         reader.start()
-        if (!process.waitFor(timeoutS, TimeUnit.SECONDS)) {
-            process.destroyForcibly()
-            return AdbResult(-1, "adb ${args.joinToString(" ")} did not answer within $timeoutS s")
+        return CancelWatch.guard(process, cancelled) {
+            if (!process.waitFor(timeoutS, TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+                AdbResult(-1, "adb ${args.joinToString(" ")} did not answer within $timeoutS s")
+            } else {
+                reader.join(2000)
+                AdbResult(process.exitValue(), out.toString())
+            }
         }
-        reader.join(2000)
-        return AdbResult(process.exitValue(), out.toString())
     }
 
     // stdout alone, as bytes, for exec-out: binary data must not meet the

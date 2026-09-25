@@ -5,9 +5,9 @@ import io.gutapk.core.il2cpp.BytePatch
 import io.gutapk.core.il2cpp.Patches
 import io.gutapk.core.sign.ApkSigning
 import io.gutapk.core.sign.SigningKey
+import io.gutapk.job.CancelWatch
 import io.gutapk.job.JobEvent
 import io.gutapk.job.JobSink
-import io.gutapk.tools.CancelledByUser
 import io.gutapk.tools.CheckFailed
 import io.gutapk.tools.Resolve
 import io.gutapk.tools.Storage
@@ -677,17 +677,13 @@ object Edit {
         val cmd = listOf(javaBin(), "-Djava.io.tmpdir=$tmp", "-jar", jar.toString()) + args
         sink.emit(JobEvent.Line(args.first() + " with " + engine.id))
         val process = ProcessBuilder(cmd).redirectErrorStream(true).start()
-        process.inputStream.bufferedReader().useLines { lines ->
-            lines.forEach { line ->
-                if (cancelled()) {
-                    process.destroy()
-                    throw CancelledByUser()
-                }
-                if (line.isNotBlank()) sink.emit(JobEvent.Line(line.trim()))
+        CancelWatch.guard(process, cancelled) {
+            process.inputStream.bufferedReader().useLines { lines ->
+                lines.forEach { line -> if (line.isNotBlank()) sink.emit(JobEvent.Line(line.trim())) }
             }
+            val code = process.waitFor()
+            if (code != 0) throw CheckFailed("${engine.id} ${args.first()} exited with $code")
         }
-        val code = process.waitFor()
-        if (code != 0) throw CheckFailed("${engine.id} ${args.first()} exited with $code")
     }
 
     // The java that runs GutapK, so the child uses the same bundled runtime.

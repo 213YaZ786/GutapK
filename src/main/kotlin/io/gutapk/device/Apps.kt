@@ -143,7 +143,7 @@ object DeviceApps {
             val name = remote.substringAfterLast('/').ifEmpty { "part-$i.apk" }
             val local = dir.resolve(name)
             sink.emit(JobEvent.Line("adb -s $serial pull $remote $local"))
-            val r = Adb.run(adb, listOf("-s", serial, "pull", remote, local.toString()), 1800)
+            val r = Adb.run(adb, listOf("-s", serial, "pull", remote, local.toString()), 1800, cancelled)
             if (r.code != 0 || !Files.isRegularFile(local)) throw IOException("adb pull failed for $remote: ${r.out.trim()}")
             local
         }

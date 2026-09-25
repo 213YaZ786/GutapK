@@ -171,7 +171,7 @@ fun LogcatPage(adb: Path, d: AdbDevice, onBack: () -> Unit) {
                         reportJob = JobQueue.start("bugreport") { job ->
                             val args = Logcat.bugreportArgs(d.serial, dir)
                             job.emit(io.gutapk.job.JobEvent.Line("adb " + args.joinToString(" ")))
-                            val r = Adb.run(adb, args, 1800)
+                            val r = Adb.run(adb, args, 1800) { job.cancelRequested }
                             if (r.code != 0) throw java.io.IOException(r.out.trim().lines().lastOrNull() ?: "bugreport failed")
                             job.result = r.out.trim().lines().lastOrNull { it.isNotBlank() } ?: dir.toString()
                         }

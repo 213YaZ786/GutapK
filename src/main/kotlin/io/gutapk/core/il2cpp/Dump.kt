@@ -1,9 +1,9 @@
 package io.gutapk.core.il2cpp
 
 import io.gutapk.core.apk.UnityInfo
+import io.gutapk.job.CancelWatch
 import io.gutapk.job.JobEvent
 import io.gutapk.job.JobSink
-import io.gutapk.tools.CancelledByUser
 import io.gutapk.tools.CheckFailed
 import io.gutapk.tools.Hash
 import io.gutapk.tools.Storage
@@ -234,17 +234,12 @@ object Il2CppDump {
             pb.environment()["TMPDIR"] = tmp.toString()
             pb.environment()["NO_COLOR"] = "true"
             val process = pb.start()
-            try {
+            CancelWatch.guard(process, cancelled) {
                 process.inputStream.bufferedReader().useLines { lines ->
-                    lines.forEach { line ->
-                        if (cancelled()) throw CancelledByUser()
-                        if (line.isNotBlank()) sink.emit(JobEvent.Line(line.trim()))
-                    }
+                    lines.forEach { line -> if (line.isNotBlank()) sink.emit(JobEvent.Line(line.trim())) }
                 }
                 val code = process.waitFor()
                 if (code != 0) throw CheckFailed("Cpp2IL exited with $code, the log has its reason")
-            } finally {
-                if (process.isAlive) process.destroyForcibly()
             }
 
             sink.emit(JobEvent.Step("read", 3, 3))

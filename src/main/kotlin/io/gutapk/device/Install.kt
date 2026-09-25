@@ -32,11 +32,11 @@ object DeviceInstall {
         return set.parts.map { it.file }
     }
 
-    fun install(adb: Path, serial: String, files: List<Path>, downgrade: Boolean, sink: JobSink): String {
+    fun install(adb: Path, serial: String, files: List<Path>, downgrade: Boolean, sink: JobSink, cancelled: () -> Boolean): String {
         val args = args(serial, files, downgrade)
         sink.emit(JobEvent.Step("install", 1, 1))
         sink.emit(JobEvent.Line("adb " + args.joinToString(" ")))
-        val r = Adb.run(adb, args, 1800)
+        val r = Adb.run(adb, args, 1800, cancelled)
         r.out.lines().filter { it.isNotBlank() }.forEach { sink.emit(JobEvent.Line(it.trim())) }
         val code = failure(r.out)
         if (code != null) throw InstallRefused(code, r.out.trim())

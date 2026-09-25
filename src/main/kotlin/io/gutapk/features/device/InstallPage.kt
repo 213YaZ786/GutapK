@@ -82,7 +82,7 @@ private fun startInstall(adb: Path, serial: String, item: Installable, downgrade
     Storage.deleteTree(work, work.parent)
     try {
         val files = DeviceInstall.prepare(item.files, work, job) { job.cancelRequested }
-        job.result = DeviceInstall.install(adb, serial, files, downgrade, job)
+        job.result = DeviceInstall.install(adb, serial, files, downgrade, job) { job.cancelRequested }
     } finally {
         Storage.deleteTree(work, work.parent)
     }

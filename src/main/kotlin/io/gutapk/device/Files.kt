@@ -62,7 +62,7 @@ object DeviceFiles {
         remote.forEachIndexed { i, r ->
             if (cancelled()) throw CancelledByUser()
             sink.emit(JobEvent.Step("pull", i + 1, remote.size))
-            transfer(adb, listOf("-s", serial, "pull", "-a", r, local.toString()), sink)
+            transfer(adb, listOf("-s", serial, "pull", "-a", r, local.toString()), sink, cancelled)
         }
     }
 
@@ -70,13 +70,13 @@ object DeviceFiles {
         files.forEachIndexed { i, f ->
             if (cancelled()) throw CancelledByUser()
             sink.emit(JobEvent.Step("push", i + 1, files.size))
-            transfer(adb, listOf("-s", serial, "push", f.toString(), remoteDir.trimEnd('/') + "/"), sink)
+            transfer(adb, listOf("-s", serial, "push", f.toString(), remoteDir.trimEnd('/') + "/"), sink, cancelled)
         }
     }
 
-    private fun transfer(adb: Path, args: List<String>, sink: JobSink) {
+    private fun transfer(adb: Path, args: List<String>, sink: JobSink, cancelled: () -> Boolean) {
         sink.emit(JobEvent.Line("adb " + args.joinToString(" ")))
-        val r = Adb.run(adb, args, 3600)
+        val r = Adb.run(adb, args, 3600, cancelled)
         r.out.lines().filter { it.isNotBlank() }.forEach { sink.emit(JobEvent.Line(it.trim())) }
         if (r.code != 0) throw IOException(r.out.lines().lastOrNull { it.isNotBlank() }?.trim() ?: "adb ${args[2]} failed")
     }
