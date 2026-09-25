@@ -28,6 +28,7 @@ import io.gutapk.core.apk.SetIncomplete
 import io.gutapk.core.apk.SetProblem
 import io.gutapk.core.apk.SplitSet
 import io.gutapk.core.edit.Edit
+import io.gutapk.features.device.DeviceScreen
 import io.gutapk.features.overview.OverviewScreen
 import io.gutapk.job.JobQueue
 import io.gutapk.job.JobState
@@ -56,7 +57,7 @@ import kotlinx.coroutines.withContext
 import java.io.IOException
 import javax.swing.SwingUtilities
 
-private enum class Screen { HOME, SETTINGS, ROOT, DISK, LICENCE, LEGAL, OVERVIEW }
+private enum class Screen { HOME, SETTINGS, ROOT, DISK, LICENCE, LEGAL, OVERVIEW, DEVICE }
 
 private enum class FirstStep { LANGUAGE, LICENCE, LEGAL, ROOT }
 
@@ -333,6 +334,9 @@ fun Shell(
                                         if (picked.isNotEmpty()) startImport(root, picked) { importNeed = it }
                                     }
                                 }
+                                if (source == Source.DEVICE) {
+                                    screen = Screen.DEVICE
+                                }
                             },
                             onPackage = {
                                 overviewDir = it
@@ -385,6 +389,7 @@ fun Shell(
                             },
                         )
                         Screen.DISK -> DiskScreen(RunSession.root, onBack = { screen = Screen.SETTINGS })
+                        Screen.DEVICE -> DeviceScreen(root, onBack = { screen = Screen.HOME })
                         Screen.LICENCE -> LicenceScreen(null, onBack = { screen = licenceFrom }, onContinue = null)
                         Screen.LEGAL -> LegalScreen(null, onBack = { screen = Screen.SETTINGS }, onAccept = null, onDecline = null)
                     }

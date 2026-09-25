@@ -1,18 +1,11 @@
 package io.gutapk.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.IntrinsicSize
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -79,29 +72,15 @@ fun HomeScreen(
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(start = 16.dp),
             )
-            TileRow(
-                { SourceTile("src_apk", Source.APK, it, onSource, dropping) },
-                { SourceTile("src_device", Source.DEVICE, it, onSource, false) },
-            )
+            val apkTile: @Composable (Modifier) -> Unit = { m -> SourceTile("src_apk", Source.APK, m, onSource, dropping) }
+            val deviceTile: @Composable (Modifier) -> Unit = { m -> SourceTile("src_device", Source.DEVICE, m, onSource, false) }
+            TileGrid(columns = 2, tiles = listOf(apkTile, deviceTile))
         }
         if (recent.isNotEmpty()) {
             Zone(t("home_recent")) {
                 recent.forEach { p -> RecentRow(p, onPackage) }
             }
         }
-    }
-}
-
-// Intrinsic height makes both tiles of a row as tall as the taller one, so a
-// longer description in one language does not leave a ragged grid.
-@Composable
-private fun TileRow(start: @Composable (Modifier) -> Unit, end: @Composable (Modifier) -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        start(Modifier.weight(1f).fillMaxHeight())
-        end(Modifier.weight(1f).fillMaxHeight())
     }
 }
 
@@ -117,26 +96,13 @@ private fun RecentRow(p: OpenedPackage, onPackage: (Path) -> Unit) {
 @Composable
 private fun SourceTile(key: String, source: Source, modifier: Modifier, onSource: (Source) -> Unit, highlight: Boolean) {
     val count = Registry.forSource(source).size
-    val base = modifier.clip(MaterialTheme.shapes.large)
-    Surface(
-        shape = MaterialTheme.shapes.large,
-        color = zoneFill(),
-        border = BorderStroke(2.dp, if (highlight) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
-        modifier = if (count > 0) base.clickable { onSource(source) } else base,
-    ) {
-        Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(t(key), style = MaterialTheme.typography.titleLarge)
-            Text(
-                t(key + "_d"),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(10.dp))
-            Text(
-                t(if (highlight) "drop_here" else if (count > 0) "available" else "not_yet"),
-                style = MaterialTheme.typography.labelLarge,
-                color = if (count > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
+    Tile(
+        title = t(key),
+        detail = t(key + "_d"),
+        status = t(if (highlight) "drop_here" else if (count > 0) "available" else "not_yet"),
+        available = count > 0,
+        onClick = { onSource(source) },
+        modifier = modifier,
+        highlight = highlight,
+    )
 }
