@@ -245,7 +245,9 @@ class Il2CppTest {
         assertContentEquals(byteArrayOf(0x1f, 0x20, 0x03, 0xd5.toByte()), Hex.parse("  1F 20\t03   d5 "))
         assertNull(Hex.parse("0x20"))
 
-        val printable = ramp.filter { hexChar(it) != '.' }.map { it.toInt() and 0xff }
+        // A byte shows as itself when printable. 0x2E is a real dot, so a
+        // dot alone does not mean hidden.
+        val printable = (0..255).filter { hexChar(it.toByte()) == it.toChar() }
         assertEquals((0x20..0x7e).toList(), printable)
         assertEquals(" ~...", listOf(0x20, 0x7e, 0x7f, 0x80, 0xff).map { hexChar(it.toByte()) }.joinToString(""))
         assertEquals('.', hexChar(0x1f))
