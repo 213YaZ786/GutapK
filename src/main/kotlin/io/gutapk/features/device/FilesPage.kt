@@ -127,6 +127,10 @@ fun FilesPage(adb: Path, d: AdbDevice, onBack: () -> Unit) {
         }
     }
 
+    // Read here: t is composable, the click handlers below are not.
+    val deleteTitle = t("fi_delete")
+    val newTitle = t("fi_new")
+    val renameTitle = t("fi_rename")
     val running = jobPill(view)
     val actions: @Composable () -> Unit = {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -206,7 +210,7 @@ fun FilesPage(adb: Path, d: AdbDevice, onBack: () -> Unit) {
                     }) { Text(t("fi_rename")) }
                     TextButton(onClick = {
                         chosen = null
-                        change = Change(t("fi_delete"), DeviceFiles.deleteCommand(c.path), destructive = true)
+                        change = Change(deleteTitle, DeviceFiles.deleteCommand(c.path), destructive = true)
                     }) { Text(t("fi_delete"), color = MaterialTheme.colorScheme.error) }
                 }
             },
@@ -217,14 +221,14 @@ fun FilesPage(adb: Path, d: AdbDevice, onBack: () -> Unit) {
     if (n != null) {
         NameDialog(t("fi_new"), n, onDone = { name ->
             naming = null
-            change = Change(t("fi_new"), DeviceFiles.mkdirCommand(DeviceFiles.child(dir, name)), destructive = false)
+            change = Change(newTitle, DeviceFiles.mkdirCommand(DeviceFiles.child(dir, name)), destructive = false)
         }, onDismiss = { naming = null })
     }
     val r = renaming
     if (r != null) {
         NameDialog(t("fi_rename"), r.entry.name, onDone = { name ->
             renaming = null
-            change = Change(t("fi_rename"), DeviceFiles.moveCommand(r.path, DeviceFiles.child(DeviceFiles.parent(r.path), name)), destructive = false)
+            change = Change(renameTitle, DeviceFiles.moveCommand(r.path, DeviceFiles.child(DeviceFiles.parent(r.path), name)), destructive = false)
         }, onDismiss = { renaming = null })
     }
     val ch = change
