@@ -29,6 +29,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import io.gutapk.core.il2cpp.Arm64
 import io.gutapk.core.il2cpp.Arm64Presets
 import io.gutapk.core.il2cpp.BytePatch
 import io.gutapk.core.il2cpp.LibBytes
@@ -119,6 +120,9 @@ fun HexScreen(packageDir: Path, apk: Path, method: MethodEntry, onBack: () -> Un
                     HexRows(d, method.offset)
                     if (method.length > d.original.size) BodyText(t("hex_truncated", d.original.size.toString()))
                 }
+                if (d.abi == Arm64Presets.ABI && method.offset % 4 == 0L) {
+                    Zone(t("hex_code")) { CodeRows(d, method.offset) }
+                }
                 Zone(t("hex_patches", mine.size.toString())) {
                     if (mine.isEmpty()) {
                         BodyText(t("hex_patches_none"))
@@ -197,6 +201,39 @@ private fun HexRows(d: HexData, start: Long) {
                     withStyle(SpanStyle(color = dim)) {
                         append(" ")
                         for (i in row until minOf(row + ROW, shown.size)) append(hexChar(shown[i]))
+                    }
+                }
+                Text(text, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodyMedium, color = Color.Unspecified)
+            }
+        }
+    }
+}
+
+// One arm64 instruction per row, patches applied, the changed ones in the
+// accent colour. Branch targets are file offsets, like the rest of the page.
+@Composable
+private fun CodeRows(d: HexData, start: Long) {
+    val (shown, changed) = Patches.overlay(d.original, start, d.abi, d.patches)
+    val accent = MaterialTheme.colorScheme.primary
+    val dim = MaterialTheme.colorScheme.onSurfaceVariant
+    SelectionContainer {
+        Column(
+            Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            for (i in 0..shown.size - 4 step 4) {
+                val patched = (i until i + 4).any { changed[it] }
+                val text = buildAnnotatedString {
+                    withStyle(SpanStyle(color = dim)) {
+                        append("%08X  ".format(start + i))
+                        append((i until i + 4).joinToString(" ") { "%02X".format(shown[it]) })
+                        append("  ")
+                    }
+                    val line = Arm64.decode(shown, i, start + i).replace('\t', ' ')
+                    if (patched) {
+                        withStyle(SpanStyle(color = accent, fontWeight = FontWeight.Bold)) { append(line) }
+                    } else {
+                        append(line)
                     }
                 }
                 Text(text, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodyMedium, color = Color.Unspecified)
