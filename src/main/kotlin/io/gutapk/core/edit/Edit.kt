@@ -582,13 +582,16 @@ object Edit {
         return decodedPackages + listOf(decoded.resolve("res")).filter { Files.isDirectory(it) }
     }
 
+    // uses-sdk and nothing longer, uses-sdk-library for one.
+    private val USES_SDK = Regex("""<uses-sdk(?![\w-])""")
+
     // minSdkVersion and targetSdkVersion live on a uses-sdk element. Each is
     // changed in place if present, added to uses-sdk if the element exists,
     // and a uses-sdk element is inserted after the opening manifest tag when
     // there is none.
-    private fun setSdk(text: String, minSdk: Int?, targetSdk: Int?, sink: JobSink): String {
+    internal fun setSdk(text: String, minSdk: Int?, targetSdk: Int?, sink: JobSink): String {
         var out = text
-        val hasUsesSdk = Regex("""<uses-sdk""").containsMatchIn(out)
+        val hasUsesSdk = USES_SDK.containsMatchIn(out)
         if (!hasUsesSdk) {
             val attrs = buildList {
                 if (minSdk != null) add("android:minSdkVersion=\"$minSdk\"")
@@ -615,7 +618,7 @@ object Edit {
             return present.replaceFirst(text, "android:$attr=\"$value\"")
         }
         // uses-sdk exists but lacks this attribute: add it to the element.
-        val open = Regex("""<uses-sdk""").find(text) ?: return text
+        val open = USES_SDK.find(text) ?: return text
         sink.emit(JobEvent.Line("$attr added as $value"))
         return text.substring(0, open.range.last + 1) + " android:$attr=\"$value\"" + text.substring(open.range.last + 1)
     }

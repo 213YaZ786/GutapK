@@ -20,17 +20,16 @@ object Modern {
 
     // A values folder name to the BCP 47 tag Android lists: values-fr is fr,
     // values-pt-rBR is pt-BR, values-b+sr+Latn is sr-Latn. Folders without a
-    // language, values-night or values-v31, give null.
+    // language, values-night, values-v31 or values-hdr, give null.
     fun localeTag(folder: String): String? {
         if (!folder.startsWith("values-")) return null
-        val rest = folder.removePrefix("values-")
+        val rest = Size.fromLanguage(folder.removePrefix("values-"))
         if (rest.startsWith("b+")) {
             val parts = rest.removePrefix("b+").substringBefore('-').split('+')
             return parts.takeIf { it.first().matches(Regex("[a-z]{2,3}")) }?.joinToString("-")
         }
         val parts = rest.split('-')
-        // car is the car UI mode, the one qualifier shaped like a language.
-        val lang = parts.first().takeIf { it.matches(Regex("[a-z]{2,3}")) && it != "car" } ?: return null
+        val lang = parts.first().takeIf { it.matches(Regex("[a-z]{2,3}")) && it !in Size.NOT_LANGUAGES } ?: return null
         val region = parts.getOrNull(1)?.takeIf { it.matches(Regex("r[A-Z]{2}|r[0-9]{3}")) }?.removePrefix("r")
         return if (region != null) "$lang-$region" else lang
     }

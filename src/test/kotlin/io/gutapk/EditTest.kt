@@ -12,6 +12,8 @@ import io.gutapk.core.edit.Sdk
 import io.gutapk.core.edit.SdkProblem
 import io.gutapk.core.edit.Security
 import io.gutapk.core.edit.Size
+import io.gutapk.job.JobEvent
+import io.gutapk.job.JobSink
 import io.gutapk.tools.Storage
 import java.awt.image.BufferedImage
 import java.nio.file.Files
@@ -265,6 +267,9 @@ class EditTest {
         assertNull(Modern.localeTag("values-v31"))
         assertNull(Modern.localeTag("values-car"))
         assertNull(Modern.localeTag("values"))
+        assertEquals("pt-BR", Modern.localeTag("values-mcc724-mnc05-pt-rBR"))
+        assertNull(Modern.localeTag("values-hdr"))
+        assertNull(Modern.localeTag("values-mcc310"))
         assertTrue(Modern.localeConfigXml(listOf("fr", "pt-BR")).contains("<locale android:name=\"pt-BR\" />"))
     }
 
@@ -357,6 +362,11 @@ class EditTest {
         assertNull(Size.languageOf("values-night"))
         assertNull(Size.languageOf("mipmap-anydpi-v26"))
         assertNull(Size.languageOf("values-car"))
+        // Fix 6: network codes come before the language, hdr is a colour mode.
+        assertEquals("fr", Size.languageOf("values-mcc310-fr"))
+        assertEquals("pt", Size.languageOf("values-mcc724-mnc05-pt-rBR"))
+        assertNull(Size.languageOf("values-mcc310"))
+        assertNull(Size.languageOf("values-hdr"))
     }
 
     // Debug lines go, every instruction stays, the final newline too.
@@ -482,5 +492,27 @@ class EditTest {
         } finally {
             Storage.deleteTree(dir, dir.parent)
         }
+    }
+
+    // The uses-sdk pattern held a backspace byte instead of \b from the first
+    // upload, so it never matched and a second uses-sdk was always added.
+    // uses-sdk-library must not count as uses-sdk either (fix 6).
+    @Test
+    fun setsSdkOnTheUsesSdkElement() {
+        val quiet = object : JobSink {
+            override fun emit(event: JobEvent) {}
+        }
+        val present = "<manifest package=\"a\">\n  <uses-sdk android:minSdkVersion=\"21\" android:targetSdkVersion=\"30\"/>\n</manifest>"
+        val changed = Edit.setSdk(present, 24, 34, quiet)
+        assertEquals(1, Regex("<uses-sdk").findAll(changed).count())
+        assertTrue(changed.contains("<uses-sdk android:minSdkVersion=\"24\" android:targetSdkVersion=\"34\"/>"))
+
+        val library = "<manifest package=\"a\">\n  <application>\n    <uses-sdk-library android:name=\"x\" android:versionMajor=\"1\"/>\n  </application>\n</manifest>"
+        val added = Edit.setSdk(library, 24, null, quiet)
+        assertTrue(added.contains("<manifest package=\"a\">\n  <uses-sdk android:minSdkVersion=\"24\" />"))
+        assertTrue(added.contains("<uses-sdk-library android:name=\"x\""))
+
+        val minOnly = "<manifest package=\"a\">\n  <uses-sdk android:minSdkVersion=\"21\"/>\n</manifest>"
+        assertTrue(Edit.setSdk(minOnly, null, 34, quiet).contains("<uses-sdk android:targetSdkVersion=\"34\" android:minSdkVersion=\"21\"/>"))
     }
 }
