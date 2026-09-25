@@ -136,11 +136,10 @@ object Edit {
     private fun keyChoiceSuffix(keyName: String) =
         io.gutapk.core.sign.KeyChoice.entries.firstOrNull { it.name == keyName } ?: io.gutapk.core.sign.KeyChoice.OWN
 
-    // The application label lives in res/values/strings.xml, referenced by
-    // android:label in the manifest. Changing the string keeps every
-    // language's own name unless it overrides it, which is what a rename
-    // should do. A label set to a literal in the manifest is handled by
-    // rewriting the manifest attribute instead.
+    // The name shown lives in res/values/strings.xml when the application or
+    // launcher label points there, else in the manifest attribute itself.
+    // Label.plan says which. Changing the string keeps every language's own
+    // name unless it overrides it, which is what a rename should do.
     private fun apply(decoded: Path, tweaks: Tweaks, engine: Engine, sink: JobSink) {
         val manifest = decoded.resolve("AndroidManifest.xml")
         if (!Files.isRegularFile(manifest)) throw CheckFailed("decoded APK has no AndroidManifest.xml")
@@ -158,15 +157,10 @@ object Edit {
 
         val label = tweaks.label?.takeIf { it.isNotBlank() }
         if (label != null) {
-            val ref = Regex("""android:label="(@[^"]+)"""").find(text)?.groupValues?.get(1)
-            if (ref != null) {
-                setStringResource(decoded, ref.removePrefix("@"), label, sink)
-            } else {
-                val replaced = text.replace(Regex("""android:label="[^"]*""""), "android:label=\"" + xmlEscape(label) + "\"")
-                if (replaced == text) throw CheckFailed("no android:label in the manifest to change")
-                text = replaced
-                sink.emit(JobEvent.Line("label set in the manifest"))
-            }
+            val plan = runCatching { Label.plan(text, xmlEscape(label)) }.getOrElse { throw CheckFailed(it.message ?: "label not changed") }
+            text = plan.manifest
+            plan.strings.forEach { setStringResource(decoded, "string/$it", label, sink) }
+            sink.emit(JobEvent.Line("label set: ${plan.strings.size} string resources, ${plan.literals} manifest attributes"))
         }
 
         // apktool decodes the SDK levels into apktool.yml and gives them to

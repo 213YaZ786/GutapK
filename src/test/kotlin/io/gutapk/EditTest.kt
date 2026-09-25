@@ -3,6 +3,7 @@ package io.gutapk
 import io.gutapk.core.edit.Edit
 import io.gutapk.core.edit.IconImage
 import io.gutapk.core.edit.IconRefusal
+import io.gutapk.core.edit.Label
 import io.gutapk.core.edit.Modern
 import io.gutapk.core.edit.Neutralise
 import io.gutapk.core.edit.PackageId
@@ -375,5 +376,63 @@ class EditTest {
         assertFalse(out.contains(".local"))
         assertTrue(out.contains("const-string v0, \"x\"\n    return-void"))
         assertTrue(out.endsWith(".end method\n"))
+    }
+
+    // A permission declared before the application, a settings activity with
+    // its own name, and the launcher: only the application and the launcher
+    // take the new name. Fix 1 of the 2026-09-24 review.
+    private val labelled = """
+        <manifest package="com.example.game">
+          <permission android:name="com.example.game.C2D" android:label="Game messages"/>
+          <application android:label="@string/app_name" android:icon="@mipmap/ic">
+            <activity android:name=".Settings" android:label="Settings"/>
+            <activity android:name=".Main" android:label="@string/launcher_name">
+              <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+              </intent-filter>
+            </activity>
+            <activity android:name=".Help" android:label="Help">
+              <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+              </intent-filter>
+            </activity>
+          </application>
+        </manifest>
+    """.trimIndent()
+
+    @Test
+    fun renameTouchesTheApplicationAndTheLauncherOnly() {
+        val plan = Label.plan(labelled, "New")
+        assertEquals(listOf("launcher_name", "app_name"), plan.strings)
+        assertEquals(0, plan.literals)
+        assertEquals(labelled, plan.manifest)
+    }
+
+    @Test
+    fun renameReplacesLiteralsWhereTheNameShows() {
+        val literal = labelled
+            .replace("android:label=\"@string/app_name\"", "android:label=\"Old\"")
+            .replace("android:label=\"@string/launcher_name\"", "android:label=\"Old launcher\"")
+        val plan = Label.plan(literal, "New")
+        assertEquals(emptyList(), plan.strings)
+        assertEquals(2, plan.literals)
+        assertTrue(plan.manifest.contains("<application android:label=\"New\""))
+        assertTrue(plan.manifest.contains("android:name=\".Main\" android:label=\"New\""))
+        assertTrue(plan.manifest.contains("android:label=\"Game messages\""))
+        assertTrue(plan.manifest.contains("android:label=\"Settings\""))
+        assertTrue(plan.manifest.contains("android:label=\"Help\""))
+    }
+
+    @Test
+    fun renameAddsALabelTheApplicationLacks() {
+        val bare = "<manifest>\n  <application android:icon=\"@mipmap/ic\">\n    <activity-alias android:name=\".Alias\" android:label=\"Alias\">\n" +
+            "      <intent-filter><action android:name=\"android.intent.action.MAIN\"/>" +
+            "<category android:name=\"android.intent.category.LAUNCHER\"/></intent-filter>\n    </activity-alias>\n  </application>\n</manifest>"
+        val plan = Label.plan(bare, "New")
+        assertTrue(plan.manifest.contains("<application android:label=\"New\" android:icon="))
+        assertTrue(plan.manifest.contains("<activity-alias android:name=\".Alias\" android:label=\"New\">"))
+        assertEquals(2, plan.literals)
+        assertEquals(1, Label.launchers(bare).size)
     }
 }
