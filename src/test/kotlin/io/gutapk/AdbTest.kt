@@ -3,6 +3,7 @@ package io.gutapk
 import io.gutapk.device.Adb
 import io.gutapk.device.AppAction
 import io.gutapk.device.AppActions
+import io.gutapk.device.Console
 import io.gutapk.device.Controls
 import io.gutapk.device.Debloat
 import io.gutapk.device.Key
@@ -378,5 +379,14 @@ class AdbTest {
     @Test
     fun readsPackageNames() {
         assertEquals(setOf("com.a.b", "com.c.d"), Debloat.parseNames("package:com.a.b\npackage:com.c.d\nWARNING: x\n\n"))
+    }
+
+    @Test
+    fun keepsAConsoleHistory() {
+        var h = Console.remember(emptyList(), "df -h")
+        h = Console.remember(h, "ps -A")
+        h = Console.remember(h, "df -h")
+        assertEquals(listOf("df -h", "ps -A"), h)
+        assertEquals(50, (1..80).fold(emptyList<String>()) { acc, i -> Console.remember(acc, "echo $i") }.size)
     }
 }
