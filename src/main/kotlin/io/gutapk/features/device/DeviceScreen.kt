@@ -85,7 +85,7 @@ private fun probe(adb: Path, client: Pair<Int, String?>): Link {
 }
 
 @Composable
-fun DeviceScreen(root: Path?, onBack: () -> Unit) {
+fun DeviceScreen(root: Path?, onPulled: (List<Path>) -> Unit, onBack: () -> Unit) {
     // Bumped to start over: after the download, after a restart.
     var attempt by remember { mutableStateOf(0) }
     var link by remember { mutableStateOf<Link>(Link.Checking) }
@@ -95,7 +95,8 @@ fun DeviceScreen(root: Path?, onBack: () -> Unit) {
     // The guide the user closed, so it does not reopen until the state
     // changes.
     var closedGuide by remember { mutableStateOf<String?>(null) }
-    var onPage by remember { mutableStateOf(false) }
+    // The tile opened on the device's home, null for the home itself.
+    var page by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(root, attempt) {
         if (root == null) return@LaunchedEffect
@@ -139,10 +140,12 @@ fun DeviceScreen(root: Path?, onBack: () -> Unit) {
     val current = ready.firstOrNull { it.serial == chosen } ?: ready.singleOrNull()
 
     val adb = (l as? Link.Devices)?.adb
-    if (current != null && adb != null && onPage) {
-        DevicePage(adb, current, onBack = { onPage = false })
+    if (current != null && adb != null && page == "dev_t_device") {
+        DevicePage(adb, current, onBack = { page = null })
+    } else if (current != null && adb != null && page == "dev_t_apps") {
+        AppsPage(adb, current, onPulled = onPulled, onBack = { page = null })
     } else if (current != null) {
-        DeviceHome(current, onBack, onDevice = { onPage = true })
+        DeviceHome(current, onBack, onTile = { page = it })
     } else {
         Page(title = t("dev_title"), onBack = onBack) {
             when (l) {
@@ -277,7 +280,7 @@ private fun ChooseDialog(ready: List<AdbDevice>, onPick: (String) -> Unit, onDis
 // The device's own page, its model as the title. Each tile is one kind of
 // work, opened in the versions that follow.
 @Composable
-private fun DeviceHome(d: AdbDevice, onBack: () -> Unit, onDevice: () -> Unit) {
+private fun DeviceHome(d: AdbDevice, onBack: () -> Unit, onTile: (String) -> Unit) {
     Page(title = d.model ?: d.serial, width = 960.dp, onBack = onBack) {
         Text(
             d.serial,
@@ -288,7 +291,7 @@ private fun DeviceHome(d: AdbDevice, onBack: () -> Unit, onDevice: () -> Unit) {
         )
         val tiles = listOf(
             Triple("dev_t_device", GIcons.Device, true),
-            Triple("dev_t_apps", GIcons.Apps, false),
+            Triple("dev_t_apps", GIcons.Apps, true),
             Triple("dev_t_install", GIcons.Install, false),
             Triple("dev_t_files", GIcons.Folder, false),
             Triple("dev_t_debloat", GIcons.Debloat, false),
@@ -300,7 +303,7 @@ private fun DeviceHome(d: AdbDevice, onBack: () -> Unit, onDevice: () -> Unit) {
                     detail = t(key + "_d"),
                     status = t(if (available) "available" else "not_yet"),
                     available = available,
-                    onClick = { if (key == "dev_t_device") onDevice() },
+                    onClick = { onTile(key) },
                     modifier = m,
                     icon = icon,
                 )

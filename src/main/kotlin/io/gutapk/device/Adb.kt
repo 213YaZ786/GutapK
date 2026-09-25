@@ -35,8 +35,14 @@ object Adb {
 
     fun devices(adb: Path): List<AdbDevice> = parseDevices(run(adb, listOf("devices", "-l")).out)
 
+    // command is read by the device's shell. Anything that did not come
+    // from GutapK itself goes through quote first.
     fun shell(adb: Path, serial: String, command: String, timeoutS: Long = 30): AdbResult =
         run(adb, listOf("-s", serial, "shell", command), timeoutS)
+
+    // One shell word, single quoted: nothing inside is expanded, a quote
+    // inside is closed, escaped and reopened.
+    fun quote(arg: String): String = "'" + arg.replace("'", "'\\''") + "'"
 
     // "SERIAL<tab or spaces>state key:value ...". The no permissions state
     // carries a sentence, so the state is read by its first words. Only the

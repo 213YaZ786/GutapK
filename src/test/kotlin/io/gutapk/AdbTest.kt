@@ -2,6 +2,7 @@ package io.gutapk
 
 import io.gutapk.device.Adb
 import io.gutapk.device.BatteryStatus
+import io.gutapk.device.DeviceApps
 import io.gutapk.device.DeviceReader
 import io.gutapk.device.DeviceState
 import kotlin.test.Test
@@ -105,5 +106,49 @@ class AdbTest {
         assertEquals(listOf(true, false), users.map { it.running })
         assertEquals(listOf("-s", "X1", "reboot"), DeviceReader.rebootArgs("X1", null))
         assertEquals(listOf("-s", "X1", "reboot", "recovery"), DeviceReader.rebootArgs("X1", "recovery"))
+    }
+
+    // Fix 10 of the 2026-09-24 review: whatever reaches the device's shell
+    // from outside GutapK is one quoted word.
+    @Test
+    fun quotesShellWords() {
+        assertEquals("'com.example.app'", Adb.quote("com.example.app"))
+        assertEquals("'a'\\''b'", Adb.quote("a'b"))
+        assertEquals("'" + "$" + "(reboot)'", Adb.quote("$" + "(reboot)"))
+    }
+
+    @Test
+    fun readsInstalledApps() {
+        val out = listOf(
+            "package:/data/app/~~Q2F0==/com.example.game-bG9n==/base.apk=com.example.game",
+            "package:/product/app/Maps/Maps.apk=com.google.android.apps.maps",
+            "package:/data/app/bad=path/base.apk=not a package",
+            "WARNING: linker: something",
+        ).joinToString("\n")
+        val apps = DeviceApps.parseList(out, system = false)
+        assertEquals(listOf("com.example.game", "com.google.android.apps.maps"), apps.map { it.packageName })
+        assertEquals("/data/app/~~Q2F0==/com.example.game-bG9n==/base.apk", apps[0].path)
+    }
+
+    @Test
+    fun readsAppDetails() {
+        val dump = listOf(
+            "Packages:",
+            "  Package [com.example.game] (4f3a2b1):",
+            "    versionCode=10109 minSdk=24 targetSdk=34",
+            "    versionName=1.1.1.9",
+            "    installerPackageName=com.android.vending",
+            "    firstInstallTime=2026-07-18 19:34:22",
+            "    lastUpdateTime=2026-09-01 08:00:00",
+        ).joinToString("\n")
+        val paths = DeviceApps.parsePaths("package:/data/app/x/base.apk\npackage:/data/app/x/split_config.arm64_v8a.apk\n")
+        val d = DeviceApps.parseDetails(dump, paths)
+        assertEquals("1.1.1.9", d.versionName)
+        assertEquals("10109", d.versionCode)
+        assertEquals("com.android.vending", d.installer)
+        assertEquals("2026-07-18 19:34:22", d.firstInstall)
+        assertEquals("2026-09-01 08:00:00", d.lastUpdate)
+        assertEquals(listOf("/data/app/x/base.apk", "/data/app/x/split_config.arm64_v8a.apk"), d.apks)
+        assertNull(DeviceApps.parseDetails("installerPackageName=null", emptyList()).installer)
     }
 }

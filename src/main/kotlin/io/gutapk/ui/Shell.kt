@@ -389,7 +389,13 @@ fun Shell(
                             },
                         )
                         Screen.DISK -> DiskScreen(RunSession.root, onBack = { screen = Screen.SETTINGS })
-                        Screen.DEVICE -> DeviceScreen(root, onBack = { screen = Screen.HOME })
+                        Screen.DEVICE -> DeviceScreen(
+                            root,
+                            // Pulled APKs are imported like files the user
+                            // picked, a split set merged the same way.
+                            onPulled = { files -> if (root != null) startImport(root, files) { importNeed = it } },
+                            onBack = { screen = Screen.HOME },
+                        )
                         Screen.LICENCE -> LicenceScreen(null, onBack = { screen = licenceFrom }, onContinue = null)
                         Screen.LEGAL -> LegalScreen(null, onBack = { screen = Screen.SETTINGS }, onAccept = null, onDecline = null)
                     }
