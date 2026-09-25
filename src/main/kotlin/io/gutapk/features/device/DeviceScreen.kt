@@ -147,7 +147,7 @@ fun DeviceScreen(root: Path?, onPulled: (List<Path>) -> Unit, onBack: () -> Unit
     } else if (current != null && adb != null && page == "dev_t_install") {
         InstallPage(root, adb, current, onBack = { page = null })
     } else if (current != null && adb != null && page == "dev_t_apps") {
-        AppsPage(adb, current, onPulled = onPulled, onBack = { page = null })
+        AppsPage(root, adb, current, onPulled = onPulled, onBack = { page = null })
     } else if (current != null) {
         DeviceHome(current, onBack, onTile = { page = it })
     } else {

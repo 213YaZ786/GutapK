@@ -82,7 +82,7 @@ private fun startPull(adb: Path, serial: String, app: InstalledApp, apks: List<S
 // from there it goes to the editor: every APK of it is pulled, then
 // imported like a file the user picked.
 @Composable
-fun AppsPage(adb: Path, d: AdbDevice, onPulled: (List<Path>) -> Unit, onBack: () -> Unit) {
+fun AppsPage(root: Path?, adb: Path, d: AdbDevice, onPulled: (List<Path>) -> Unit, onBack: () -> Unit) {
     var system by remember { mutableStateOf(false) }
     // The owner by default. A second user or a work profile has its own
     // list of apps.
@@ -118,7 +118,7 @@ fun AppsPage(adb: Path, d: AdbDevice, onPulled: (List<Path>) -> Unit, onBack: ()
             if (icons.containsKey(a.packageName)) continue
             icons[a.packageName] = withContext(Dispatchers.IO) {
                 runCatching {
-                    val r = DeviceApps.icon(adb, d.serial, a, work)
+                    val r = DeviceApps.icon(adb, d.serial, a, work, root?.resolve("cache")?.resolve("icons"))
                     val image = r.bitmap?.let { b -> runCatching { org.jetbrains.skia.Image.makeFromEncoded(b).toComposeImageBitmap() }.getOrNull() }
                     ListIcon(r.label, image, r.art, r.declared)
                 }.getOrElse { ListIcon(null, null, null) }

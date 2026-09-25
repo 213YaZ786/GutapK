@@ -135,5 +135,6 @@ private fun sectionKey(kind: SectionKind): String = when (kind) {
     SectionKind.WORK -> "sec_work"
     SectionKind.LOGS -> "sec_logs"
     SectionKind.PACKAGES -> "sec_packages"
+    SectionKind.CACHE -> "sec_cache"
     SectionKind.OTHER -> "sec_other"
 }

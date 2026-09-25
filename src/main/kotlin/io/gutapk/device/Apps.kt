@@ -1,5 +1,6 @@
 package io.gutapk.device
 
+import io.gutapk.core.apk.IconCache
 import io.gutapk.core.apk.RangeReader
 import io.gutapk.core.apk.RemoteApk
 import io.gutapk.core.apk.RemoteIcon
@@ -82,9 +83,13 @@ object DeviceApps {
     // read in place. Paths come from the device, so they are quoted. The
     // splits are listed only when the base holds no picture, density
     // splits first since that is where Play puts them.
-    fun icon(adb: Path, serial: String, app: InstalledApp, work: Path): RemoteIcon {
+    // cache, when given, is checked first by package and base size, one
+    // stat on the phone instead of a dozen reads.
+    fun icon(adb: Path, serial: String, app: InstalledApp, work: Path, cache: Path? = null): RemoteIcon {
         val base = remote(adb, serial, app.path)
-        return RemoteIcons.read(base, work) {
+        val cached = cache?.let { IconCache.file(it, app.packageName, base.size) }
+        cached?.let { f -> IconCache.read(f)?.let { return it } }
+        val icon = RemoteIcons.read(base, work) {
             if (!PACKAGE.matches(app.packageName)) {
                 emptyList()
             } else {
@@ -94,6 +99,11 @@ object DeviceApps {
                     .mapNotNull { runCatching { remote(adb, serial, it) }.getOrNull() }
             }
         }
+        // An icon named but not found is read again next time, a later
+        // GutapK may find it.
+        val settled = !icon.declared || icon.bitmap != null || icon.art != null
+        if (settled) cached?.let { runCatching { IconCache.write(it, icon) } }
+        return icon
     }
 
     private fun remote(adb: Path, serial: String, path: String): RemoteApk {

@@ -3,6 +3,11 @@ package io.gutapk
 import io.gutapk.core.apk.ApkReader
 import io.gutapk.core.apk.BinaryXml
 import io.gutapk.core.apk.DexClasses
+import io.gutapk.core.apk.IconCache
+import io.gutapk.core.apk.IconArt
+import io.gutapk.core.apk.IconLayer
+import io.gutapk.core.apk.RemoteIcon
+import io.gutapk.core.apk.VectorArt
 import io.gutapk.core.apk.IconArtReader
 import io.gutapk.core.apk.IconColour
 import io.gutapk.core.apk.IconGroup
@@ -378,4 +383,36 @@ class ApkTest {
         assertTrue(read < bytes.size, "read $read of ${bytes.size}")
         assertFailsWith<io.gutapk.core.apk.ApkFormatError> { PartialZip.directory(8, RangeReader { _, _ -> ByteArray(8) }) }
     }
+
+    // A vector icon with a nested group and a Material You colour, and a
+    // bitmap one, back from the cache as they went in.
+    @Test
+    fun cachesPhoneIcons() = withDir { dir ->
+        val path = IconPath("M0,0L108,108", IconColour.System(2, 40), 1f, IconColour.Argb(0xff112233.toInt()), 2f, 0.5f, true)
+        val group = IconGroup(15f, 54f, 54f, 1f, 1f, 0f, 0f, listOf(IconGroup(0f, 0f, 0f, 1f, 1f, 3f, 4f, listOf(path))))
+        val art = IconArt(IconLayer.Colour(IconColour.Argb(-1)), IconLayer.Vector(VectorArt(108f, 108f, group)), adaptive = true)
+        val file = assertNotNullOrFail(IconCache.file(dir, "com.example.app", 12345))
+        IconCache.write(file, RemoteIcon("Mon appli", null, art, declared = true))
+        val back = assertNotNullOrFail(IconCache.read(file))
+        assertEquals("Mon appli", back.label)
+        val fg = (back.art?.foreground as IconLayer.Vector).art
+        val inner = (fg.root.children.single() as IconGroup).children.single() as IconPath
+        assertEquals("M0,0L108,108", inner.data)
+        assertEquals(IconColour.System(2, 40), inner.fill)
+        assertEquals(IconColour.Argb(0xff112233.toInt()), inner.stroke)
+        assertTrue(inner.evenOdd)
+        assertEquals(15f, fg.root.rotation)
+        assertEquals(IconLayer.Colour(IconColour.Argb(-1)), back.art?.background)
+
+        val png = assertNotNullOrFail(IconCache.file(dir, "com.example.other", 1))
+        IconCache.write(png, RemoteIcon(null, byteArrayOf(1, 2, 3), null, declared = false))
+        val b = assertNotNullOrFail(IconCache.read(png))
+        assertTrue(byteArrayOf(1, 2, 3).contentEquals(b.bitmap))
+        assertFalse(b.declared)
+        assertEquals(null, IconCache.file(dir, "../evil", 1))
+        Files.writeString(png, "not a cache entry")
+        assertEquals(null, IconCache.read(png))
+    }
+
+    private fun <T> assertNotNullOrFail(v: T?): T = kotlin.test.assertNotNull(v)
 }

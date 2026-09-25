@@ -7,7 +7,7 @@ import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
 import java.io.IOException
 
-enum class SectionKind { DEPENDENCIES, WORK, LOGS, PACKAGES, OTHER }
+enum class SectionKind { DEPENDENCIES, WORK, LOGS, PACKAGES, CACHE, OTHER }
 
 data class DiskEntry(
     val path: Path,
@@ -26,11 +26,12 @@ data class DiskSection(
 data class DiskReport(val root: Path, val sections: List<DiskSection>) {
     val total: Long get() = sections.sumOf { it.bytes }
 
-    // The shell's rule: downloads and work folders are a cache, logs and
-    // packages are the user's. Only the first are swept in one go.
+    // The shell's rule: downloads, work folders and the cache can be
+    // fetched again, logs and packages are the user's. Only the first are
+    // swept in one go.
     val cleanable: List<DiskEntry>
         get() = sections
-            .filter { it.kind == SectionKind.DEPENDENCIES || it.kind == SectionKind.WORK }
+            .filter { it.kind == SectionKind.DEPENDENCIES || it.kind == SectionKind.WORK || it.kind == SectionKind.CACHE }
             .flatMap { it.entries }
             .filter { !it.protected }
 
@@ -70,6 +71,7 @@ object Disk {
             "work" to SectionKind.WORK,
             "logs" to SectionKind.LOGS,
             "packages" to SectionKind.PACKAGES,
+            "cache" to SectionKind.CACHE,
         )
         val sections = mutableListOf<DiskSection>()
         named.forEach { (name, kind) ->
