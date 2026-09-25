@@ -270,6 +270,19 @@ class AdbTest {
         assertEquals(true, DeviceFiles.validName("New folder"))
     }
 
+    // A name with spaces at either end is its own file. Trimming it would
+    // point rm at "notes" when "notes " was chosen.
+    @Test
+    fun keepsSpacesAroundNames() {
+        val out = listOf(
+            "-rw-rw----  1 u0_a123 media_rw 3 2026-09-21 09:12 notes ",
+            "-rw-rw----  1 u0_a123 media_rw 3 2026-09-21 09:12  lead\r",
+            "-rw-rw----  1 u0_a123 media_rw 3 2026-09-21 09:12 notes",
+        ).joinToString("\n")
+        assertEquals(listOf("notes ", " lead", "notes"), DeviceFiles.parseLs(out).map { it.name })
+        assertEquals("rm -r '/sdcard/notes '", DeviceFiles.deleteCommand(DeviceFiles.child("/sdcard", "notes ")))
+    }
+
     @Test
     fun buildsScrcpyOptions() {
         assertEquals(listOf("--serial=X1", "--window-title=GutapK  X1", "--stay-awake"), Mirror.args("X1", MirrorOptions()))

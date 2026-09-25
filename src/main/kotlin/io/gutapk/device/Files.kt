@@ -27,12 +27,14 @@ object DeviceFiles {
     }
 
     // toybox ls -la: "drwxrws--- 4 u0_a1 media_rw 3452 2026-09-01 10:00 Music".
-    // The name is the rest of the line, spaces included. A link shows
+    // The name is the rest of the line after one space, spaces at either
+    // end included, or a delete would aim at another file. Only the
+    // carriage return older adb adds is dropped. A link shows
     // "name -> target", the name alone is kept.
     internal fun parseLs(text: String): List<RemoteEntry> {
-        val line = Regex("""^([dlcbps-])[rwxsStT-]{9}\S*\s+\d+\s+\S+\s+\S+\s+(\d+|\d+,\s*\d+)\s+(\d{4}-\d\d-\d\d \d\d:\d\d)\s+(.+)$""")
+        val line = Regex("""^([dlcbps-])[rwxsStT-]{9}\S*\s+\d+\s+\S+\s+\S+\s+(\d+|\d+,\s*\d+)\s+(\d{4}-\d\d-\d\d \d\d:\d\d) (.+)$""")
         return text.lineSequence().mapNotNull { raw ->
-            val m = line.find(raw.trimEnd()) ?: return@mapNotNull null
+            val m = line.find(raw.removeSuffix("\r")) ?: return@mapNotNull null
             val kind = when (m.groupValues[1]) {
                 "d" -> EntryKind.DIR
                 "-" -> EntryKind.FILE
