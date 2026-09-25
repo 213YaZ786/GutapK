@@ -433,6 +433,9 @@ This is a plain-language summary, not legal advice.""",
         "edit_patches_d" to "Each patch checks the bytes it replaces first. If one does not match, nothing is written and the rebuild stops.",
         "edit_patches_abi" to "Patches are made for %s, which the processor setting above removes. Keep that processor or switch the patches off.",
         "edit_patches_blocked" to "Patches need a removed processor",
+        "edit_sdk_range" to "Between %d and %d.",
+        "edit_sdk_min_above" to "The minimum cannot be above the target, %d.",
+        "edit_sdk_target_below" to "The target cannot be below the minimum, %d.",
     )
 
     private val fr: Map<String, String> = mapOf(
@@ -828,6 +831,9 @@ Ceci est un résumé en langage courant, pas un avis juridique.""",
         "edit_patches_d" to "Chaque patch vérifie d'abord les octets qu'il remplace. Si l'un ne correspond pas, rien n'est écrit et la reconstruction s'arrête.",
         "edit_patches_abi" to "Des patches visent %s, que le réglage processeur ci-dessus retire. Gardez ce processeur ou désactivez les patches.",
         "edit_patches_blocked" to "Des patches visent un processeur retiré",
+        "edit_sdk_range" to "Entre %d et %d.",
+        "edit_sdk_min_above" to "Le minimum ne peut pas dépasser la cible, %d.",
+        "edit_sdk_target_below" to "La cible ne peut pas être sous le minimum, %d.",
     )
 
     val tables: Map<Lang, Map<String, String>> = mapOf(Lang.EN to en, Lang.FR to fr)

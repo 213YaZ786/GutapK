@@ -1,5 +1,7 @@
 package io.gutapk.features.overview
 
+import io.gutapk.core.edit.Sdk
+import io.gutapk.core.edit.SdkProblem
 import androidx.compose.runtime.produceState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -132,6 +134,7 @@ fun EditScreen(
     var keepAbi by remember { mutableStateOf<String?>(null) }
     var keptLanguages by remember { mutableStateOf(info.languages.toSet()) }
     var stripDebug by remember { mutableStateOf(false) }
+    val highestSdk = Sdk.highest(info.minSdk, info.targetSdk)
     // The patches made in the hex view, on by default: making them was the
     // user's request already.
     val patches by produceState(emptyList<BytePatch>(), packageDir) {
@@ -551,6 +554,8 @@ fun EditScreen(
                 dialog = null
             },
             onDismiss = { dialog = null },
+            // A number too long for an Int is out of range too, hence -1.
+            problem = { v -> sdkProblem(Sdk.checkMin(v.toIntOrNull() ?: -1, targetSdk, highestSdk)) },
         )
         "target" -> ValueDialog(
             title = t("ov_target_sdk"),
@@ -561,6 +566,7 @@ fun EditScreen(
                 dialog = null
             },
             onDismiss = { dialog = null },
+            problem = { v -> sdkProblem(Sdk.checkTarget(v.toIntOrNull() ?: -1, minSdk, highestSdk)) },
         )
         "abi" -> ChoiceDialog(
             title = t("edit_abi"),
@@ -627,6 +633,14 @@ private fun ToggleRow(title: String, detail: String, available: Boolean, checked
         onClick = if (available) toggle else null,
         trailing = if (available) switch else null,
     )
+}
+
+@Composable
+private fun sdkProblem(p: SdkProblem?): String? = when (p) {
+    null -> null
+    is SdkProblem.OutOfRange -> t("edit_sdk_range", p.lowest, p.highest)
+    is SdkProblem.MinAboveTarget -> t("edit_sdk_min_above", p.target)
+    is SdkProblem.TargetBelowMin -> t("edit_sdk_target_below", p.min)
 }
 
 @Composable

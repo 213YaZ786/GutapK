@@ -8,6 +8,8 @@ import io.gutapk.core.edit.Modern
 import io.gutapk.core.edit.Neutralise
 import io.gutapk.core.edit.PackageId
 import io.gutapk.core.edit.PackageIdRefusal
+import io.gutapk.core.edit.Sdk
+import io.gutapk.core.edit.SdkProblem
 import io.gutapk.core.edit.Security
 import io.gutapk.core.edit.Size
 import io.gutapk.tools.Storage
@@ -434,5 +436,21 @@ class EditTest {
         assertTrue(plan.manifest.contains("<activity-alias android:name=\".Alias\" android:label=\"New\">"))
         assertEquals(2, plan.literals)
         assertEquals(1, Label.launchers(bare).size)
+    }
+
+    // Fix 3 of the 2026-09-24 review: 0, 99 and a minimum above the target
+    // were accepted.
+    @Test
+    fun sdkLevelsStayInstallable() {
+        val highest = Sdk.highest(21, 34)
+        assertEquals(Sdk.NEWEST, highest)
+        assertEquals(40, Sdk.highest(21, 40))
+        assertEquals(SdkProblem.OutOfRange(1, highest), Sdk.checkMin(0, 34, highest))
+        assertEquals(SdkProblem.OutOfRange(1, highest), Sdk.checkTarget(99, 21, highest))
+        assertEquals(SdkProblem.MinAboveTarget(34), Sdk.checkMin(35, 34, highest))
+        assertEquals(SdkProblem.TargetBelowMin(21), Sdk.checkTarget(19, 21, highest))
+        assertNull(Sdk.checkMin(24, 34, highest))
+        assertNull(Sdk.checkTarget(highest, 21, highest))
+        assertNull(Sdk.checkMin(24, null, highest))
     }
 }
