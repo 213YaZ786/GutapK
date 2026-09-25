@@ -1,15 +1,26 @@
 package io.gutapk
 
+import io.gutapk.core.il2cpp.BytePatch
 import io.gutapk.core.il2cpp.DumpParser
 import io.gutapk.core.il2cpp.DumpRecord
 import io.gutapk.core.il2cpp.Il2CppDump
 import io.gutapk.core.il2cpp.MethodEntry
+import io.gutapk.core.il2cpp.Hex
+import io.gutapk.core.il2cpp.LibBytes
 import io.gutapk.core.il2cpp.MethodIndex
+import io.gutapk.core.il2cpp.PatchProblem
+import io.gutapk.core.il2cpp.Patches
 import io.gutapk.features.overview.searchMethods
 import io.gutapk.tools.Storage
 import java.nio.file.Files
+import java.util.zip.CRC32
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 
 // The layout of Cpp2IL 2022.1.0 pre-release 21 diffable-cs output, as it
 // wrote Daggerfall Unity 1.1.1.9: tabs for nesting, attributes above each
@@ -116,5 +127,76 @@ class Il2CppTest {
         assertEquals("arm64-v8a", Il2CppDump.preferredAbi(listOf("armeabi-v7a", "arm64-v8a")))
         assertEquals("armeabi-v7a", Il2CppDump.preferredAbi(listOf("armeabi-v7a")))
         assertEquals(null, Il2CppDump.preferredAbi(emptyList()))
+    }
+
+    @Test
+    fun readsAndWritesHex() {
+        assertContentEquals(byteArrayOf(0x20, 0, 0x80.toByte(), 0x52), Hex.parse("20 00 80 52"))
+        assertContentEquals(byteArrayOf(0xc0.toByte(), 0x03), Hex.parse("c003"))
+        assertNull(Hex.parse("2"))
+        assertNull(Hex.parse("zz"))
+        assertNull(Hex.parse(" "))
+        assertEquals("C0 03 5F D6", Hex.format(byteArrayOf(0xc0.toByte(), 0x03, 0x5f, 0xd6.toByte())))
+    }
+
+    // A method of 8 bytes at 0x100. Patches must stay inside it, change
+    // something, and not overlap each other.
+    @Test
+    fun makesOnlySoundPatches() {
+        val original = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        fun make(offset: Long, text: String, existing: List<BytePatch> = emptyList()) =
+            Patches.make("arm64-v8a", offset, text, "T m", 0x100, original, existing)
+
+        val (made, problem) = make(0x102, "AA BB")
+        assertNull(problem)
+        val patch = assertNotNull(made)
+        assertEquals(BytePatch("arm64-v8a", 0x102, "03 04", "AA BB", "T m"), patch)
+        assertEquals(PatchProblem.BadHex, make(0x100, "A").second)
+        assertEquals(PatchProblem.OutOfRange, make(0xff, "AA").second)
+        assertEquals(PatchProblem.OutOfRange, make(0x107, "AA BB").second)
+        assertEquals(PatchProblem.Unchanged, make(0x100, "01 02").second)
+        assertEquals(PatchProblem.Overlaps(patch), make(0x103, "00", listOf(patch)).second)
+        assertNull(make(0x104, "00", listOf(patch)).second)
+
+        val (shown, changed) = Patches.overlay(original, 0x100, "arm64-v8a", listOf(patch))
+        assertContentEquals(byteArrayOf(1, 2, 0xaa.toByte(), 0xbb.toByte(), 5, 6, 7, 8), shown)
+        assertEquals(listOf(2, 3), changed.indices.filter { changed[it] })
+        assertContentEquals(original, Patches.overlay(original, 0x100, "armeabi-v7a", listOf(patch)).first)
+    }
+
+    @Test
+    fun patchesRoundTripAndLibraryIsReadAtAnOffset() {
+        val dir = Files.createTempDirectory("gutapk-patch")
+        try {
+            val patches = listOf(
+                BytePatch("arm64-v8a", 0x2125328, "FF 43 01 D1", "20 00 80 52", "DaggerfallUnity get_HasInstance"),
+                BytePatch("arm64-v8a", 0x10, "00", "01", "A b"),
+            )
+            Patches.write(dir, patches)
+            assertEquals(patches.sortedBy { it.offset }, Patches.read(dir))
+
+            val lib = ByteArray(4096) { (it % 251).toByte() }
+            val apk = dir.resolve("game.apk")
+            ZipOutputStream(Files.newOutputStream(apk)).use { z ->
+                // Stored the way Android wants native libraries, and a
+                // compressed copy under another ABI.
+                val stored = ZipEntry(LibBytes.entry("arm64-v8a"))
+                stored.method = ZipEntry.STORED
+                stored.size = lib.size.toLong()
+                stored.crc = CRC32().apply { update(lib) }.value
+                z.putNextEntry(stored)
+                z.write(lib)
+                z.closeEntry()
+                z.putNextEntry(ZipEntry(LibBytes.entry("armeabi-v7a")))
+                z.write(lib)
+                z.closeEntry()
+            }
+            listOf("arm64-v8a", "armeabi-v7a").forEach { abi ->
+                assertContentEquals(lib.copyOfRange(3000, 3016), LibBytes.read(apk, abi, 3000, 16))
+                assertContentEquals(lib.copyOfRange(4090, 4096), LibBytes.read(apk, abi, 4090, 16))
+            }
+        } finally {
+            Storage.deleteTree(dir, dir.parent)
+        }
     }
 }

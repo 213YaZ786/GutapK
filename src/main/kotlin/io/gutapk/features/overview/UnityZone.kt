@@ -17,6 +17,7 @@ import io.gutapk.core.apk.UnityInfo
 import io.gutapk.core.il2cpp.DumpRecord
 import io.gutapk.core.il2cpp.Il2CppDump
 import io.gutapk.core.il2cpp.MethodIndex
+import io.gutapk.core.il2cpp.Patches
 import io.gutapk.job.Job
 import io.gutapk.job.JobQueue
 import io.gutapk.job.JobState
@@ -60,6 +61,11 @@ fun UnityZone(u: UnityInfo, root: Path?, packageDir: Path, apk: Path, onMethods:
     val view = currentJobView()
     val record by produceState<DumpRecord?>(null, packageDir, view?.state) {
         value = withContext(Dispatchers.IO) { MethodIndex.record(packageDir) }
+    }
+    // Read again whenever a job ends or the screen comes back from the hex
+    // view, where patches are made.
+    val patchCount by produceState(0, packageDir, view?.state) {
+        value = withContext(Dispatchers.IO) { Patches.read(packageDir).size }
     }
     // Verify hashes the program, so it runs on IO and again when a job ends.
     val tool by produceState<ToolState?>(null, root, view?.state) {
@@ -145,6 +151,7 @@ fun UnityZone(u: UnityInfo, root: Path?, packageDir: Path, apk: Path, onMethods:
         if (dumpable && root != null) {
             if (r != null) {
                 ZoneRow(t("un_methods"), t("un_methods_d", r.count.toString(), r.abi), onClick = onMethods)
+                if (patchCount > 0) ZoneRow(t("un_patches"), t("un_patches_d", patchCount.toString()))
             } else {
                 ZoneRow(
                     t("un_methods"),

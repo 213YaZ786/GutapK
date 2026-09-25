@@ -6,10 +6,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -41,12 +38,13 @@ internal fun searchMethods(all: List<MethodEntry>, query: String, limit: Int): P
     return hits.size to hits.take(limit)
 }
 
+// The query lives with the caller, so coming back from a method finds the
+// same search.
 @Composable
-fun MethodsScreen(packageDir: Path, onBack: () -> Unit) {
+fun MethodsScreen(packageDir: Path, query: String, onQuery: (String) -> Unit, onMethod: (MethodEntry) -> Unit, onBack: () -> Unit) {
     val loaded by produceState<MethodsLoaded?>(null, packageDir) {
         value = withContext(Dispatchers.IO) { MethodsLoaded(MethodIndex.record(packageDir), MethodIndex.read(packageDir)) }
     }
-    var query by remember { mutableStateOf("") }
     val found by produceState<MethodsFound?>(null, loaded, query) {
         val l = loaded ?: return@produceState
         value = withContext(Dispatchers.Default) {
@@ -69,7 +67,7 @@ fun MethodsScreen(packageDir: Path, onBack: () -> Unit) {
         }
         OutlinedTextField(
             value = query,
-            onValueChange = { query = it },
+            onValueChange = onQuery,
             label = { Text(t("me_search")) },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
@@ -89,6 +87,7 @@ fun MethodsScreen(packageDir: Path, onBack: () -> Unit) {
                             "0x" + e.offset.toString(16).uppercase(),
                             t("me_length", e.length.toString()),
                         ).joinToString("  ·  "),
+                        onClick = { onMethod(e) },
                     )
                 }
                 if (f.total > f.rows.size) BodyText(t("me_more", f.rows.size.toString()))

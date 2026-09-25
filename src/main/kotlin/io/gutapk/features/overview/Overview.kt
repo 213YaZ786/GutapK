@@ -41,6 +41,7 @@ import io.gutapk.core.apk.SignatureInfo
 import io.gutapk.core.apk.Signatures
 import io.gutapk.core.apk.UnityInfo
 import io.gutapk.core.apk.UnityReader
+import io.gutapk.core.il2cpp.MethodEntry
 import io.gutapk.core.edit.Engine
 import io.gutapk.core.sign.KeyChoice
 import io.gutapk.core.sign.keyChoiceOf
@@ -151,6 +152,8 @@ fun OverviewScreen(
     var dialog by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf(false) }
     var methods by remember { mutableStateOf(false) }
+    var methodQuery by remember { mutableStateOf("") }
+    var method by remember { mutableStateOf<MethodEntry?>(null) }
     // The job this screen started. Another job finishing, a tool update for
     // instance, must not open this screen's report.
     var started by remember { mutableStateOf<Job?>(null) }
@@ -199,6 +202,7 @@ fun OverviewScreen(
         }
     }
     val detection = if (root != null && loaded != null) rememberDetection(root, loaded.classes) else null
+    val shownMethod = method
     if (editing && info != null && root != null) {
         EditScreen(
             detection = detection,
@@ -216,8 +220,16 @@ fun OverviewScreen(
             },
             onBack = { editing = false },
         )
+    } else if (methods && shownMethod != null) {
+        HexScreen(dir, original, shownMethod, onBack = { method = null })
     } else if (methods) {
-        MethodsScreen(dir, onBack = { methods = false })
+        MethodsScreen(
+            dir,
+            query = methodQuery,
+            onQuery = { methodQuery = it },
+            onMethod = { method = it },
+            onBack = { methods = false },
+        )
     } else {
         OverviewPage(dir, root, loaded, info, original, detection, running, actionRow, onBack, onMethods = { methods = true })
     }
