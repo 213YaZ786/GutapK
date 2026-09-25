@@ -4,6 +4,7 @@ import io.gutapk.device.Adb
 import io.gutapk.device.AppAction
 import io.gutapk.device.AppActions
 import io.gutapk.device.Controls
+import io.gutapk.device.Debloat
 import io.gutapk.device.Key
 import io.gutapk.device.Logcat
 import io.gutapk.device.BatteryStatus
@@ -372,5 +373,10 @@ class AdbTest {
         assertEquals(false, Logcat.atLeast(l, 'W'))
         assertEquals(true, Logcat.matches(l, listOf("activity", "proc")))
         assertEquals(listOf("-s", "X1", "logcat", "-v", "threadtime", "-T", "500", "--pid=42"), Logcat.args("X1", 42))
+    }
+
+    @Test
+    fun readsPackageNames() {
+        assertEquals(setOf("com.a.b", "com.c.d"), Debloat.parseNames("package:com.a.b\npackage:com.c.d\nWARNING: x\n\n"))
     }
 }

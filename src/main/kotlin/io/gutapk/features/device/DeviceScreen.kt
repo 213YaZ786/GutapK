@@ -142,6 +142,8 @@ fun DeviceScreen(root: Path?, onPulled: (List<Path>) -> Unit, onBack: () -> Unit
     val adb = (l as? Link.Devices)?.adb
     if (current != null && adb != null && page == "dev_t_device") {
         DevicePage(adb, current, onBack = { page = null })
+    } else if (current != null && adb != null && page == "dev_t_debloat") {
+        DebloatPage(root, adb, current, onBack = { page = null })
     } else if (current != null && adb != null && page == "dev_t_logcat") {
         LogcatPage(adb, current, onBack = { page = null })
     } else if (current != null && adb != null && page == "dev_t_wireless") {
@@ -310,7 +312,7 @@ private fun DeviceHome(d: AdbDevice, onBack: () -> Unit, onTile: (String) -> Uni
             Triple("dev_t_apps", GIcons.Apps, true),
             Triple("dev_t_install", GIcons.Install, true),
             Triple("dev_t_files", GIcons.Folder, true),
-            Triple("dev_t_debloat", GIcons.Debloat, false),
+            Triple("dev_t_debloat", GIcons.Debloat, true),
             Triple("dev_t_mirror", GIcons.Cast, true),
             Triple("dev_t_controls", GIcons.Tune, true),
             Triple("dev_t_wireless", GIcons.Wifi, true),

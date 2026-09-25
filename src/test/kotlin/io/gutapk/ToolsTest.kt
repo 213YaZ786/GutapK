@@ -1,6 +1,7 @@
 package io.gutapk
 
 import io.gutapk.tools.Untar
+import io.gutapk.tools.DebloatList
 import io.gutapk.core.apk.Trackers
 import io.gutapk.job.JobEvent
 import io.gutapk.job.JobSink
@@ -428,5 +429,22 @@ class ToolsTest {
         } finally {
             Storage.deleteTree(dir, dir.parent)
         }
+    }
+
+    // UAD-ng's shape on 2026-09-25: an object keyed by package. A removal
+    // level it does not know is read as Unsafe, never as safer.
+    @Test
+    fun readsTheDebloatList() {
+        val json = """
+            {"org.lineageos.jelly": {"list": "Oem", "description": "LineageOS Browser.\nSafe to remove.", "dependencies": [], "neededBy": [], "labels": [], "removal": "Recommended"},
+             "com.android.phone": {"list": "Aosp", "description": "Calls.", "dependencies": [], "neededBy": ["com.android.dialer"], "labels": [], "removal": "Unsafe"},
+             "com.odd.one": {"list": "Misc", "description": "", "dependencies": ["x.y"], "neededBy": [], "labels": [], "removal": "Maybe"}}
+        """.trimIndent()
+        val l = DebloatList.parse(json)
+        assertEquals(3, l.size)
+        assertEquals("Recommended", l.getValue("org.lineageos.jelly").removal)
+        assertEquals(listOf("com.android.dialer"), l.getValue("com.android.phone").neededBy)
+        assertEquals("Unsafe", l.getValue("com.odd.one").removal)
+        assertEquals(listOf("x.y"), l.getValue("com.odd.one").dependencies)
     }
 }
