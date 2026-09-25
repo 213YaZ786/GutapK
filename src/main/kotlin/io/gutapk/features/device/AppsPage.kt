@@ -10,12 +10,10 @@ import io.gutapk.device.User
 import io.gutapk.ui.GIcons
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -39,7 +37,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import io.gutapk.core.apk.IconArt
 import io.gutapk.device.AdbDevice
-import io.gutapk.device.AppDetails
 import io.gutapk.device.DeviceApps
 import io.gutapk.device.InstalledApp
 import io.gutapk.job.Job
@@ -73,11 +70,6 @@ private sealed interface AppsState {
     data class Failed(val message: String) : AppsState
 }
 
-private sealed interface DetailState {
-    data object Reading : DetailState
-    data class Ready(val d: AppDetails) : DetailState
-    data class Failed(val message: String) : DetailState
-}
 
 // The pulled files, one per line, as the job's result.
 private fun startPull(adb: Path, serial: String, app: InstalledApp, apks: List<String>): Job? = JobQueue.start(PULL_JOB) { job ->
@@ -103,7 +95,9 @@ fun AppsPage(adb: Path, d: AdbDevice, onPulled: (List<Path>) -> Unit, onBack: ()
     var open by remember { mutableStateOf<InstalledApp?>(null) }
     var pullJob by remember { mutableStateOf<Job?>(null) }
     var failure by remember { mutableStateOf<String?>(null) }
-    val state by produceState<AppsState>(AppsState.Reading, d.serial, system, user) {
+    // Bumped when an app leaves this user, the list is read again.
+    var listRevision by remember { mutableStateOf(0) }
+    val state by produceState<AppsState>(AppsState.Reading, d.serial, system, user, listRevision) {
         value = AppsState.Reading
         value = withContext(Dispatchers.IO) {
             val read = runCatching { DeviceApps.list(adb, d.serial, system, user) }
@@ -153,7 +147,25 @@ fun AppsPage(adb: Path, d: AdbDevice, onPulled: (List<Path>) -> Unit, onBack: ()
         }
     }
 
-    Page(title = t("dev_t_apps"), width = 960.dp, onBack = onBack, actions = jobPill(view)) {
+    val a = open
+    if (a != null) {
+        AppPage(
+            adb = adb,
+            serial = d.serial,
+            app = a,
+            label = icons[a.packageName]?.label,
+            user = user,
+            onPull = { apks ->
+                pullJob = startPull(adb, d.serial, a, apks)
+                open = null
+            },
+            onGone = {
+                open = null
+                listRevision++
+            },
+            onBack = { open = null },
+        )
+    } else Page(title = t("dev_t_apps"), width = 960.dp, onBack = onBack, actions = jobPill(view)) {
         Text(
             d.model ?: d.serial,
             style = MaterialTheme.typography.bodyLarge,
@@ -206,19 +218,6 @@ fun AppsPage(adb: Path, d: AdbDevice, onPulled: (List<Path>) -> Unit, onBack: ()
             user = it
             choosingUser = false
         }, onDismiss = { choosingUser = false })
-    }
-    val a = open
-    if (a != null) {
-        AppDialog(
-            adb = adb,
-            serial = d.serial,
-            app = a,
-            onPull = { apks ->
-                pullJob = startPull(adb, d.serial, a, apks)
-                open = null
-            },
-            onDismiss = { open = null },
-        )
     }
     val f = failure
     if (f != null) {
@@ -289,40 +288,3 @@ private fun UserDialog(users: List<User>, current: Int, onPick: (Int) -> Unit, o
     )
 }
 
-@Composable
-private fun AppDialog(adb: Path, serial: String, app: InstalledApp, onPull: (List<String>) -> Unit, onDismiss: () -> Unit) {
-    val state by produceState<DetailState>(DetailState.Reading, app.packageName) {
-        value = withContext(Dispatchers.IO) {
-            val read = runCatching { DeviceApps.details(adb, serial, app.packageName) }
-            val d = read.getOrNull()
-            if (d != null) DetailState.Ready(d) else DetailState.Failed(read.exceptionOrNull()?.message ?: "adb")
-        }
-    }
-    val s = state
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(app.packageName) },
-        text = {
-            when (s) {
-                DetailState.Reading -> Text(t("ov_reading"))
-                is DetailState.Failed -> Text(s.message, color = MaterialTheme.colorScheme.error)
-                is DetailState.Ready -> SelectionContainer {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(t("ov_version") + ": " + listOfNotNull(s.d.versionName, s.d.versionCode?.let { "($it)" }).joinToString(" ").ifEmpty { "?" })
-                        Text(t("ap_installer") + ": " + (s.d.installer ?: t("ap_installer_none")))
-                        Text(t("ap_first") + ": " + (s.d.firstInstall ?: "?"))
-                        Text(t("ap_update") + ": " + (s.d.lastUpdate ?: "?"))
-                        Text(t("ap_apks", s.d.apks.size.toString()))
-                        s.d.apks.forEach { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            if (s is DetailState.Ready && s.d.apks.isNotEmpty()) {
-                TextButton(onClick = { onPull(s.d.apks) }) { Text(t("ap_open")) }
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(t("close")) } },
-    )
-}

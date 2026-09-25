@@ -1,6 +1,8 @@
 package io.gutapk
 
 import io.gutapk.device.Adb
+import io.gutapk.device.AppAction
+import io.gutapk.device.AppActions
 import io.gutapk.device.BatteryStatus
 import io.gutapk.device.DeviceApps
 import io.gutapk.device.DeviceInstall
@@ -184,5 +186,49 @@ class AdbTest {
         assertEquals("INSTALL_FAILED_VERSION_DOWNGRADE", DeviceInstall.failure(out))
         assertEquals("INSTALL_PARSE_FAILED_NO_CERTIFICATES", DeviceInstall.failure("Failure [INSTALL_PARSE_FAILED_NO_CERTIFICATES: no certs]"))
         assertNull(DeviceInstall.failure("Performing Streamed Install\nSuccess\n"))
+    }
+
+    @Test
+    fun buildsAppCommands() {
+        assertEquals("pm disable-user --user 10 'com.x.y'", AppActions.command(AppAction.DISABLE, "com.x.y", 10))
+        assertEquals("pm uninstall -k --user 0 'com.x.y'", AppActions.command(AppAction.REMOVE_FOR_USER, "com.x.y", 0))
+        assertEquals("cmd package install-existing --user 0 'com.x.y'", AppActions.command(AppAction.RESTORE, "com.x.y", 0))
+        assertEquals("pm revoke --user 0 'com.x.y' 'android.permission.CAMERA'", AppActions.permission("com.x.y", "android.permission.CAMERA", false, 0))
+        kotlin.test.assertFailsWith<IllegalArgumentException> { AppActions.permission("com.x.y", "a b", true, 0) }
+    }
+
+    // The user block of dumpsys package, as Android 14 prints it.
+    @Test
+    fun readsTheAppStateOfOneUser() {
+        val dump = listOf(
+            "  Package [com.x.y] (3a2b):",
+            "    versionName=2.0",
+            "    User 0: ceDataInode=4242 installed=true hidden=false suspended=false distractionFlags=0 stopped=false notLaunched=false enabled=3 instant=false virtual=false",
+            "      gids=[3003]",
+            "      runtime permissions:",
+            "        android.permission.POST_NOTIFICATIONS: granted=true, flags=[ USER_SET ]",
+            "        android.permission.CAMERA: granted=false, flags=[ USER_SET ]",
+            "    User 10: ceDataInode=0 installed=false hidden=false suspended=false distractionFlags=0 stopped=true notLaunched=true enabled=0 instant=false virtual=false",
+            "      runtime permissions:",
+            "        android.permission.CAMERA: granted=true, flags=[ ]",
+        ).joinToString("\n")
+        val owner = AppActions.parseUserState(dump, 0)
+        assertEquals(true, owner.installed)
+        assertEquals(3, owner.enabled)
+        assertEquals(true, owner.disabled)
+        assertEquals(listOf("android.permission.POST_NOTIFICATIONS" to true, "android.permission.CAMERA" to false), owner.permissions.map { it.name to it.granted })
+        val work = AppActions.parseUserState(dump, 10)
+        assertEquals(false, work.installed)
+        assertEquals(listOf("android.permission.CAMERA"), work.permissions.map { it.name })
+        assertNull(AppActions.parseUserState(dump, 11).installed)
+    }
+
+    @Test
+    fun seesWhenTheShellRefused() {
+        assertNull(AppActions.failed("Success\n"))
+        assertEquals("** No activities found to run, monkey aborted.", AppActions.failed("** No activities found to run, monkey aborted.\n"))
+        assertNull(AppActions.failed("Package com.x.y new state: disabled-user\n"))
+        assertEquals("Failure [DELETE_FAILED_INTERNAL_ERROR]", AppActions.failed("Failure [DELETE_FAILED_INTERNAL_ERROR]\n"))
+        assertEquals("Exception occurred while executing 'grant':", AppActions.failed("Exception occurred while executing 'grant':\njava.lang.SecurityException: x\n"))
     }
 }

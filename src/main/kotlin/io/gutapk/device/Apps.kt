@@ -20,6 +20,8 @@ class AppDetails(
     val firstInstall: String?,
     val lastUpdate: String?,
     val apks: List<String>,
+    // For the user the list was read for.
+    val state: AppUserState = AppUserState(null, null, null, emptyList()),
 )
 
 object DeviceApps {
@@ -48,12 +50,13 @@ object DeviceApps {
             }
             .toList()
 
-    fun details(adb: Path, serial: String, packageName: String): AppDetails {
+    fun details(adb: Path, serial: String, packageName: String, user: Int): AppDetails {
         require(PACKAGE.matches(packageName)) { "not a package name: $packageName" }
         val quoted = Adb.quote(packageName)
         val dump = Adb.shell(adb, serial, "dumpsys package $quoted", 60).out
-        val paths = parsePaths(Adb.shell(adb, serial, "pm path $quoted").out)
-        return parseDetails(dump, paths)
+        val paths = parsePaths(Adb.shell(adb, serial, "pm path --user $user $quoted").out)
+        val d = parseDetails(dump, paths)
+        return AppDetails(d.versionName, d.versionCode, d.installer, d.firstInstall, d.lastUpdate, d.apks, AppActions.parseUserState(dump, user))
     }
 
     // The first value of each key in the package's section of dumpsys.
