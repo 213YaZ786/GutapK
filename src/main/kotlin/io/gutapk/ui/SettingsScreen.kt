@@ -65,6 +65,11 @@ fun SettingsScreen(
             ZoneRow(t("set_sign_key"), keyLabel(choice), onClick = { dialog = "key" })
             keyFingerprint(choice)?.let { ZoneRow(t("signed_signer"), it) }
             if (choice == KeyChoice.OWN) ZoneRow(t("set_key_file"), OwnKey.keystore.toString())
+            if (OwnKey.exists()) {
+                ZoneRow(t("key_backup"), t("key_backup_d"), onClick = { dialog = "backup" })
+            } else {
+                ZoneRow(t("key_restore"), t("key_restore_d"), onClick = { dialog = "restore" })
+            }
         }
     }
     val legal: @Composable () -> Unit = {
@@ -123,6 +128,11 @@ fun SettingsScreen(
                 onChange(settings.copy(signKey = it.name))
                 dialog = null
             },
+            onDismiss = { dialog = null },
+        )
+        "backup" -> KeyBackupDialog(onDismiss = { dialog = null })
+        "restore" -> KeyRestoreDialog(
+            onRestored = { onChange(settings.copy(signKey = KeyChoice.OWN.name)) },
             onDismiss = { dialog = null },
         )
         "accent" -> ChoiceDialog(

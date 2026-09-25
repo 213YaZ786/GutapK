@@ -66,6 +66,11 @@ object Chooser {
         pick(title, filterName, listOf(extension), multiple = false) { onPicked(it.firstOrNull()) }
     }
 
+    // One file among several extensions, a key backup as .p12 or .jks.
+    fun fileOf(title: String, filterName: String, extensions: List<String>, onPicked: (Path?) -> Unit) {
+        pick(title, filterName, extensions, multiple = false) { onPicked(it.firstOrNull()) }
+    }
+
     // Several files at once, for a split set given as loose APKs. An empty
     // list is a cancel.
     fun files(title: String, filterName: String, extensions: List<String>, onPicked: (List<Path>) -> Unit) {

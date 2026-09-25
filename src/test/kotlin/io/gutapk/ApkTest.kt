@@ -415,4 +415,18 @@ class ApkTest {
     }
 
     private fun <T> assertNotNullOrFail(v: T?): T = kotlin.test.assertNotNull(v)
+
+    // A restored key must be the one its certificate names. A certificate
+    // from another key is refused, whatever the file claims.
+    @Test
+    fun ownKeyMatchesOnlyItsCertificate() {
+        val random = java.security.SecureRandom()
+        val gen = java.security.KeyPairGenerator.getInstance("RSA")
+        gen.initialize(2048, random)
+        val a = gen.generateKeyPair()
+        val b = gen.generateKeyPair()
+        val certA = io.gutapk.core.sign.Der.selfSigned(a, "A", 1, random)
+        assertTrue(io.gutapk.core.sign.OwnKey.matches(a.private, certA))
+        assertFalse(io.gutapk.core.sign.OwnKey.matches(b.private, certA))
+    }
 }
