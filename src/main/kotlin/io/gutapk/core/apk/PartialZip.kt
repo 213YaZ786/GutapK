@@ -98,8 +98,12 @@ object PartialZip {
 }
 
 // What the list of a phone's apps shows: the name and the icon, read from
-// a few entries of the APK instead of the whole file.
-class RemoteIcon(val label: String?, val bitmap: ByteArray?, val art: IconArt?)
+// a few entries of the APK instead of the whole file. declared is false
+// when the manifest names no icon: Android then shows its default one.
+class RemoteIcon(val label: String?, val bitmap: ByteArray?, val art: IconArt?, val declared: Boolean)
+
+// One APK on the phone: its size and a way to read pieces of it.
+class RemoteApk(val size: Long, val reader: RangeReader)
 
 object RemoteIcons {
     private const val MANIFEST = "AndroidManifest.xml"
@@ -107,27 +111,42 @@ object RemoteIcons {
     private const val ANYDPI = 0xfffe
     private const val MAX_FILES = 40
 
-    // The manifest and table first, then the icon's files and the files
-    // they point to, a few levels deep. The pieces go into a small zip that
-    // ApkReader reads like any APK, so the icon is chosen by the same rules.
-    fun read(fileSize: Long, reader: RangeReader, work: Path): RemoteIcon {
-        val dir = PartialZip.directory(fileSize, reader)
+    // The base first. An app installed as a split set keeps its pictures
+    // per density in its config splits, split_config.xxhdpi.apk for one,
+    // with a resources.arsc of their own that points into them. Those are
+    // tried in order until one gives a picture. splits is only called when
+    // the base has none, since it costs a call to the phone.
+    fun read(base: RemoteApk, work: Path, splits: () -> List<RemoteApk> = { emptyList() }): RemoteIcon {
+        val dir = PartialZip.directory(base.size, base.reader)
+        val manifest = dir[MANIFEST]?.let { PartialZip.entry(it, base.reader) } ?: throw ApkFormatError("no AndroidManifest.xml")
+        val app = BinaryXml.parse(manifest).firstOrNull { it.depth == 2 && it.name == "application" }
+        val icon = app?.attr(Attr.ICON, "icon")?.takeIf { it.type == ValueType.REFERENCE }?.data
+        val first = attempt(manifest, base, dir, icon, work)
+        if (icon == null || first.bitmap != null || first.art != null) return RemoteIcon(first.label, first.bitmap, first.art, icon != null)
+        for (split in splits()) {
+            val found = runCatching {
+                attempt(manifest, split, PartialZip.directory(split.size, split.reader), icon, work)
+            }.getOrNull() ?: continue
+            if (found.bitmap != null || found.art != null) return RemoteIcon(first.label, found.bitmap, found.art, true)
+        }
+        return RemoteIcon(first.label, null, null, true)
+    }
+
+    private class Attempt(val label: String?, val bitmap: ByteArray?, val art: IconArt?)
+
+    // The manifest, this APK's table and the icon's files from this APK,
+    // put in a small zip that ApkReader reads like any APK, so the icon is
+    // chosen by the same rules as in the editor.
+    private fun attempt(manifest: ByteArray, apk: RemoteApk, dir: Map<String, CdEntry>, icon: Int?, work: Path): Attempt {
         val fetched = LinkedHashMap<String, ByteArray>()
+        fetched[MANIFEST] = manifest
         fun fetch(name: String): ByteArray? {
             fetched[name]?.let { return it }
             val e = dir[name] ?: return null
-            return PartialZip.entry(e, reader).also { fetched[name] = it }
+            return PartialZip.entry(e, apk.reader).also { fetched[name] = it }
         }
-        val manifest = fetch(MANIFEST) ?: throw ApkFormatError("no AndroidManifest.xml")
-        val tableBytes = fetch(TABLE)
-        val table = tableBytes?.let { runCatching { ResourceTable.parse(it) }.getOrNull() }
-        if (table != null) {
-            val app = BinaryXml.parse(manifest).firstOrNull { it.depth == 2 && it.name == "application" }
-            val icon = app?.attr(Attr.ICON, "icon")
-            if (icon != null && icon.type == ValueType.REFERENCE) {
-                closure(icon.data, table, dir.keys) { fetch(it) }
-            }
-        }
+        val table = fetch(TABLE)?.let { runCatching { ResourceTable.parse(it) }.getOrNull() }
+        if (table != null && icon != null) closure(icon, table, dir.keys) { fetch(it) }
         Files.createDirectories(work)
         val mini = Files.createTempFile(work, "icon", ".apk")
         try {
@@ -140,7 +159,7 @@ object RemoteIcons {
             }
             val info = ApkReader.read(mini)
             val bitmap = info.iconPath?.let { p -> ZipFile(mini.toFile()).use { zip -> zip.getEntry(p)?.let { e -> zip.getInputStream(e).use { it.readBytes() } } } }
-            return RemoteIcon(info.label, bitmap, info.iconArt)
+            return Attempt(info.label, bitmap, info.iconArt)
         } finally {
             Files.deleteIfExists(mini)
         }

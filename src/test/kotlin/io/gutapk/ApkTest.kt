@@ -13,6 +13,7 @@ import io.gutapk.core.apk.XmlElement
 import io.gutapk.core.apk.Packages
 import io.gutapk.core.apk.PartialZip
 import io.gutapk.core.apk.RangeReader
+import io.gutapk.core.apk.RemoteApk
 import io.gutapk.core.apk.RemoteIcons
 import io.gutapk.core.apk.ResourceTable
 import io.gutapk.core.apk.Signatures
@@ -369,8 +370,10 @@ class ApkTest {
         }
 
         read = 0
-        val icon = RemoteIcons.read(bytes.size.toLong(), reader, dir.resolve("work"))
+        val icon = RemoteIcons.read(RemoteApk(bytes.size.toLong(), reader), dir.resolve("work"))
         assertEquals("My App", icon.label)
+        // The test manifest names no icon, as Google Services Framework.
+        assertFalse(icon.declared)
         // Manifest and table only: no dex, no library, no asset.
         assertTrue(read < bytes.size, "read $read of ${bytes.size}")
         assertFailsWith<io.gutapk.core.apk.ApkFormatError> { PartialZip.directory(8, RangeReader { _, _ -> ByteArray(8) }) }

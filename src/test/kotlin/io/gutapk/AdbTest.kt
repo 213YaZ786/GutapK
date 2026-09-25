@@ -105,6 +105,9 @@ class AdbTest {
         assertEquals(listOf(0, 10), users.map { it.id })
         assertEquals(listOf("Owner", "Work profile"), users.map { it.name })
         assertEquals(listOf(true, false), users.map { it.running })
+        // Flags c13 for the owner, 1030 for a work profile: 0x20 is the
+        // managed profile bit.
+        assertEquals(listOf(false, true), users.map { it.workProfile })
         assertEquals(listOf("-s", "X1", "reboot"), DeviceReader.rebootArgs("X1", null))
         assertEquals(listOf("-s", "X1", "reboot", "recovery"), DeviceReader.rebootArgs("X1", "recovery"))
     }

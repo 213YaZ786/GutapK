@@ -1,6 +1,7 @@
 package io.gutapk.device
 
 import io.gutapk.core.apk.RangeReader
+import io.gutapk.core.apk.RemoteApk
 import io.gutapk.core.apk.RemoteIcon
 import io.gutapk.core.apk.RemoteIcons
 import io.gutapk.job.JobEvent
@@ -25,9 +26,11 @@ object DeviceApps {
     // Android package names, nothing else is ever put in a shell command.
     private val PACKAGE = Regex("""[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+""")
 
-    fun list(adb: Path, serial: String, system: Boolean): List<InstalledApp> {
+    // Without --user, pm lists the apps of every user together: the owner's,
+    // a second user's and a work profile's in one list.
+    fun list(adb: Path, serial: String, system: Boolean, user: Int): List<InstalledApp> {
         val flag = if (system) "-s" else "-3"
-        val out = Adb.shell(adb, serial, "pm list packages -f $flag", 60).out
+        val out = Adb.shell(adb, serial, "pm list packages -f $flag --user $user", 60).out
         return parseList(out, system).sortedBy { it.packageName }
     }
 
@@ -73,12 +76,28 @@ object DeviceApps {
         text.lineSequence().map { it.trim() }.filter { it.startsWith("package:/") }.map { it.removePrefix("package:") }.toList()
 
     // The name and icon of an installed app, from a few pieces of its APK
-    // read in place. The path came from the device, so it is quoted.
-    fun icon(adb: Path, serial: String, apk: String, work: Path): RemoteIcon {
-        val quoted = Adb.quote(apk)
+    // read in place. Paths come from the device, so they are quoted. The
+    // splits are listed only when the base holds no picture, density
+    // splits first since that is where Play puts them.
+    fun icon(adb: Path, serial: String, app: InstalledApp, work: Path): RemoteIcon {
+        val base = remote(adb, serial, app.path)
+        return RemoteIcons.read(base, work) {
+            if (!PACKAGE.matches(app.packageName)) {
+                emptyList()
+            } else {
+                parsePaths(Adb.shell(adb, serial, "pm path " + Adb.quote(app.packageName)).out)
+                    .filter { it != app.path }
+                    .sortedBy { if ("dpi" in it.substringAfterLast('/')) 0 else 1 }
+                    .mapNotNull { runCatching { remote(adb, serial, it) }.getOrNull() }
+            }
+        }
+    }
+
+    private fun remote(adb: Path, serial: String, path: String): RemoteApk {
+        val quoted = Adb.quote(path)
         val size = Adb.shell(adb, serial, "stat -c %s $quoted").out.trim().toLongOrNull()
-            ?: throw IOException("cannot read the size of $apk")
-        return RemoteIcons.read(size, reader(adb, serial, quoted), work)
+            ?: throw IOException("cannot read the size of $path")
+        return RemoteApk(size, reader(adb, serial, quoted))
     }
 
     // dd in whole blocks, the one form every toybox dd has, then cut to the

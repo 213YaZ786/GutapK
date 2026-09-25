@@ -9,7 +9,10 @@ class Battery(val level: Int?, val status: BatteryStatus, val celsius: Double?, 
 
 class DiskSpace(val totalKb: Long, val usedKb: Long, val freeKb: Long)
 
-class User(val id: Int, val name: String, val running: Boolean)
+// flags are UserInfo's, 0x20 marks a managed profile, a work profile.
+class User(val id: Int, val name: String, val running: Boolean, val flags: Int = 0) {
+    val workProfile: Boolean get() = (flags and 0x20) != 0
+}
 
 class DeviceInfo(val props: Map<String, String>, val battery: Battery?, val storage: DiskSpace?, val users: List<User>)
 
@@ -67,9 +70,11 @@ object DeviceReader {
 
     // "\tUserInfo{0:Owner:c13} running", one per user.
     internal fun parseUsers(text: String): List<User> =
-        Regex("""UserInfo\{(\d+):([^:}]*):[0-9a-fA-F]+}(\s+running)?""").findAll(text).map {
-            User(it.groupValues[1].toInt(), it.groupValues[2], it.groupValues[3].isNotEmpty())
+        Regex("""UserInfo\{(\d+):([^:}]*):([0-9a-fA-F]+)}(\s+running)?""").findAll(text).map {
+            User(it.groupValues[1].toInt(), it.groupValues[2], it.groupValues[4].isNotEmpty(), it.groupValues[3].toIntOrNull(16) ?: 0)
         }.toList()
+
+    fun users(adb: Path, serial: String): List<User> = parseUsers(Adb.shell(adb, serial, "pm list users").out)
 
     // reboot with no argument restarts into Android.
     fun rebootArgs(serial: String, target: String?): List<String> =
