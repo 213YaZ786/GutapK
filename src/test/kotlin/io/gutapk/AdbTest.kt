@@ -5,6 +5,7 @@ import io.gutapk.device.AppAction
 import io.gutapk.device.AppActions
 import io.gutapk.device.Controls
 import io.gutapk.device.Key
+import io.gutapk.device.Logcat
 import io.gutapk.device.BatteryStatus
 import io.gutapk.device.DeviceApps
 import io.gutapk.device.DeviceFiles
@@ -351,5 +352,25 @@ class AdbTest {
         kotlin.test.assertFailsWith<IllegalArgumentException> { Wireless.removeRule("forward", "localabstract:x", "X1") }
         assertEquals(true, Wireless.isNetwork("192.168.1.23:5555"))
         assertEquals(false, Wireless.isNetwork("R58M123"))
+    }
+
+    // logcat -v threadtime lines, a tag with a space, and a line that is
+    // not a log line.
+    @Test
+    fun readsLogLines() {
+        val l = Logcat.parse("09-25 18:49:13.123  1234  5678 I ActivityManager: Start proc 4321:com.x/u0a12")!!
+        assertEquals("09-25 18:49:13.123", l.time)
+        assertEquals(1234, l.pid)
+        assertEquals('I', l.level)
+        assertEquals("ActivityManager", l.tag)
+        assertEquals("Start proc 4321:com.x/u0a12", l.message)
+        val spaced = Logcat.parse("09-25 18:49:14.000  1000  1000 W Some Tag  : careful")!!
+        assertEquals("Some Tag", spaced.tag)
+        assertEquals('F', Logcat.parse("09-25 18:49:15.000     1     1 A DEBUG   : abort")!!.level)
+        assertNull(Logcat.parse("--------- beginning of main"))
+        assertEquals(true, Logcat.atLeast(l, 'D'))
+        assertEquals(false, Logcat.atLeast(l, 'W'))
+        assertEquals(true, Logcat.matches(l, listOf("activity", "proc")))
+        assertEquals(listOf("-s", "X1", "logcat", "-v", "threadtime", "-T", "500", "--pid=42"), Logcat.args("X1", 42))
     }
 }
