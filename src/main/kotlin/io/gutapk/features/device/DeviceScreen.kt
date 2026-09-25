@@ -142,6 +142,8 @@ fun DeviceScreen(root: Path?, onPulled: (List<Path>) -> Unit, onBack: () -> Unit
     val adb = (l as? Link.Devices)?.adb
     if (current != null && adb != null && page == "dev_t_device") {
         DevicePage(adb, current, onBack = { page = null })
+    } else if (current != null && adb != null && page == "dev_t_wireless") {
+        WirelessPage(adb, current, onBack = { page = null })
     } else if (current != null && adb != null && page == "dev_t_controls") {
         ControlsPage(adb, current, onBack = { page = null })
     } else if (current != null && adb != null && page == "dev_t_mirror") {
@@ -167,8 +169,12 @@ fun DeviceScreen(root: Path?, onPulled: (List<Path>) -> Unit, onBack: () -> Unit
                     ZoneRow(t("retry"), "", onClick = { attempt++ })
                 }
                 is Link.Mismatch -> BodyText(t("dev_waiting"))
-                is Link.Devices -> Zone(t("dev_status")) {
-                    ZoneRow(t("dev_waiting"), t(guideKey(devices, ready.size)), onClick = { closedGuide = null })
+                is Link.Devices -> {
+                    Zone(t("dev_status")) {
+                        ZoneRow(t("dev_waiting"), t(guideKey(devices, ready.size)), onClick = { closedGuide = null })
+                    }
+                    // A phone can also come over Wi-Fi, without a cable.
+                    WirelessConnect(l.adb)
                 }
             }
         }
@@ -305,6 +311,7 @@ private fun DeviceHome(d: AdbDevice, onBack: () -> Unit, onTile: (String) -> Uni
             Triple("dev_t_debloat", GIcons.Debloat, false),
             Triple("dev_t_mirror", GIcons.Cast, true),
             Triple("dev_t_controls", GIcons.Tune, true),
+            Triple("dev_t_wireless", GIcons.Wifi, true),
             Triple("dev_t_console", GIcons.Terminal, false),
         ).map { (key, icon, available) ->
             val tile: @Composable (Modifier) -> Unit = { m ->

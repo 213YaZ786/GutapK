@@ -11,6 +11,7 @@ import io.gutapk.device.DeviceFiles
 import io.gutapk.device.EntryKind
 import io.gutapk.device.Mirror
 import io.gutapk.device.MirrorOptions
+import io.gutapk.device.Wireless
 import io.gutapk.device.DeviceInstall
 import io.gutapk.device.DeviceReader
 import io.gutapk.device.DeviceState
@@ -321,5 +322,34 @@ class AdbTest {
         kotlin.test.assertFailsWith<IllegalArgumentException> { Controls.size("900x2000 && reboot") }
         assertEquals(3, Controls.animation("0.5").lines().size)
         kotlin.test.assertFailsWith<IllegalArgumentException> { Controls.fontScale("1 reboot") }
+    }
+
+    @Test
+    fun readsTheNetworkSide() {
+        val mdns = listOf(
+            "List of discovered mdns services",
+            "adb-R58M123-AbCdEf\t_adb-tls-connect._tcp\t192.168.1.23:37123",
+            "adb-R58M123-XyZ\t_adb-tls-pairing._tcp\t192.168.1.23:41999",
+        ).joinToString("\n")
+        val found = Wireless.parseMdns(mdns)
+        assertEquals(listOf(false, true), found.map { it.pairing })
+        assertEquals("192.168.1.23:37123", found[0].address)
+        assertEquals("192.168.1.23", Wireless.parseIp("3: wlan0: <BROADCAST> mtu 1500\n    inet 192.168.1.23/24 brd 192.168.1.255 scope global wlan0\n"))
+        assertNull(Wireless.parseIp("Device \"wlan0\" does not exist."))
+        val rules = Wireless.parseRules("R58M123 tcp:8080 tcp:8081\nUsbFfs tcp:9000 tcp:9000\n")
+        assertEquals(listOf("tcp:8080" to "tcp:8081", "tcp:9000" to "tcp:9000"), rules.map { it.local to it.remote })
+    }
+
+    @Test
+    fun checksWhatTheUserTypes() {
+        assertEquals(listOf("pair", "192.168.1.23:41999", "123456"), Wireless.pair("192.168.1.23:41999", "123456"))
+        kotlin.test.assertFailsWith<IllegalArgumentException> { Wireless.pair("192.168.1.23:41999", "12345") }
+        kotlin.test.assertFailsWith<IllegalArgumentException> { Wireless.connect("host:99999") }
+        kotlin.test.assertFailsWith<IllegalArgumentException> { Wireless.connect("a b:5555") }
+        assertEquals(true, Wireless.validAddress("[fe80::1]:5555"))
+        assertEquals(listOf("-s", "X1", "forward", "tcp:8080", "tcp:8081"), Wireless.rule("forward", 8080, 8081, "X1"))
+        kotlin.test.assertFailsWith<IllegalArgumentException> { Wireless.removeRule("forward", "localabstract:x", "X1") }
+        assertEquals(true, Wireless.isNetwork("192.168.1.23:5555"))
+        assertEquals(false, Wireless.isNetwork("R58M123"))
     }
 }
