@@ -127,6 +127,7 @@ object BinaryXml {
             val header = d.u16(pos + 2)
             val size = d.u32(pos + 4).toInt()
             if (size < 8 || pos.toLong() + size > end) throw ApkFormatError("bad chunk size at $pos")
+            if (header < 8 || header > size) throw ApkFormatError("bad chunk header at $pos")
             when (type) {
                 Chunk.STRING_POOL -> {
                     pool = StringPool(d, pos)

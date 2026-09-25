@@ -113,11 +113,42 @@ object Installer {
         }
     }
 
-    // Rehashes the program. Anything but the recorded value means the file
-    // was changed after install, and the tool must not run.
+    // Rehashes the program, then every file beside it: a tool also runs
+    // its libraries, and scrcpy pushes its server to the phone. Anything but
+    // the recorded values means the folder changed after install, and the
+    // tool must not run. Installs from before 0.1.76 have no tree print yet,
+    // it is recorded on their first check, trusted as on first use.
     fun verify(root: Path, spec: ToolSpec): Boolean {
         val s = status(root, spec) as? ToolStatus.Installed ?: return false
-        return Hash.of(entry(root, spec, s.version), "SHA-256") == s.entrySha256
+        if (Hash.of(entry(root, spec, s.version), "SHA-256") != s.entrySha256) return false
+        val key = "${key(spec, s.version)}.tree.sha256"
+        val tree = treeHash(content(root, spec, s.version))
+        val recorded = Fingerprints.get(root, key)
+        if (recorded == null) {
+            Fingerprints.put(root, mapOf(key to tree))
+            RunLog.line("${key(spec, s.version)}: tree print recorded")
+            return true
+        }
+        return tree == recorded
+    }
+
+    // Every regular file under dir by relative path, with its sha256 and
+    // whether it can be run, and every link with its target. Sorted, so the
+    // print does not depend on the order the disk lists them.
+    internal fun treeHash(dir: Path): String {
+        val lines = Files.walk(dir).use { s ->
+            s.filter { it != dir }.map { p ->
+                val rel = dir.relativize(p).toString()
+                when {
+                    Files.isSymbolicLink(p) -> "link $rel ${Files.readSymbolicLink(p)}"
+                    Files.isRegularFile(p) -> "file $rel ${Hash.of(p, "SHA-256")} ${if (Files.isExecutable(p)) "x" else "-"}"
+                    else -> "dir $rel"
+                }
+            }.sorted().toList()
+        }
+        val md = MessageDigest.getInstance("SHA-256")
+        lines.forEach { md.update((it + "\n").toByteArray(Charsets.UTF_8)) }
+        return md.digest().joinToString("") { "%02x".format(it) }
     }
 
     fun install(root: Path, spec: ToolSpec, release: Release, sink: JobSink, cancelled: () -> Boolean) {
@@ -167,6 +198,7 @@ object Installer {
             mapOf(
                 "${key(spec, version)}.archive.sha256" to sha256,
                 "${key(spec, version)}.entry.sha256" to entrySha,
+                "${key(spec, version)}.tree.sha256" to treeHash(content),
                 "${spec.id}.version" to version,
             ),
         )

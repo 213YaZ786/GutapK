@@ -166,8 +166,13 @@ fun EditScreen(
         noBackup || strictNetwork || fragileData || memoryTagging || notDebuggable ||
         silencedPrefixes.isNotEmpty() || keepAbi != null || removedLanguages.isNotEmpty() || stripDebug || usePatches
     val spec = Tools.byId("apkeditor")
-    // Verify hashes the jar, so it runs once per visit, not on every switch.
-    val toolReady = remember { spec != null && Installer.status(root, spec).let { it is ToolStatus.Installed && Installer.verify(root, spec) } }
+    // Verify hashes the tool, so it runs on IO once per visit, not on every
+    // switch and never in the frame.
+    val toolReady by produceState(false, root) {
+        value = spec != null && withContext(Dispatchers.IO) {
+            runCatching { Installer.status(root, spec) is ToolStatus.Installed && Installer.verify(root, spec) }.getOrDefault(false)
+        }
+    }
     val ownMissing = choice == KeyChoice.OWN && !OwnKey.exists()
     val keyReady = choice != null && !ownMissing
     val ready = anyChange && keyReady && spec != null && !(usePatches && lostAbis.isNotEmpty())

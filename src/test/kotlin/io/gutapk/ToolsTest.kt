@@ -447,4 +447,29 @@ class ToolsTest {
         assertEquals("Unsafe", l.getValue("com.odd.one").removal)
         assertEquals(listOf("x.y"), l.getValue("com.odd.one").dependencies)
     }
+
+    // The tree print follows every file, its bytes and its execute bit,
+    // not the order the disk lists them in.
+    @Test
+    fun treePrintSeesEveryFile() {
+        val a = java.nio.file.Files.createTempDirectory("gutapk-tree")
+        try {
+            val lib = a.resolve("lib").resolve("libx.so")
+            java.nio.file.Files.createDirectories(lib.parent)
+            java.nio.file.Files.write(lib, byteArrayOf(1, 2, 3))
+            val prog = a.resolve("prog")
+            java.nio.file.Files.write(prog, byteArrayOf(9))
+            val first = io.gutapk.tools.Installer.treeHash(a)
+            kotlin.test.assertEquals(first, io.gutapk.tools.Installer.treeHash(a))
+
+            java.nio.file.Files.write(lib, byteArrayOf(1, 2, 4))
+            val changed = io.gutapk.tools.Installer.treeHash(a)
+            kotlin.test.assertNotEquals(first, changed)
+
+            prog.toFile().setExecutable(true)
+            kotlin.test.assertNotEquals(changed, io.gutapk.tools.Installer.treeHash(a))
+        } finally {
+            io.gutapk.tools.Storage.deleteTree(a, a.parent)
+        }
+    }
 }
