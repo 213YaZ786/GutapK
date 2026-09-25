@@ -3,6 +3,7 @@ package io.gutapk
 import io.gutapk.device.Adb
 import io.gutapk.device.BatteryStatus
 import io.gutapk.device.DeviceApps
+import io.gutapk.device.DeviceInstall
 import io.gutapk.device.DeviceReader
 import io.gutapk.device.DeviceState
 import kotlin.test.Test
@@ -159,5 +160,26 @@ class AdbTest {
         assertEquals("dd if='/a b.apk' bs=4096 skip=0 count=1 2>/dev/null" to 10, DeviceApps.ddCommand("'/a b.apk'", 10, 30))
         assertEquals("dd if='/x' bs=4096 skip=1 count=2 2>/dev/null" to 4000, DeviceApps.ddCommand("'/x'", 8096, 200))
         assertEquals("dd if='/x' bs=4096 skip=2 count=1 2>/dev/null" to 0, DeviceApps.ddCommand("'/x'", 8192, 4096))
+    }
+
+    // One APK is install, a set is install-multiple in one session, -r
+    // always, -d only when asked.
+    @Test
+    fun buildsInstallCommands() {
+        val base = java.nio.file.Path.of("/w/base.apk")
+        val abi = java.nio.file.Path.of("/w/split_config.arm64_v8a.apk")
+        assertEquals(listOf("-s", "X1", "install", "-r", "/w/base.apk"), DeviceInstall.args("X1", listOf(base), false))
+        assertEquals(
+            listOf("-s", "X1", "install-multiple", "-r", "-d", "/w/base.apk", "/w/split_config.arm64_v8a.apk"),
+            DeviceInstall.args("X1", listOf(base, abi), true),
+        )
+    }
+
+    @Test
+    fun readsInstallFailures() {
+        val out = "Performing Streamed Install\nadb: failed to install /w/base.apk: Failure [INSTALL_FAILED_VERSION_DOWNGRADE: Downgrade detected]\n"
+        assertEquals("INSTALL_FAILED_VERSION_DOWNGRADE", DeviceInstall.failure(out))
+        assertEquals("INSTALL_PARSE_FAILED_NO_CERTIFICATES", DeviceInstall.failure("Failure [INSTALL_PARSE_FAILED_NO_CERTIFICATES: no certs]"))
+        assertNull(DeviceInstall.failure("Performing Streamed Install\nSuccess\n"))
     }
 }
