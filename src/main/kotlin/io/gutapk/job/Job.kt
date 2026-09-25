@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 sealed interface JobEvent {
@@ -49,39 +50,43 @@ class Job internal constructor(val title: String) : JobSink {
 
     fun cancel() {
         cancelRequested = true
-        _view.value = _view.value.copy(state = JobState.CANCELLING)
+        _view.update { it.copy(state = JobState.CANCELLING) }
     }
 
     // Every line goes to the run log, so a failed download can be explained
-    // after the fact without having watched it.
+    // after the fact without having watched it. Each change is made on the
+    // latest view, so a progress arriving after Cancel keeps CANCELLING.
     override fun emit(event: JobEvent) {
-        val v = _view.value
         when (event) {
             is JobEvent.Step -> {
                 RunLog.line("[$title] step ${event.index}/${event.total} ${event.label}")
-                _view.value = v.copy(step = event.label)
+                _view.update { it.copy(step = event.label) }
             }
             is JobEvent.Line -> RunLog.line("[$title] ${event.text}")
-            is JobEvent.Progress -> _view.value = v.copy(done = event.done, total = event.total)
+            is JobEvent.Progress -> {
+                _view.update { it.copy(done = event.done, total = event.total) }
+            }
             is JobEvent.Finished -> {
                 RunLog.line("[$title] finished ok=${event.ok} ${event.message}")
-                _view.value = v.copy(
-                    state = if (event.ok) JobState.DONE else JobState.FAILED,
-                    message = event.message,
-                )
+                _view.update {
+                    it.copy(
+                        state = if (event.ok) JobState.DONE else JobState.FAILED,
+                        message = event.message,
+                    )
+                }
             }
         }
     }
 
     internal fun run(work: (Job) -> Unit) {
-        _view.value = _view.value.copy(state = JobState.RUNNING)
+        _view.update { it.copy(state = JobState.RUNNING) }
         RunLog.line("[$title] started")
         try {
             work(this)
             emit(JobEvent.Finished(true, result))
         } catch (e: CancelledByUser) {
             RunLog.line("[$title] cancelled")
-            _view.value = _view.value.copy(state = JobState.CANCELLED)
+            _view.update { it.copy(state = JobState.CANCELLED) }
         } catch (e: Exception) {
             emit(JobEvent.Finished(false, e.message ?: e.javaClass.simpleName))
         }
