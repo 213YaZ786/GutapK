@@ -3,6 +3,8 @@ package io.gutapk
 import io.gutapk.device.Adb
 import io.gutapk.device.AppAction
 import io.gutapk.device.AppActions
+import io.gutapk.device.Controls
+import io.gutapk.device.Key
 import io.gutapk.device.BatteryStatus
 import io.gutapk.device.DeviceApps
 import io.gutapk.device.DeviceFiles
@@ -271,5 +273,53 @@ class AdbTest {
             listOf("--serial=X1", "--window-title=GutapK  X1", "--turn-screen-off", "--show-touches", "--no-audio", "--no-control", "--max-size=1024", "--record=/v/a.mp4"),
             all,
         )
+    }
+
+    // The output of the batched read on an Android 14 phone, as the shell
+    // prints it: KEY=value lines, then wm's own lines.
+    @Test
+    fun readsQuickSettings() {
+        val out = listOf(
+            "dark=Night mode: yes",
+            "anim=0.5",
+            "touches=0",
+            "pointer=null",
+            "stayon=7",
+            "wifi=1",
+            "bt=0",
+            "data=1",
+            "airplane=0",
+            "font=1.15",
+            "timeout=30000",
+            "Physical size: 1080x2400",
+            "Override size: 900x2000",
+            "Physical density: 420",
+        ).joinToString("\n")
+        val s = Controls.parse(out)
+        assertEquals(true, s.dark)
+        assertEquals("0.5", s.animation)
+        assertEquals(false, s.showTouches)
+        assertNull(s.pointer)
+        assertEquals(true, s.stayOn)
+        assertEquals(true, s.wifi)
+        assertEquals(false, s.bluetooth)
+        assertEquals("1.15", s.fontScale)
+        assertEquals(30000L, s.timeoutMs)
+        assertEquals("1080x2400", s.physicalSize)
+        assertEquals("900x2000", s.overrideSize)
+        assertEquals(420, s.physicalDensity)
+        assertNull(s.overrideDensity)
+    }
+
+    @Test
+    fun buildsControlCommands() {
+        assertEquals("input keyevent 3", Controls.key(Key.HOME))
+        assertEquals("input text 'hello%sworld'", Controls.text("hello world"))
+        assertEquals("input text 'it'\\''s'", Controls.text("it's"))
+        assertEquals("wm size reset", Controls.size(null))
+        assertEquals("wm size 900x2000", Controls.size("900x2000"))
+        kotlin.test.assertFailsWith<IllegalArgumentException> { Controls.size("900x2000 && reboot") }
+        assertEquals(3, Controls.animation("0.5").lines().size)
+        kotlin.test.assertFailsWith<IllegalArgumentException> { Controls.fontScale("1 reboot") }
     }
 }
