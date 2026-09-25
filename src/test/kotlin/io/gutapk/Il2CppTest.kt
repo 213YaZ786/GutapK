@@ -19,6 +19,7 @@ import java.util.zip.ZipOutputStream
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
@@ -195,6 +196,36 @@ class Il2CppTest {
                 assertContentEquals(lib.copyOfRange(3000, 3016), LibBytes.read(apk, abi, 3000, 16))
                 assertContentEquals(lib.copyOfRange(4090, 4096), LibBytes.read(apk, abi, 4090, 16))
             }
+        } finally {
+            Storage.deleteTree(dir, dir.parent)
+        }
+    }
+
+    // Every patch is checked before any is written: a library from another
+    // build is refused whole, not left half patched.
+    @Test
+    fun appliesPatchesOnlyWhenAllMatch() {
+        val dir = Files.createTempDirectory("gutapk-apply")
+        try {
+            val lib = dir.resolve("libil2cpp.so")
+            val bytes = ByteArray(64) { it.toByte() }
+            Files.write(lib, bytes)
+            val good = BytePatch("arm64-v8a", 0x10, "10 11 12 13", "20 00 80 52", "A b")
+            val stale = BytePatch("arm64-v8a", 0x20, "FF FF", "00 00", "C d")
+            val libs: (String) -> java.nio.file.Path? = { abi -> if (abi == "arm64-v8a") lib else null }
+            val lines = mutableListOf<String>()
+
+            assertFailsWith<java.io.IOException> { Patches.apply(libs, listOf(good, stale)) { lines.add(it) } }
+            assertContentEquals(bytes, Files.readAllBytes(lib))
+            assertFailsWith<java.io.IOException> { Patches.apply(libs, listOf(good.copy(abi = "x86"))) { lines.add(it) } }
+            assertFailsWith<java.io.IOException> { Patches.apply(libs, listOf(good.copy(offset = 62))) { lines.add(it) } }
+            assertEquals(emptyList(), lines)
+
+            Patches.apply(libs, listOf(good)) { lines.add(it) }
+            val after = Files.readAllBytes(lib)
+            assertContentEquals(byteArrayOf(0x20, 0, 0x80.toByte(), 0x52), after.copyOfRange(0x10, 0x14))
+            assertContentEquals(bytes.copyOfRange(0x14, 64), after.copyOfRange(0x14, 64))
+            assertEquals(1, lines.size)
         } finally {
             Storage.deleteTree(dir, dir.parent)
         }

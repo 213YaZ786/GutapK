@@ -1,6 +1,7 @@
 package io.gutapk.core.il2cpp
 
 import java.io.IOException
+import java.io.RandomAccessFile
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -86,6 +87,35 @@ object Patches {
             return null to PatchProblem.Overlaps(it)
         }
         return patch to null
+    }
+
+    // Every patch checks the bytes it replaces first, all before any is
+    // written, so a library from another build is refused whole instead of
+    // left half patched. libs gives the decoded library of each ABI.
+    fun apply(libs: (String) -> Path?, patches: List<BytePatch>, log: (String) -> Unit) {
+        val checked = patches.map { p ->
+            val lib = libs(p.abi) ?: throw IOException("patch at 0x${p.offset.toString(16)} is for ${p.abi}, which is not in the APK being rebuilt")
+            val old = Hex.parse(p.old) ?: throw IOException("patch at 0x${p.offset.toString(16)} is unreadable")
+            val new = Hex.parse(p.new) ?: throw IOException("patch at 0x${p.offset.toString(16)} is unreadable")
+            if (old.size != new.size) throw IOException("patch at 0x${p.offset.toString(16)} changes the length")
+            RandomAccessFile(lib.toFile(), "r").use { f ->
+                if (p.offset + old.size > f.length()) throw IOException("patch at 0x${p.offset.toString(16)} is past the end of ${p.abi}/libil2cpp.so")
+                val found = ByteArray(old.size)
+                f.seek(p.offset)
+                f.readFully(found)
+                if (!found.contentEquals(old)) {
+                    throw IOException("patch at 0x${p.offset.toString(16)} expects ${p.old} but ${p.abi}/libil2cpp.so has ${Hex.format(found)}. The library is not the one the patch was made on.")
+                }
+            }
+            Triple(lib, p, new)
+        }
+        checked.forEach { (lib, p, new) ->
+            RandomAccessFile(lib.toFile(), "rw").use { f ->
+                f.seek(p.offset)
+                f.write(new)
+            }
+            log("patched ${p.abi} at 0x${p.offset.toString(16)}: ${p.old} to ${p.new} (${p.label})")
+        }
     }
 
     // The untouched bytes with this ABI's patches laid over them, for the

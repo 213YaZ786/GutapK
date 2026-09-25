@@ -1,5 +1,10 @@
 package io.gutapk.features.overview
 
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import io.gutapk.core.il2cpp.BytePatch
+import io.gutapk.core.il2cpp.Patches
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -127,6 +132,15 @@ fun EditScreen(
     var keepAbi by remember { mutableStateOf<String?>(null) }
     var keptLanguages by remember { mutableStateOf(info.languages.toSet()) }
     var stripDebug by remember { mutableStateOf(false) }
+    // The patches made in the hex view, on by default: making them was the
+    // user's request already.
+    val patches by produceState(emptyList<BytePatch>(), packageDir) {
+        value = withContext(Dispatchers.IO) { Patches.read(packageDir) }
+    }
+    var applyPatches by remember { mutableStateOf(true) }
+    val usePatches = applyPatches && patches.isNotEmpty()
+    // A patch for an ABI the size step removes cannot be applied.
+    val lostAbis = patches.map { it.abi }.distinct().filter { keepAbi != null && it != keepAbi }
     val removedLanguages = info.languages.toSet() - keptLanguages
     // Tracker names switched on for silencing. None by default.
     val silenced = remember { mutableStateMapOf<String, Boolean>() }
@@ -147,13 +161,13 @@ fun EditScreen(
     val anyChange = nameChanged || minChanged || targetChanged || toRemove.isNotEmpty() || themed || iconOk || packageChanged ||
         predictiveBack || localeConfig || nativeLibs ||
         noBackup || strictNetwork || fragileData || memoryTagging || notDebuggable ||
-        silencedPrefixes.isNotEmpty() || keepAbi != null || removedLanguages.isNotEmpty() || stripDebug
+        silencedPrefixes.isNotEmpty() || keepAbi != null || removedLanguages.isNotEmpty() || stripDebug || usePatches
     val spec = Tools.byId("apkeditor")
     // Verify hashes the jar, so it runs once per visit, not on every switch.
     val toolReady = remember { spec != null && Installer.status(root, spec).let { it is ToolStatus.Installed && Installer.verify(root, spec) } }
     val ownMissing = choice == KeyChoice.OWN && !OwnKey.exists()
     val keyReady = choice != null && !ownMissing
-    val ready = anyChange && keyReady && spec != null
+    val ready = anyChange && keyReady && spec != null && !(usePatches && lostAbis.isNotEmpty())
 
     val changed: @Composable () -> Unit = {
         Text(t("edit_changed"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
@@ -188,6 +202,7 @@ fun EditScreen(
                         keepAbi = keepAbi,
                         removeLanguages = removedLanguages,
                         stripDebugInfo = stripDebug,
+                        bytePatches = if (usePatches) patches else emptyList(),
                     ),
                     key = key,
                     packageName = info.packageName,
@@ -200,7 +215,13 @@ fun EditScreen(
             }) { Text(t("rename_go")) }
         } else {
             Text(
-                t(if (!anyChange) "edit_nothing_yet" else "edit_needs_key"),
+                t(
+                    when {
+                        !anyChange -> "edit_nothing_yet"
+                        usePatches && lostAbis.isNotEmpty() -> "edit_patches_blocked"
+                        else -> "edit_needs_key"
+                    },
+                ),
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
@@ -447,6 +468,20 @@ fun EditScreen(
                 checked = stripDebug,
                 onChange = { stripDebug = it },
             )
+        }
+
+        if (patches.isNotEmpty()) {
+            Zone(t("un_patches")) {
+                ToggleRow(
+                    t("edit_patches", patches.size),
+                    patches.map { it.abi }.distinct().joinToString(", "),
+                    available = true,
+                    checked = applyPatches,
+                    onChange = { applyPatches = it },
+                )
+                if (usePatches && lostAbis.isNotEmpty()) BodyText(t("edit_patches_abi", lostAbis.joinToString(", ")))
+                BodyText(t("edit_patches_d"))
+            }
         }
 
         if (info.permissions.isNotEmpty()) {

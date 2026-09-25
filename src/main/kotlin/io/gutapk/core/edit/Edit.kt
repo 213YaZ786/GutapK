@@ -1,6 +1,8 @@
 package io.gutapk.core.edit
 
 import io.gutapk.core.apk.SignatureInfo
+import io.gutapk.core.il2cpp.BytePatch
+import io.gutapk.core.il2cpp.Patches
 import io.gutapk.core.sign.ApkSigning
 import io.gutapk.core.sign.SigningKey
 import io.gutapk.job.JobEvent
@@ -47,6 +49,9 @@ data class Tweaks(
     val keepAbi: String? = null,
     val removeLanguages: Set<String> = emptySet(),
     val stripDebugInfo: Boolean = false,
+    // Byte patches to libil2cpp.so, each checked against the bytes it
+    // replaces.
+    val bytePatches: List<BytePatch> = emptyList(),
 )
 
 class EditResult(val output: Path, val signature: SignatureInfo)
@@ -145,6 +150,11 @@ object Edit {
         if (tweaks.keepAbi != null) keepAbi(decoded, tweaks.keepAbi, sink)
         if (tweaks.removeLanguages.isNotEmpty()) removeLanguages(decoded, tweaks.removeLanguages, sink)
         if (tweaks.stripDebugInfo) stripDebugInfo(decoded, sink)
+        // After the ABI step, so a patch for a removed ABI is refused by
+        // name instead of written into a library about to go.
+        if (tweaks.bytePatches.isNotEmpty()) {
+            Patches.apply({ abi -> nativeLib(decoded, abi) }, tweaks.bytePatches) { sink.emit(JobEvent.Line(it)) }
+        }
 
         val label = tweaks.label?.takeIf { it.isNotBlank() }
         if (label != null) {
@@ -316,6 +326,11 @@ object Edit {
         Files.writeString(file, change(Files.readString(file)))
         sink.emit(JobEvent.Line("native libraries stored and read from the APK"))
     }
+
+    private fun nativeLib(decoded: Path, abi: String): Path? =
+        listOf(decoded.resolve("root").resolve("lib"), decoded.resolve("lib"))
+            .map { it.resolve(abi).resolve("libil2cpp.so") }
+            .firstOrNull { Files.isRegularFile(it) }
 
     // Native libraries sit in root/lib for APKEditor and lib for apktool.
     // A file its uncompressed list names but that is gone does not stop
