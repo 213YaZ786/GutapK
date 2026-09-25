@@ -13,6 +13,7 @@ import io.gutapk.device.DeviceApps
 import io.gutapk.device.DeviceFiles
 import io.gutapk.device.EntryKind
 import io.gutapk.device.Mirror
+import io.gutapk.device.SystemInfo
 import io.gutapk.device.MirrorOptions
 import io.gutapk.device.Wireless
 import io.gutapk.device.DeviceInstall
@@ -388,5 +389,16 @@ class AdbTest {
         h = Console.remember(h, "df -h")
         assertEquals(listOf("df -h", "ps -A"), h)
         assertEquals(50, (1..80).fold(emptyList<String>()) { acc, i -> Console.remember(acc, "echo $i") }.size)
+    }
+
+    @Test
+    fun readsAndWritesSettings() {
+        val s = SystemInfo.parseSettings("wifi_on=1\nzen_mode=0\nnetwork_scoring_ui_enabled=\nsome_json={\"a\":\"b=c\"}\n")
+        assertEquals(listOf("network_scoring_ui_enabled", "some_json", "wifi_on", "zen_mode"), s.map { it.first })
+        assertEquals("{\"a\":\"b=c\"}", s[1].second)
+        assertEquals("settings put global stay_on_while_plugged_in '7'", SystemInfo.putCommand("global", "stay_on_while_plugged_in", "7"))
+        assertEquals("settings delete secure x.y", SystemInfo.deleteCommand("secure", "x.y"))
+        kotlin.test.assertFailsWith<IllegalArgumentException> { SystemInfo.putCommand("global", "a b", "1") }
+        kotlin.test.assertFailsWith<IllegalArgumentException> { SystemInfo.listCommand("root") }
     }
 }
