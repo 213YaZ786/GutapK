@@ -10,6 +10,8 @@ import io.gutapk.core.il2cpp.LibBytes
 import io.gutapk.core.il2cpp.MethodIndex
 import io.gutapk.core.il2cpp.PatchProblem
 import io.gutapk.core.il2cpp.Patches
+import io.gutapk.features.overview.hexChar
+import io.gutapk.features.overview.hexWindow
 import io.gutapk.features.overview.searchMethods
 import io.gutapk.tools.Storage
 import java.nio.file.Files
@@ -229,5 +231,87 @@ class Il2CppTest {
         } finally {
             Storage.deleteTree(dir, dir.parent)
         }
+    }
+
+    // Every byte value, so the sign of Kotlin's Byte never leaks into the
+    // text the user reads or types.
+    @Test
+    fun hexCoversEveryByteValue() {
+        val ramp = ByteArray(256) { it.toByte() }
+        val text = Hex.format(ramp)
+        assertEquals((0..255).map { "%02X".format(it) }, text.split(' '))
+        assertContentEquals(ramp, Hex.parse(text))
+        assertContentEquals(ramp, Hex.parse(text.lowercase().replace(" ", "")))
+        assertContentEquals(byteArrayOf(0x1f, 0x20, 0x03, 0xd5.toByte()), Hex.parse("  1F 20\t03   d5 "))
+        assertNull(Hex.parse("0x20"))
+
+        val printable = ramp.filter { hexChar(it) != '.' }.map { it.toInt() and 0xff }
+        assertEquals((0x20..0x7e).toList(), printable)
+        assertEquals(" ~...", listOf(0x20, 0x7e, 0x7f, 0x80, 0xff).map { hexChar(it.toByte()) }.joinToString(""))
+        assertEquals('.', hexChar(0x1f))
+    }
+
+    @Test
+    fun windowStaysBetweenOneAndOneKilobyte() {
+        assertEquals(listOf(1, 1, 1, 17, 1024, 1024), listOf(-1L, 0L, 1L, 17L, 1024L, 1025L).map { hexWindow(it) })
+    }
+
+    // A library of 1025 bytes, one past the window, read at its last byte,
+    // at its end, and in a last row of one byte.
+    @Test
+    fun libraryIsReadUpToItsLastByte() {
+        val dir = Files.createTempDirectory("gutapk-edge")
+        try {
+            val lib = ByteArray(1025) { it.toByte() }
+            val apk = dir.resolve("edge.apk")
+            ZipOutputStream(Files.newOutputStream(apk)).use { z ->
+                val stored = ZipEntry(LibBytes.entry("arm64-v8a"))
+                stored.method = ZipEntry.STORED
+                stored.size = lib.size.toLong()
+                stored.crc = CRC32().apply { update(lib) }.value
+                z.putNextEntry(stored)
+                z.write(lib)
+                z.closeEntry()
+                z.putNextEntry(ZipEntry(LibBytes.entry("armeabi-v7a")))
+                z.write(lib)
+                z.closeEntry()
+            }
+            listOf("arm64-v8a", "armeabi-v7a").forEach { abi ->
+                assertContentEquals(lib.copyOfRange(0, 1024), LibBytes.read(apk, abi, 0, hexWindow(1025)))
+                assertContentEquals(lib.copyOfRange(1, 1025), LibBytes.read(apk, abi, 1, 1024))
+                assertContentEquals(lib.copyOfRange(1008, 1025), LibBytes.read(apk, abi, 1008, 17))
+                assertContentEquals(byteArrayOf(0), LibBytes.read(apk, abi, 1024, 16))
+                assertFailsWith<java.io.IOException> { LibBytes.read(apk, abi, 1025, 1) }
+                assertFailsWith<java.io.IOException> { LibBytes.read(apk, abi, -1, 1) }
+            }
+            assertFailsWith<java.io.IOException> { LibBytes.read(apk, "x86", 0, 1) }
+        } finally {
+            Storage.deleteTree(dir, dir.parent)
+        }
+    }
+
+    // A window of 17 bytes at 0x1000, one full row and one byte. An arm64
+    // nop fits in the last four bytes and not one byte further. Patches
+    // reaching over either edge only colour what is shown.
+    @Test
+    fun patchesAtTheEdgesOfTheWindow() {
+        val original = ByteArray(17) { it.toByte() }
+        fun make(offset: Long, text: String) = Patches.make("arm64-v8a", offset, text, "T m", 0x1000, original, emptyList())
+
+        val nop = assertNotNull(make(0x100d, "1F 20 03 D5").first)
+        assertEquals("0D 0E 0F 10", nop.old)
+        assertEquals(0x1011L, nop.end)
+        assertEquals(PatchProblem.OutOfRange, make(0x100e, "1F 20 03 D5").second)
+        assertEquals(PatchProblem.OutOfRange, make(0x1011, "FF").second)
+        assertNotNull(make(0x1000, "FF").first)
+
+        val before = BytePatch("arm64-v8a", 0xffe, "00 00 00 00", "AA AA AA AA", "a")
+        val after = BytePatch("arm64-v8a", 0x1010, "10 00", "BB BB", "b")
+        val (shown, changed) = Patches.overlay(original, 0x1000, "arm64-v8a", listOf(before, after))
+        assertEquals(17, shown.size)
+        assertEquals(listOf(0, 1, 16), changed.indices.filter { changed[it] })
+        assertContentEquals(byteArrayOf(0xaa.toByte(), 0xaa.toByte()), shown.copyOfRange(0, 2))
+        assertEquals(0xbb.toByte(), shown[16])
+        assertContentEquals(original.copyOfRange(2, 16), shown.copyOfRange(2, 16))
     }
 }

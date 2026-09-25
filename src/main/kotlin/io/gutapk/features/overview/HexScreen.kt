@@ -56,6 +56,15 @@ private sealed interface HexState {
 
 private fun offsetText(v: Long): String = "0x" + v.toString(16).uppercase()
 
+// Outside the composables so the window and the character column are
+// testable without a UI.
+internal fun hexWindow(length: Long): Int = length.coerceIn(1, WINDOW.toLong()).toInt()
+
+internal fun hexChar(b: Byte): Char {
+    val c = b.toInt() and 0xff
+    return if (c in 0x20..0x7e) c.toChar() else '.'
+}
+
 // Bytes of one method, sixteen to a row, with the offset in the file on the
 // left and the printable characters on the right. Changed bytes are drawn
 // in the accent colour.
@@ -67,7 +76,7 @@ fun HexScreen(packageDir: Path, apk: Path, method: MethodEntry, onBack: () -> Un
         value = withContext(Dispatchers.IO) {
             val read = runCatching {
                 val abi = MethodIndex.record(packageDir)?.abi ?: throw IllegalStateException("no dump for this package")
-                val length = method.length.coerceIn(1, WINDOW.toLong()).toInt()
+                val length = hexWindow(method.length)
                 HexData(abi, LibBytes.read(apk, abi, method.offset, length), Patches.read(packageDir))
             }
             val data = read.getOrNull()
@@ -183,10 +192,7 @@ private fun HexRows(d: HexData, start: Long) {
                     }
                     withStyle(SpanStyle(color = dim)) {
                         append(" ")
-                        for (i in row until minOf(row + ROW, shown.size)) {
-                            val c = shown[i].toInt() and 0xff
-                            append(if (c in 0x20..0x7e) c.toChar() else '.')
-                        }
+                        for (i in row until minOf(row + ROW, shown.size)) append(hexChar(shown[i]))
                     }
                 }
                 Text(text, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodyMedium, color = Color.Unspecified)
