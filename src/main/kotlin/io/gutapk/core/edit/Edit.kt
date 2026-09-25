@@ -15,11 +15,10 @@ import io.gutapk.tools.Tools
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 import javax.imageio.ImageIO
 
-// What the user asked to change. One field for now, the display name. The
-// class grows one field per tweak, the pipeline stays the same.
+// What the user asked to change, one field per tweak. The pipeline stays
+// the same as the class grows.
 data class Tweaks(
     val label: String? = null,
     val minSdk: Int? = null,
@@ -693,11 +692,5 @@ object Edit {
         val home = System.getProperty("java.home")
         val java = Path.of(home, "bin", "java")
         return if (Files.isExecutable(java)) java.toString() else "java"
-    }
-
-    // Kept for a caller that wants to place a file itself.
-    fun copyInto(from: Path, to: Path) {
-        Files.createDirectories(to.parent)
-        Files.copy(from, to, StandardCopyOption.REPLACE_EXISTING)
     }
 }

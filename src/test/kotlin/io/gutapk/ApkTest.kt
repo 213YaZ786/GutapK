@@ -141,7 +141,10 @@ class ApkTest {
         bb.position(header)
         bb.putInt(entries.size)
         entries.forEach { (type, count, off) ->
-            bb.putShort(type.toShort()); bb.putShort(0); bb.putInt(count); bb.putInt(off)
+            bb.putShort(type.toShort())
+            bb.putShort(0)
+            bb.putInt(count)
+            bb.putInt(off)
         }
         val sig = java.security.MessageDigest.getInstance("SHA-1").digest(out.copyOfRange(0x20, size))
         System.arraycopy(sig, 0, out, 0x0c, 20)
