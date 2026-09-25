@@ -11,6 +11,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -26,7 +27,15 @@ import io.gutapk.device.AppActions
 import io.gutapk.device.AppDetails
 import io.gutapk.device.DeviceApps
 import io.gutapk.device.InstalledApp
+import io.gutapk.job.Job
+import io.gutapk.job.JobQueue
+import io.gutapk.job.JobState
 import io.gutapk.tools.RunLog
+import io.gutapk.ui.Chooser
+import io.gutapk.ui.LocalLang
+import io.gutapk.ui.Strings
+import io.gutapk.ui.currentJobView
+import io.gutapk.ui.jobPill
 import io.gutapk.ui.BodyText
 import io.gutapk.ui.Page
 import io.gutapk.ui.Zone
@@ -82,7 +91,44 @@ fun AppPage(
     }
     var pending by remember { mutableStateOf<Pending?>(null) }
     var answer by remember { mutableStateOf<String?>(null) }
+    var saved by remember { mutableStateOf<String?>(null) }
+    var saveJob by remember { mutableStateOf<Job?>(null) }
     val scope = rememberCoroutineScope()
+    val lang = LocalLang.current
+    val view = currentJobView()
+    LaunchedEffect(view) {
+        val job = JobQueue.current.value
+        if (saveJob != null && job === saveJob && view != null) {
+            when (view.state) {
+                JobState.DONE -> {
+                    saveJob = null
+                    saved = view.message
+                }
+                JobState.FAILED -> {
+                    saveJob = null
+                    answer = view.message
+                }
+                JobState.CANCELLED -> {
+                    saveJob = null
+                }
+                else -> {}
+            }
+        }
+    }
+
+    // Every APK of the app, base and splits, into a folder named after it
+    // inside the one the user picks.
+    fun save(apks: List<String>) {
+        Chooser.folder(Strings.get(lang, "aa_save_to"), System.getProperty("user.home")) { dir ->
+            if (dir != null) {
+                val target = dir.resolve(app.packageName)
+                saveJob = JobQueue.start("pull") { job ->
+                    DeviceApps.pull(adb, serial, apks, target, job) { job.cancelRequested }
+                    job.result = target.toString()
+                }
+            }
+        }
+    }
 
     fun send(command: String, after: () -> Unit) {
         RunLog.line("[device] adb -s $serial shell $command")
@@ -103,7 +149,12 @@ fun AppPage(
     val pull: @Composable () -> Unit = {
         FilledTonalButton(onClick = { ready?.let { onPull(it.apks) } }) { Text(t("ap_open")) }
     }
-    Page(title = label ?: app.packageName, width = 960.dp, onBack = onBack, actions = if (ready != null && ready.apks.isNotEmpty()) pull else null) {
+    Page(
+        title = label ?: app.packageName,
+        width = 960.dp,
+        onBack = onBack,
+        actions = jobPill(view) ?: (if (ready != null && ready.apks.isNotEmpty()) pull else null),
+    ) {
         Text(
             app.packageName,
             style = MaterialTheme.typography.bodyLarge,
@@ -145,6 +196,9 @@ fun AppPage(
                     }
                 }
                 Zone(t("aa_actions")) {
+                    if (d.apks.isNotEmpty()) {
+                        ZoneRow(t("aa_save"), t("aa_save_d", d.apks.size.toString()), onClick = { save(d.apks) })
+                    }
                     actions.forEach { a ->
                         ZoneRow(t(actionKey(a)), t(actionKey(a) + "_d"), onClick = { pending = Pending(a, AppActions.command(a, app.packageName, user)) })
                     }
@@ -198,6 +252,15 @@ fun AppPage(
                 }
             },
             dismissButton = { TextButton(onClick = { pending = null }) { Text(t("cancel")) } },
+        )
+    }
+    val sv = saved
+    if (sv != null) {
+        AlertDialog(
+            onDismissRequest = { saved = null },
+            title = { Text(t("aa_saved")) },
+            text = { SelectionContainer { Text(sv, fontFamily = FontFamily.Monospace) } },
+            confirmButton = { TextButton(onClick = { saved = null }) { Text(t("close")) } },
         )
     }
     val a = answer

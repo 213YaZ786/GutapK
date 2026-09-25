@@ -12,9 +12,12 @@
 #              single native program.
 #              github-pre: github with pre-releases taken, for a publisher
 #              that ships nothing else.
+#              A .tar.gz is unpacked without its top folder, which carries
+#              the version.
 #
 # id	source	index	package	entry	execDir	licence	licenceUrl	what
 apkeditor	github	https://github.com/REAndroid/APKEditor	APKEditor-[0-9][0-9.]*\.jar	APKEditor.jar	-	Apache-2.0	https://github.com/REAndroid/APKEditor/blob/master/LICENSE	Decodes and rebuilds APKs, pure Java, merges split APKs. First engine.
 apktool	github	https://github.com/iBotPeaches/Apktool	apktool_[0-9][0-9.]*\.jar	apktool.jar	-	Apache-2.0	https://github.com/iBotPeaches/Apktool/blob/main/LICENSE.md	Decodes and rebuilds APKs with aapt2. Fallback engine.
 platform-tools	google-repo	https://dl.google.com/android/repository/repository2-3.xml	platform-tools	platform-tools/adb	platform-tools	Android Software Development Kit License Agreement	https://developer.android.com/studio/terms	adb and fastboot
 cpp2il	github-pre	https://github.com/SamboyCoding/Cpp2IL	Cpp2IL-[0-9][0-9A-Za-z.-]*-Linux	Cpp2IL	.	MIT	https://github.com/SamboyCoding/Cpp2IL/blob/development/LICENSE	Dumps Unity IL2CPP games: types, methods and their offsets in libil2cpp.so. Pre-releases only.
+scrcpy	github	https://github.com/Genymobile/scrcpy	scrcpy-linux-x86_64-v[0-9][0-9.]*\.tar\.gz	scrcpy	.	Apache-2.0	https://github.com/Genymobile/scrcpy/blob/master/LICENSE	Shows and controls the phone's screen on the computer, over adb.

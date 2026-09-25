@@ -147,6 +147,9 @@ object Installer {
             if (release.fileName.endsWith(".zip")) {
                 unzip(archive, staging, cancelled)
                 spec.execDirOrNull?.let { markExecutable(staging.resolve(it)) }
+            } else if (release.fileName.endsWith(".tar.gz")) {
+                Untar.extract(archive, staging, cancelled)
+                spec.execDirOrNull?.let { markExecutable(staging.resolve(it)) }
             } else {
                 placeSingle(archive, staging, spec.entry)
                 spec.execDirOrNull?.let { markExecutable(staging.resolve(it)) }

@@ -239,6 +239,13 @@ while IFS=$'\t' read -r id source index pkg entry execdir licence licenceurl wha
                 fail=1
             fi
             ;;
+        *.tar.gz)
+            # The app drops the top folder, so the entry is one level down.
+            if ! tar -tzf "$file" | cut -d/ -f2- | grep -qx "$entry"; then
+                echo "::error::$id $version archive has no $entry"
+                fail=1
+            fi
+            ;;
         *)
             if [ "$execdir" = "." ]; then
                 if [ "$(head -c 4 "$file" | od -An -tx1 | tr -d ' \n')" != "7f454c46" ]; then

@@ -1,5 +1,6 @@
 package io.gutapk
 
+import io.gutapk.tools.Untar
 import io.gutapk.core.apk.Trackers
 import io.gutapk.job.JobEvent
 import io.gutapk.job.JobSink
@@ -375,5 +376,57 @@ class ToolsTest {
         ).sorted()
         assertEquals(listOf("Google Firebase Analytics"), Trackers.detect(classes, list).map { it.name })
         assertTrue(Trackers.detect(listOf("com.example.App"), list).isEmpty())
+    }
+
+    // A ustar header as GNU tar writes it: name, octal mode and size, type.
+    private fun tarEntry(name: String, body: ByteArray, type: Char, mode: Int = 420): ByteArray {
+        val h = ByteArray(512)
+        name.toByteArray().copyInto(h, 0)
+        "%07o".format(mode).toByteArray().copyInto(h, 100)
+        "%011o".format(body.size).toByteArray().copyInto(h, 124)
+        h[156] = type.code.toByte()
+        "ustar".toByteArray().copyInto(h, 257)
+        val padded = ByteArray((body.size + 511) / 512 * 512)
+        body.copyInto(padded)
+        return h + padded
+    }
+
+    private fun targz(file: java.nio.file.Path, vararg entries: ByteArray) {
+        java.util.zip.GZIPOutputStream(Files.newOutputStream(file)).use { out ->
+            entries.forEach { out.write(it) }
+            out.write(ByteArray(1024))
+        }
+    }
+
+    // scrcpy's layout: a versioned top folder, a program with the execute
+    // bit, a plain file, and a GNU long name.
+    @Test
+    fun unpacksTarGzWithoutItsTopFolder() {
+        val dir = Files.createTempDirectory("gutapk-tar")
+        try {
+            val archive = dir.resolve("tool.tar.gz")
+            val long = "tool-v4.1/" + "n".repeat(120)
+            targz(
+                archive,
+                tarEntry("tool-v4.1/", ByteArray(0), '5', 493),
+                tarEntry("tool-v4.1/scrcpy", "prog".toByteArray(), '0', 493),
+                tarEntry("tool-v4.1/scrcpy.1", "man".toByteArray(), '0', 420),
+                tarEntry("././@LongLink", long.toByteArray(), 'L'),
+                tarEntry(long.take(99), "long".toByteArray(), '0'),
+            )
+            val out = dir.resolve("out")
+            Untar.extract(archive, out) { false }
+            assertEquals("prog", Files.readString(out.resolve("scrcpy")))
+            assertTrue(Files.isExecutable(out.resolve("scrcpy")))
+            assertFalse(Files.isExecutable(out.resolve("scrcpy.1")))
+            assertEquals("long", Files.readString(out.resolve("n".repeat(120))))
+
+            val evil = dir.resolve("evil.tar.gz")
+            targz(evil, tarEntry("top/../../escape", "x".toByteArray(), '0'))
+            assertFailsWith<CheckFailed> { Untar.extract(evil, dir.resolve("out2")) { false } }
+            assertFalse(Files.exists(dir.resolve("escape")))
+        } finally {
+            Storage.deleteTree(dir, dir.parent)
+        }
     }
 }

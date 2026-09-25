@@ -7,6 +7,8 @@ import io.gutapk.device.BatteryStatus
 import io.gutapk.device.DeviceApps
 import io.gutapk.device.DeviceFiles
 import io.gutapk.device.EntryKind
+import io.gutapk.device.Mirror
+import io.gutapk.device.MirrorOptions
 import io.gutapk.device.DeviceInstall
 import io.gutapk.device.DeviceReader
 import io.gutapk.device.DeviceState
@@ -259,5 +261,15 @@ class AdbTest {
         assertEquals(false, DeviceFiles.validName("a/b"))
         assertEquals(false, DeviceFiles.validName(".."))
         assertEquals(true, DeviceFiles.validName("New folder"))
+    }
+
+    @Test
+    fun buildsScrcpyOptions() {
+        assertEquals(listOf("--serial=X1", "--window-title=GutapK  X1", "--stay-awake"), Mirror.args("X1", MirrorOptions()))
+        val all = Mirror.args("X1", MirrorOptions(screenOff = true, stayAwake = false, showTouches = true, audio = false, readOnly = true, maxSize = 1024, record = java.nio.file.Path.of("/v/a.mp4")))
+        assertEquals(
+            listOf("--serial=X1", "--window-title=GutapK  X1", "--turn-screen-off", "--show-touches", "--no-audio", "--no-control", "--max-size=1024", "--record=/v/a.mp4"),
+            all,
+        )
     }
 }
