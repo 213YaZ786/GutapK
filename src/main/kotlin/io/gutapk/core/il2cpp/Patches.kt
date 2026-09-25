@@ -50,6 +50,18 @@ data class BytePatch(val abi: String, val offset: Long, val old: String, val new
     val end: Long get() = offset + size
 }
 
+// Why an imported patch was not taken.
+sealed interface ImportRefusal {
+    data object AbiMissing : ImportRefusal
+    data object Malformed : ImportRefusal
+    data object PastTheEnd : ImportRefusal
+    data class Mismatch(val found: String) : ImportRefusal
+    data class Overlaps(val other: BytePatch) : ImportRefusal
+    data object AlreadyThere : ImportRefusal
+}
+
+class ImportResult(val added: List<BytePatch>, val refused: List<Pair<BytePatch, ImportRefusal>>)
+
 sealed interface PatchProblem {
     data object BadHex : PatchProblem
     data object OutOfRange : PatchProblem
@@ -65,13 +77,68 @@ object Patches {
     fun read(packageDir: Path): List<BytePatch> {
         val f = file(packageDir)
         if (!Files.isRegularFile(f)) return emptyList()
-        return Files.readAllLines(f).mapNotNull { line ->
+        return parse(Files.readAllLines(f))
+    }
+
+    // The rows of patches.tsv or of an exported file. Lines starting with
+    // # are notes, a malformed row is skipped.
+    fun parse(lines: List<String>): List<BytePatch> =
+        lines.filterNot { it.startsWith("#") }.mapNotNull { line ->
             val p = line.split('\t')
             if (p.size != 5) return@mapNotNull null
             val offset = p[1].toLongOrNull(16) ?: return@mapNotNull null
             if (Hex.parse(p[2]) == null || Hex.parse(p[3]) == null) return@mapNotNull null
             BytePatch(p[0], offset, p[2], p[3], p[4])
         }.sortedBy { it.offset }
+
+    private fun rows(patches: List<BytePatch>): String =
+        patches.sortedBy { it.offset }.joinToString("") { p ->
+            listOf(p.abi, p.offset.toString(16), p.old, p.new, p.label.replace('\t', ' ').replace('\n', ' ')).joinToString("\t") + "\n"
+        }
+
+    // The same rows under a note naming the library they were made on, so
+    // a file shared later says where it belongs. Never over another file.
+    fun export(target: Path, packageName: String, libSha256: String?, patches: List<BytePatch>) {
+        if (Files.exists(target)) throw IOException("$target already exists, it is not replaced")
+        val head = "# GutapK patches for $packageName, libil2cpp.so sha256 ${libSha256 ?: "unknown"}\n" +
+            "# abi, offset hex, old bytes, new bytes, label\n"
+        val part = target.resolveSibling(target.fileName.toString() + ".part")
+        try {
+            Files.writeString(part, head + rows(patches))
+            Files.move(part, target, StandardCopyOption.ATOMIC_MOVE)
+        } finally {
+            Files.deleteIfExists(part)
+        }
+    }
+
+    // A patch is taken only where the library holds its old bytes at its
+    // offset, so a file from another build of the game never lands on the
+    // wrong code. lib gives the untouched library of an ABI, or null.
+    fun fit(incoming: List<BytePatch>, existing: List<BytePatch>, lib: (String) -> ByteArray?): ImportResult {
+        val added = mutableListOf<BytePatch>()
+        val refused = mutableListOf<Pair<BytePatch, ImportRefusal>>()
+        incoming.sortedBy { it.offset }.forEach { p ->
+            val data = lib(p.abi)
+            val old = Hex.parse(p.old)
+            val taken = existing + added
+            val reason = when {
+                old == null || Hex.parse(p.new)?.size != old.size -> ImportRefusal.Malformed
+                data == null -> ImportRefusal.AbiMissing
+                p.offset < 0 || p.offset + old.size > data.size -> ImportRefusal.PastTheEnd
+                taken.any { it.abi == p.abi && it.offset == p.offset && it.new == p.new && it.old == p.old } -> ImportRefusal.AlreadyThere
+                else -> {
+                    val found = data.copyOfRange(p.offset.toInt(), p.offset.toInt() + old.size)
+                    val other = taken.firstOrNull { it.abi == p.abi && it.offset < p.end && p.offset < it.end }
+                    when {
+                        !found.contentEquals(old) -> ImportRefusal.Mismatch(Hex.format(found))
+                        other != null -> ImportRefusal.Overlaps(other)
+                        else -> null
+                    }
+                }
+            }
+            if (reason == null) added.add(p) else refused.add(p to reason)
+        }
+        return ImportResult(added, refused)
     }
 
     // Written aside then moved, a crash never leaves half a list.
@@ -79,12 +146,7 @@ object Patches {
         val dir = MethodIndex.dir(packageDir)
         Files.createDirectories(dir)
         val part = dir.resolve("$FILE.part")
-        Files.writeString(
-            part,
-            patches.sortedBy { it.offset }.joinToString("") { p ->
-                listOf(p.abi, p.offset.toString(16), p.old, p.new, p.label.replace('\t', ' ').replace('\n', ' ')).joinToString("\t") + "\n"
-            },
-        )
+        Files.writeString(part, rows(patches))
         Files.move(part, file(packageDir), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
     }
 

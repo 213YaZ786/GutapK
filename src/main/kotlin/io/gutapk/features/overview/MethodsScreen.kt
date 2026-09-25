@@ -1,28 +1,41 @@
 package io.gutapk.features.overview
 
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.remember
+import io.gutapk.core.il2cpp.BytePatch
 import io.gutapk.core.il2cpp.DumpRecord
+import io.gutapk.core.il2cpp.ImportRefusal
 import io.gutapk.core.il2cpp.Find
 import io.gutapk.core.il2cpp.LibBytes
 import io.gutapk.core.il2cpp.MethodEntry
 import io.gutapk.core.il2cpp.MethodIndex
+import io.gutapk.core.il2cpp.Patches
+import io.gutapk.ui.Chooser
 import io.gutapk.ui.BodyText
 import io.gutapk.ui.Page
 import io.gutapk.ui.Zone
 import io.gutapk.ui.ZoneRow
 import io.gutapk.ui.t
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.nio.file.Files
 import java.nio.file.Path
 
 // A page of rows stays readable, a hundred thousand do not. More words
@@ -77,6 +90,79 @@ fun MethodsScreen(packageDir: Path, apk: Path, query: String, onQuery: (String) 
             }.getOrElse { BytesFound(0, emptyList(), it.message ?: "?") }
         }
     }
+    // Bumped after an import, so the list is read again.
+    var revision by remember { mutableStateOf(0) }
+    val patches by produceState<List<BytePatch>>(emptyList(), packageDir, revision) {
+        value = withContext(Dispatchers.IO) { runCatching { Patches.read(packageDir) }.getOrDefault(emptyList()) }
+    }
+    var message by remember { mutableStateOf<List<String>?>(null) }
+    val scope = rememberCoroutineScope()
+    val pkg = packageDir.fileName.toString().substringBeforeLast('-')
+    val exportTitle = t("me_export")
+    val importTitle = t("me_import")
+    val filterName = t("me_patch_files")
+    val savedTo = t("me_export_done")
+    val importCount = t("me_import_done")
+    val refusalTexts = mapOf(
+        "abi" to t("me_refused_abi"),
+        "malformed" to t("me_refused_malformed"),
+        "end" to t("me_refused_end"),
+        "mismatch" to t("me_refused_mismatch"),
+        "overlap" to t("me_refused_overlap"),
+        "there" to t("me_refused_there"),
+    )
+
+    fun exportFile() {
+        Chooser.folder(exportTitle, System.getProperty("user.home")) { dir ->
+            if (dir != null) {
+                scope.launch {
+                    val target = dir.resolve("$pkg-patches.tsv")
+                    val r = withContext(Dispatchers.IO) {
+                        runCatching { Patches.export(target, pkg, loaded?.record?.libSha256, patches) }
+                    }
+                    message = listOf(r.fold({ savedTo.replace("%s", target.toString()) }, { it.message ?: "?" }))
+                }
+            }
+        }
+    }
+
+    fun importFile() {
+        Chooser.file(importTitle, filterName, "tsv") { file ->
+            if (file != null) {
+                scope.launch {
+                    val lines = withContext(Dispatchers.IO) {
+                        runCatching {
+                            val incoming = Patches.parse(Files.readAllLines(file))
+                            val abi = loaded?.record?.abi
+                            val result = Patches.fit(incoming, patches) { a ->
+                                if (a == abi) {
+                                    lib.bytes ?: runCatching { LibBytes.readAll(apk, a) }.getOrNull()?.also { lib.bytes = it }
+                                } else {
+                                    runCatching { LibBytes.readAll(apk, a) }.getOrNull()
+                                }
+                            }
+                            if (result.added.isNotEmpty()) Patches.write(packageDir, patches + result.added)
+                            listOf(importCount.replaceFirst("%s", result.added.size.toString()).replaceFirst("%s", result.refused.size.toString())) +
+                                result.refused.map { (p, why) ->
+                                    val text = when (why) {
+                                        ImportRefusal.AbiMissing -> refusalTexts.getValue("abi")
+                                        ImportRefusal.Malformed -> refusalTexts.getValue("malformed")
+                                        ImportRefusal.PastTheEnd -> refusalTexts.getValue("end")
+                                        is ImportRefusal.Mismatch -> refusalTexts.getValue("mismatch").replace("%s", why.found)
+                                        is ImportRefusal.Overlaps -> refusalTexts.getValue("overlap").replace("%s", hex(why.other.offset))
+                                        ImportRefusal.AlreadyThere -> refusalTexts.getValue("there")
+                                    }
+                                    p.abi + " " + hex(p.offset) + ": " + text
+                                }
+                        }.getOrElse { listOf(it.message ?: "?") }
+                    }
+                    message = lines
+                    revision++
+                }
+            }
+        }
+    }
+
     val found by produceState<MethodsFound?>(null, loaded, query) {
         val l = loaded ?: return@produceState
         if (offset != null || pattern != null) return@produceState
@@ -109,7 +195,20 @@ fun MethodsScreen(packageDir: Path, apk: Path, query: String, onQuery: (String) 
         val b = bytesFound
         when {
             l == null -> BodyText(t("ov_reading"))
-            query.isBlank() -> BodyText(t("me_hint"))
+            query.isBlank() -> {
+                BodyText(t("me_hint"))
+                Zone(t("me_patches", patches.size.toString())) {
+                    patches.forEach { p ->
+                        ZoneRow(
+                            hex(p.offset) + "  " + p.abi,
+                            p.old + "  →  " + p.new + "  ·  " + p.label,
+                            onClick = { onMethod(Find.rawEntry(p.offset, Find.methodAt(l.all, p.offset))) },
+                        )
+                    }
+                    if (patches.isNotEmpty()) ZoneRow(t("me_export"), t("me_export_d"), onClick = { exportFile() })
+                    ZoneRow(t("me_import"), t("me_import_d"), onClick = { importFile() })
+                }
+            }
             offset != null -> Zone(t("me_offset", hex(offset))) {
                 val inside = Find.methodAt(l.all, offset)
                 if (inside != null) {
@@ -150,5 +249,18 @@ fun MethodsScreen(packageDir: Path, apk: Path, query: String, onQuery: (String) 
                 if (f.total > f.rows.size) BodyText(t("me_more", f.rows.size.toString()))
             }
         }
+    }
+
+    message?.let { lines ->
+        AlertDialog(
+            onDismissRequest = { message = null },
+            title = { Text(t("me_patches_title")) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    lines.forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                }
+            },
+            confirmButton = { TextButton(onClick = { message = null }) { Text(t("close")) } },
+        )
     }
 }

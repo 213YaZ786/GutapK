@@ -8,6 +8,7 @@ import io.gutapk.core.il2cpp.DumpRecord
 import io.gutapk.core.il2cpp.Il2CppDump
 import io.gutapk.core.il2cpp.MethodEntry
 import io.gutapk.core.il2cpp.Hex
+import io.gutapk.core.il2cpp.ImportRefusal
 import io.gutapk.core.il2cpp.LibBytes
 import io.gutapk.core.il2cpp.MethodIndex
 import io.gutapk.core.il2cpp.PatchProblem
@@ -377,5 +378,46 @@ class Il2CppTest {
         assertEquals(0x2010L, raw.rva)
         assertEquals(0x1010L, raw.offset)
         assertEquals("0x2000", Find.rawEntry(0x2000, null).member)
+    }
+
+    // An imported patch lands only where the library holds its old bytes,
+    // the rest is refused with its reason and nothing is half taken.
+    @Test
+    fun importsOnlyPatchesThatFit() {
+        val lib = ByteArray(64) { it.toByte() }
+        val libs: (String) -> ByteArray? = { abi -> if (abi == "arm64-v8a") lib else null }
+        val good = BytePatch("arm64-v8a", 0x10, "10 11 12 13", "20 00 80 52", "A b")
+        val stale = BytePatch("arm64-v8a", 0x20, "FF FF", "00 00", "C d")
+        val otherAbi = good.copy(abi = "x86")
+        val past = good.copy(offset = 62)
+        val broken = good.copy(new = "20")
+        val overlapping = BytePatch("arm64-v8a", 0x12, "12 13", "00 00", "E f")
+        val existing = BytePatch("arm64-v8a", 0x30, "30", "31", "G h")
+
+        val r = Patches.fit(listOf(good, stale, otherAbi, past, broken, overlapping, existing), listOf(existing), libs)
+        assertEquals(listOf(good), r.added)
+        val why = r.refused.associate { it.first to it.second }
+        assertEquals(ImportRefusal.Mismatch("20 21"), why[stale])
+        assertEquals(ImportRefusal.AbiMissing, why[otherAbi])
+        assertEquals(ImportRefusal.PastTheEnd, why[past])
+        assertEquals(ImportRefusal.Malformed, why[broken])
+        assertEquals(ImportRefusal.Overlaps(good), why[overlapping])
+        assertEquals(ImportRefusal.AlreadyThere, why[existing])
+    }
+
+    @Test
+    fun exportedPatchesReadBack() {
+        val dir = Files.createTempDirectory("gutapk-export")
+        try {
+            val patches = listOf(BytePatch("arm64-v8a", 0x2125328, "FF 43 01 D1", "20 00 80 52", "T get_X"))
+            val target = dir.resolve("game-patches.tsv")
+            Patches.export(target, "com.game", "abc", patches)
+            val lines = Files.readAllLines(target)
+            assertEquals("# GutapK patches for com.game, libil2cpp.so sha256 abc", lines[0])
+            assertEquals(patches, Patches.parse(lines))
+            assertFailsWith<java.io.IOException> { Patches.export(target, "com.game", "abc", patches) }
+        } finally {
+            Storage.deleteTree(dir, dir.parent)
+        }
     }
 }
