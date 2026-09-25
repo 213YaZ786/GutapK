@@ -453,4 +453,34 @@ class EditTest {
         assertNull(Sdk.checkTarget(highest, 21, highest))
         assertNull(Sdk.checkMin(24, null, highest))
     }
+
+    // Fix 5 of the 2026-09-24 review: with several resource packages the
+    // first one listed was taken. The app's own is id 0x7f, named like the
+    // manifest's package when two share the id.
+    @Test
+    fun picksTheAppsOwnResourcePackage() {
+        val dir = Files.createTempDirectory("gutapk-res")
+        try {
+            fun pkg(folder: String, id: Int, name: String) {
+                val p = dir.resolve("resources").resolve(folder)
+                Files.createDirectories(p.resolve("res").resolve("values"))
+                Files.writeString(p.resolve("package.json"), "{\n  \"arsc_lib_version\": \"1.3.9\",\n  \"package_id\": $id,\n  \"package_name\": \"$name\"\n}")
+            }
+            Files.writeString(dir.resolve("AndroidManifest.xml"), "<manifest xmlns:android=\"x\" package=\"com.example.game\">\n</manifest>")
+            pkg("package_1", 2, "com.example.lib")
+            pkg("package_10", 127, "com.example.other")
+            pkg("package_2", 127, "com.example.game")
+            assertEquals(dir.resolve("resources/package_2/res"), Edit.mainResDir(dir))
+
+            Files.writeString(dir.resolve("resources/package_2/package.json"), "{\"package_id\": 127, \"package_name\": \"renamed\"}")
+            assertEquals(dir.resolve("resources/package_2/res"), Edit.mainResDir(dir))
+
+            Storage.deleteTree(dir.resolve("resources"), dir)
+            assertNull(Edit.mainResDir(dir))
+            Files.createDirectories(dir.resolve("res"))
+            assertEquals(dir.resolve("res"), Edit.mainResDir(dir))
+        } finally {
+            Storage.deleteTree(dir, dir.parent)
+        }
+    }
 }

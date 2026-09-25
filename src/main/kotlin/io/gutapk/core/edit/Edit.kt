@@ -251,7 +251,7 @@ object Edit {
     // manifest points to. Android 13 and later then list the app in
     // Settings > App languages.
     private fun addLocaleConfig(decoded: Path, manifest: String, engine: Engine, sink: JobSink): String {
-        val res = resDirs(decoded).firstOrNull() ?: throw CheckFailed("the decoded APK has no res folder")
+        val res = mainResDir(decoded) ?: throw CheckFailed("the decoded APK has no res folder")
         val tags = Files.list(res).use { it.toList() }
             .filter { Files.isRegularFile(it.resolve("strings.xml")) }
             .mapNotNull { Modern.localeTag(it.fileName.toString()) }
@@ -290,7 +290,7 @@ object Edit {
             sink.emit(JobEvent.Line("network config tightened: ${files.size} file(s) for @xml/$ref"))
             return text
         }
-        val res = resDirs(decoded).firstOrNull() ?: throw CheckFailed("the decoded APK has no res folder")
+        val res = mainResDir(decoded) ?: throw CheckFailed("the decoded APK has no res folder")
         val publicXml = res.resolve("values").resolve("public.xml")
         if (Files.isRegularFile(publicXml)) {
             val before = Files.readString(publicXml)
@@ -432,7 +432,7 @@ object Edit {
     // foreground points to it, and its monochrome layer too, so a themed
     // icon shows the new shape. The background stays the app's own.
     private fun replaceIcon(decoded: Path, manifest: String, image: Path, sink: JobSink) {
-        val res = resDirs(decoded).firstOrNull() ?: throw CheckFailed("the decoded APK has no res folder")
+        val res = mainResDir(decoded) ?: throw CheckFailed("the decoded APK has no res folder")
         val publicXml = res.resolve("values").resolve("public.xml")
         if (!Files.isRegularFile(publicXml)) throw CheckFailed("the decoded APK has no public.xml")
         val before = Files.readString(publicXml)
@@ -537,6 +537,41 @@ object Edit {
                 .filter { Files.isRegularFile(it) }
         }
 
+    // The app's own resources: package id 0x7f, the manifest's package name
+    // when several share it, else the lowest package folder. Never the list
+    // order, which the file system decides. apktool has a single res.
+    internal fun mainResDir(decoded: Path): Path? {
+        val packages = decoded.resolve("resources")
+        if (Files.isDirectory(packages)) {
+            val manifest = decoded.resolve("AndroidManifest.xml")
+            val own = if (Files.isRegularFile(manifest)) {
+                Regex("""<manifest\b[^>]*\bpackage="([^"]+)"""").find(Files.readString(manifest))?.groupValues?.get(1)
+            } else {
+                null
+            }
+            val candidates = Files.list(packages).use { it.toList() }
+                .filter { Files.isDirectory(it.resolve("res")) }
+                .sortedBy { it.fileName.toString().substringAfterLast('_').toIntOrNull() ?: Int.MAX_VALUE }
+                .map { it to packageInfo(it.resolve("package.json")) }
+            val app = candidates.filter { it.second.first == APP_PACKAGE_ID }
+            val pick = app.firstOrNull { own != null && it.second.second == own } ?: app.firstOrNull() ?: candidates.firstOrNull()
+            if (pick != null) return pick.first.resolve("res")
+        }
+        return decoded.resolve("res").takeIf { Files.isDirectory(it) }
+    }
+
+    private const val APP_PACKAGE_ID = 0x7f
+
+    // package_id and package_name from APKEditor's package.json, read at
+    // its head where APKEditor writes them.
+    private fun packageInfo(file: Path): Pair<Int?, String?> {
+        if (!Files.isRegularFile(file)) return null to null
+        val head = Files.newInputStream(file).use { String(it.readNBytes(4096), Charsets.UTF_8) }
+        val id = Regex(""""package_id"\s*:\s*(\d+)""").find(head)?.groupValues?.get(1)?.toIntOrNull()
+        val name = Regex(""""package_name"\s*:\s*"([^"]*)"""").find(head)?.groupValues?.get(1)
+        return id to name
+    }
+
     private fun resDirs(decoded: Path): List<Path> {
         val packages = decoded.resolve("resources")
         val decodedPackages = if (Files.isDirectory(packages)) {
@@ -606,10 +641,8 @@ object Edit {
     // decoded it to. The default strings.xml is res/values/strings.xml.
     private fun setStringResource(decoded: Path, ref: String, value: String, sink: JobSink) {
         val name = ref.substringAfter('/')
-        val strings = decoded.resolve("resources").resolve("package_1").resolve("res").resolve("values").resolve("strings.xml")
-            .takeIf { Files.isRegularFile(it) }
-            ?: decoded.resolve("res").resolve("values").resolve("strings.xml")
-        if (!Files.isRegularFile(strings)) throw CheckFailed("the decoded APK has no strings.xml for $ref")
+        val strings = mainResDir(decoded)?.resolve("values")?.resolve("strings.xml")
+        if (strings == null || !Files.isRegularFile(strings)) throw CheckFailed("the decoded APK has no strings.xml for $ref")
         val text = Files.readString(strings)
         val pattern = Regex("""(<string name="${Regex.escape(name)}"[^>]*>)(.*?)(</string>)""", RegexOption.DOT_MATCHES_ALL)
         val match = pattern.find(text) ?: throw CheckFailed("string $name not found in strings.xml")
