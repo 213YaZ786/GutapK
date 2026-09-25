@@ -625,13 +625,16 @@ object Edit {
     // Drops each named uses-permission element, whitespace before it too, so
     // no blank line is left. A name asked for but not present is reported and
     // skipped, never an error, since it changes nothing.
-    private fun removePermissions(text: String, names: Set<String>, sink: JobSink): String {
+    // uses-permission-sdk-23 asks for the same permission on Android 6 and
+    // later, so both forms go, every occurrence.
+    internal fun removePermissions(text: String, names: Set<String>, sink: JobSink): String {
         var out = text
         names.forEach { name ->
-            val element = Regex("""\s*<uses-permission\b[^>]*android:name="${Regex.escape(name)}"[^>]*/>""")
-            if (element.containsMatchIn(out)) {
-                out = element.replaceFirst(out, "")
-                sink.emit(JobEvent.Line("permission removed: $name"))
+            val element = Regex("""\s*<uses-permission(?:-sdk-23)?(?![\w-])[^>]*android:name="${Regex.escape(name)}"[^>]*/>""")
+            val count = element.findAll(out).count()
+            if (count > 0) {
+                out = element.replace(out, "")
+                sink.emit(JobEvent.Line("permission removed: $name ($count)"))
             } else {
                 sink.emit(JobEvent.Line("permission not present, skipped: $name"))
             }

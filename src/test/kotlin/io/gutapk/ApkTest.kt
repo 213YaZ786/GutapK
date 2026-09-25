@@ -2,6 +2,7 @@ package io.gutapk
 
 import io.gutapk.core.apk.ApkReader
 import io.gutapk.core.apk.BinaryXml
+import io.gutapk.core.apk.DexClasses
 import io.gutapk.core.apk.IconArtReader
 import io.gutapk.core.apk.IconColour
 import io.gutapk.core.apk.IconGroup
@@ -12,6 +13,8 @@ import io.gutapk.core.apk.XmlElement
 import io.gutapk.core.apk.Packages
 import io.gutapk.core.apk.ResourceTable
 import io.gutapk.core.apk.Signatures
+import io.gutapk.core.apk.Tracker
+import io.gutapk.core.apk.Trackers
 import io.gutapk.core.sign.ApkSigning
 import io.gutapk.core.sign.KeyChoice
 import io.gutapk.core.sign.TestKey
@@ -272,5 +275,59 @@ class ApkTest {
         assertEquals(IconColour.Argb(0xffff0000.toInt()), red.fill)
         val themed = art.root.children[1] as IconPath
         assertEquals(IconColour.System(2, 90), themed.fill)
+    }
+
+    // A dex with only what DexClasses reads: the string and type id tables.
+    // Types that are not classes, a bad index and an offset past the end are
+    // skipped, not fatal.
+    private fun dex(strings: List<String>, types: List<Int>): ByteArray {
+        val header = 0x70
+        val stringIds = header
+        val typeIds = stringIds + 4 * strings.size
+        val dataAt = typeIds + 4 * types.size
+        val data = ByteArrayOutputStream()
+        val offsets = strings.map { str ->
+            val at = dataAt + data.size()
+            val bytes = str.toByteArray(Charsets.UTF_8)
+            data.write(bytes.size)
+            data.write(bytes)
+            data.write(0)
+            at
+        }
+        val out = ByteArray(dataAt + data.size())
+        val bb = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN)
+        byteArrayOf(0x64, 0x65, 0x78, 0x0a, 0x30, 0x33, 0x35, 0x00).copyInto(out)
+        bb.putInt(0x38, strings.size)
+        bb.putInt(0x3c, stringIds)
+        bb.putInt(0x40, types.size)
+        bb.putInt(0x44, typeIds)
+        offsets.forEachIndexed { i, o -> bb.putInt(stringIds + 4 * i, o) }
+        types.forEachIndexed { i, t -> bb.putInt(typeIds + 4 * i, t) }
+        data.toByteArray().copyInto(out, dataAt)
+        return out
+    }
+
+    @Test
+    fun readsClassNamesFromDex() {
+        // A class descriptor ends in 0x3b, written as a char code to keep the
+        // source free of that character.
+        fun cls(name: String) = "L" + name + Char(0x3b)
+        val strings = listOf("I", cls("com/example/Main"), "[" + cls("com/example/Main"), cls("com/flurry/android/FlurryAgent"), "V")
+        val names = DexClasses.names(dex(strings, listOf(0, 1, 2, 3, 4, 99)))
+        assertEquals(listOf("com.example.Main", "com.flurry.android.FlurryAgent"), names)
+        assertEquals(emptyList(), DexClasses.names(ByteArray(0x70)))
+        assertEquals(emptyList(), DexClasses.names("not a dex at all".toByteArray()))
+    }
+
+    // Prefixes are matched by binary search on sorted names: before, after
+    // and between classes, and a prefix longer than any class.
+    @Test
+    fun detectsTrackersByPrefix() {
+        val classes = listOf("com.example.Main", "com.flurry.android.FlurryAgent", "com.google.firebase.analytics.FirebaseAnalytics").sorted()
+        val flurry = Tracker("Flurry", listOf("Analytics"), listOf("com.flurry."))
+        val firebase = Tracker("Firebase Analytics", listOf("Analytics"), listOf("com.google.firebase.analytics.", "com.google.android.gms.measurement."))
+        val absent = Tracker("Absent", emptyList(), listOf("com.absent.", "com.google.firebase.analytics.FirebaseAnalyticsX", "zzz."))
+        assertEquals(listOf("Flurry", "Firebase Analytics"), Trackers.detect(classes, listOf(flurry, firebase, absent)).map { it.name })
+        assertEquals(emptyList(), Trackers.detect(emptyList(), listOf(flurry)))
     }
 }

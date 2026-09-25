@@ -515,4 +515,32 @@ class EditTest {
         val minOnly = "<manifest package=\"a\">\n  <uses-sdk android:minSdkVersion=\"21\"/>\n</manifest>"
         assertTrue(Edit.setSdk(minOnly, null, 34, quiet).contains("<uses-sdk android:targetSdkVersion=\"34\" android:minSdkVersion=\"21\"/>"))
     }
+
+    // Fix 9: both the plain and the sdk-23 form go, every occurrence, and a
+    // permission whose name only starts the same stays.
+    @Test
+    fun removesPermissionsInBothForms() {
+        val quiet = object : JobSink {
+            override fun emit(event: JobEvent) {}
+        }
+        val manifest = listOf(
+            "<manifest package=\"a\">",
+            "  <uses-permission android:name=\"android.permission.CAMERA\"/>",
+            "  <uses-permission-sdk-23 android:name=\"android.permission.CAMERA\"/>",
+            "  <uses-permission android:name=\"android.permission.CAMERA_EXTRA\"/>",
+            "  <uses-permission android:name=\"android.permission.INTERNET\" android:maxSdkVersion=\"30\"/>",
+            "  <application/>",
+            "</manifest>",
+        ).joinToString("\n")
+        val out = Edit.removePermissions(manifest, setOf("android.permission.CAMERA", "android.permission.INTERNET", "not.there"), quiet)
+        assertEquals(
+            listOf(
+                "<manifest package=\"a\">",
+                "  <uses-permission android:name=\"android.permission.CAMERA_EXTRA\"/>",
+                "  <application/>",
+                "</manifest>",
+            ).joinToString("\n"),
+            out,
+        )
+    }
 }
