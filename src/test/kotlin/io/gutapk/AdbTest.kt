@@ -1,6 +1,8 @@
 package io.gutapk
 
 import io.gutapk.device.Adb
+import io.gutapk.device.BatteryStatus
+import io.gutapk.device.DeviceReader
 import io.gutapk.device.DeviceState
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -56,5 +58,52 @@ class AdbTest {
         assertEquals("Pixel 8", props["ro.product.model"])
         assertEquals("16", props["ro.build.version.release"])
         assertEquals("", props["empty"])
+    }
+
+    @Test
+    fun readsBattery() {
+        val out = listOf(
+            "Current Battery Service state:",
+            "  AC powered: false",
+            "  USB powered: true",
+            "  Wireless powered: false",
+            "  status: 2",
+            "  health: 2",
+            "  present: true",
+            "  level: 85",
+            "  scale: 100",
+            "  voltage: 4214",
+            "  temperature: 285",
+            "  technology: Li-ion",
+        ).joinToString("\n")
+        val b = DeviceReader.parseBattery(out)!!
+        assertEquals(85, b.level)
+        assertEquals(BatteryStatus.CHARGING, b.status)
+        assertEquals(28.5, b.celsius)
+        assertEquals("USB", b.plugged)
+        assertNull(DeviceReader.parseBattery("Can't find service: battery"))
+    }
+
+    // A long block device name wraps the numbers onto the next line.
+    @Test
+    fun readsDiskSpace() {
+        val one = "Filesystem       1K-blocks     Used Available Use% Mounted on\n/dev/block/dm-45 115609844 30000000  85609844  26% /data\n"
+        val s = DeviceReader.parseDf(one)!!
+        assertEquals(115609844L, s.totalKb)
+        assertEquals(30000000L, s.usedKb)
+        assertEquals(85609844L, s.freeKb)
+        val wrapped = "Filesystem 1K-blocks Used Available Use% Mounted on\n/dev/block/bootdevice/by-name/userdata\n 52000000 12000000 40000000 24% /data\n"
+        assertEquals(40000000L, DeviceReader.parseDf(wrapped)!!.freeKb)
+        assertNull(DeviceReader.parseDf("df: /data: Permission denied\n"))
+    }
+
+    @Test
+    fun readsUsersAndRebootCommand() {
+        val users = DeviceReader.parseUsers("Users:\n\tUserInfo{0:Owner:c13} running\n\tUserInfo{10:Work profile:1030}\n")
+        assertEquals(listOf(0, 10), users.map { it.id })
+        assertEquals(listOf("Owner", "Work profile"), users.map { it.name })
+        assertEquals(listOf(true, false), users.map { it.running })
+        assertEquals(listOf("-s", "X1", "reboot"), DeviceReader.rebootArgs("X1", null))
+        assertEquals(listOf("-s", "X1", "reboot", "recovery"), DeviceReader.rebootArgs("X1", "recovery"))
     }
 }
