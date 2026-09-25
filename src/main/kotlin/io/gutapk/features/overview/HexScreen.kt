@@ -2,6 +2,8 @@ package io.gutapk.features.overview
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -9,6 +11,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -26,6 +29,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import io.gutapk.core.il2cpp.Arm64Presets
 import io.gutapk.core.il2cpp.BytePatch
 import io.gutapk.core.il2cpp.LibBytes
 import io.gutapk.core.il2cpp.MethodEntry
@@ -202,7 +206,9 @@ private fun HexRows(d: HexData, start: Long) {
 }
 
 // Offset and new bytes, checked as they are typed. The bytes they replace
-// are shown before anything is saved.
+// are shown before anything is saved. A ready-made value only fills the
+// field, the user still sees what it replaces and saves.
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PatchDialog(method: MethodEntry, data: HexData, onSave: (BytePatch) -> Unit, onDismiss: () -> Unit) {
     var offset by remember { mutableStateOf(method.offset.toString(16).uppercase()) }
@@ -245,6 +251,14 @@ private fun PatchDialog(method: MethodEntry, data: HexData, onSave: (BytePatch) 
                     supportingText = { Text(issue ?: t("hex_bytes_help")) },
                     modifier = Modifier.fillMaxWidth(),
                 )
+                if (data.abi == Arm64Presets.ABI) {
+                    Text(t("hex_presets"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Arm64Presets.all.forEach { p ->
+                            SuggestionChip(onClick = { bytes = p.bytes }, label = { Text(t("hex_preset_" + p.id)) })
+                        }
+                    }
+                }
                 if (patch != null) {
                     Text(t("hex_replaces", patch.old), fontFamily = FontFamily.Monospace)
                 }

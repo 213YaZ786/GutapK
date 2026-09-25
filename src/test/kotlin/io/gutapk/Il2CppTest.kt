@@ -1,5 +1,6 @@
 package io.gutapk
 
+import io.gutapk.core.il2cpp.Arm64Presets
 import io.gutapk.core.il2cpp.BytePatch
 import io.gutapk.core.il2cpp.DumpParser
 import io.gutapk.core.il2cpp.DumpRecord
@@ -315,5 +316,28 @@ class Il2CppTest {
         assertContentEquals(byteArrayOf(0xaa.toByte(), 0xaa.toByte()), shown.copyOfRange(0, 2))
         assertEquals(0xbb.toByte(), shown[16])
         assertContentEquals(original.copyOfRange(2, 16), shown.copyOfRange(2, 16))
+    }
+
+    // The bytes objdump 2.47 read back as mov w0, movn w0, fmov s0, ret
+    // and nop. Whole arm64 instructions only, every return ends with ret.
+    @Test
+    fun arm64PresetsAreWholeInstructions() {
+        val byId = Arm64Presets.all.associate { it.id to it.bytes }
+        assertEquals(Arm64Presets.all.size, byId.size)
+        Arm64Presets.all.forEach { p ->
+            val bytes = assertNotNull(Hex.parse(p.bytes), p.id)
+            assertEquals(0, bytes.size % 4, p.id)
+            assertEquals(p.bytes, Hex.format(bytes))
+            if (p.id != "nop") assertEquals("C0 03 5F D6", p.bytes.takeLast(11), p.id)
+        }
+        assertEquals("20 00 80 52 C0 03 5F D6", byId["true"])
+        assertEquals("00 00 B0 12 C0 03 5F D6", byId["int_max"])
+        assertEquals("00 10 2E 1E C0 03 5F D6", byId["float_one"])
+        assertEquals("1F 20 03 D5", byId["nop"])
+
+        val original = ByteArray(8)
+        val made = Patches.make(Arm64Presets.ABI, 0x40, byId.getValue("false"), "T m", 0x40, original, emptyList())
+        assertNull(made.second)
+        assertEquals("00 00 00 00 00 00 00 00", assertNotNull(made.first).old)
     }
 }

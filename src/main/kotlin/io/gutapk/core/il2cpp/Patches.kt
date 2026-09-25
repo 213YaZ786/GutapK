@@ -20,6 +20,28 @@ object Hex {
     fun format(bytes: ByteArray): String = bytes.joinToString(" ") { "%02X".format(it) }
 }
 
+// Ready-made arm64 bodies, each read back with binutils 2.47 objdump. A
+// return sets w0 or s0 then returns, so the method stops there. arm64 only
+// by the user's choice, armeabi-v7a would need to know ARM from Thumb.
+data class Preset(val id: String, val bytes: String)
+
+object Arm64Presets {
+    const val ABI = "arm64-v8a"
+    private const val RET = "C0 03 5F D6"
+
+    val all = listOf(
+        Preset("false", "00 00 80 52 $RET"),
+        Preset("true", "20 00 80 52 $RET"),
+        Preset("minus_one", "00 00 80 12 $RET"),
+        Preset("int_max", "00 00 B0 12 $RET"),
+        Preset("int_min", "00 00 B0 52 $RET"),
+        Preset("float_zero", "E0 03 27 1E $RET"),
+        Preset("float_one", "00 10 2E 1E $RET"),
+        Preset("ret", RET),
+        Preset("nop", "1F 20 03 D5"),
+    )
+}
+
 // One change to libil2cpp.so of one ABI. old is what the untouched APK has
 // there, so a patch that no longer fits its library is refused at rebuild
 // instead of corrupting it. Hex strings keep equality simple.
