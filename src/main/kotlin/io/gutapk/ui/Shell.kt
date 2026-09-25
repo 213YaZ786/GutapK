@@ -461,7 +461,17 @@ fun Shell(
                     } else if (updates.isNotEmpty() && root != null) {
                         UpdateDialog(root, updates, onClose = { updates = emptyList() })
                     }
-                    selfResult?.let { SelfResultDialog(it, onClose = { selfResult = null }) }
+                    selfResult?.let {
+                        SelfResultDialog(
+                            it,
+                            onClose = { selfResult = null },
+                            onRestart = {
+                                runCatching { SelfUpdate.restart() }
+                                    .onSuccess { onExit() }
+                                    .onFailure { e -> selfResult = SelfResult.NotStarted(e.message ?: e.javaClass.simpleName) }
+                            },
+                        )
+                    }
                 }
             }
         }

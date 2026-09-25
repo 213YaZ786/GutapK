@@ -329,6 +329,7 @@ fun UpdateDialog(root: Path, updates: List<Update>, onClose: () -> Unit) {
 sealed interface SelfResult {
     data class Done(val file: String) : SelfResult
     data class Failed(val message: String) : SelfResult
+    data class NotStarted(val message: String) : SelfResult
 }
 
 // The facts first, the replacement only on Update. The file it replaces is
@@ -360,19 +361,29 @@ fun SelfUpdateDialog(release: Release, current: String, onUpdate: () -> Unit, on
 }
 
 @Composable
-fun SelfResultDialog(result: SelfResult, onClose: () -> Unit) {
+fun SelfResultDialog(result: SelfResult, onClose: () -> Unit, onRestart: () -> Unit) {
     AlertDialog(
         onDismissRequest = onClose,
-        title = { Text(t(if (result is SelfResult.Done) "self_done_title" else "self_failed_title")) },
+        title = { Text(t(if (result is SelfResult.Failed) "self_failed_title" else "self_done_title")) },
         text = {
             Text(
                 when (result) {
                     is SelfResult.Done -> t("self_done", result.file)
                     is SelfResult.Failed -> t("self_failed", result.message)
+                    is SelfResult.NotStarted -> t("self_restart_failed", result.message)
                 },
                 style = MaterialTheme.typography.bodyMedium,
             )
         },
-        confirmButton = { TextButton(onClick = onClose) { Text(t("close")) } },
+        confirmButton = {
+            if (result is SelfResult.Done) {
+                TextButton(onClick = onRestart) { Text(t("self_restart")) }
+            } else {
+                TextButton(onClick = onClose) { Text(t("close")) }
+            }
+        },
+        dismissButton = {
+            if (result is SelfResult.Done) TextButton(onClick = onClose) { Text(t("upd_later")) }
+        },
     )
 }

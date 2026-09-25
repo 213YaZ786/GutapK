@@ -2,6 +2,7 @@ package io.gutapk.tools
 
 import io.gutapk.job.JobEvent
 import io.gutapk.job.JobSink
+import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -75,6 +76,20 @@ object SelfUpdate {
         }
         sink.emit(JobEvent.Line("replaced $target, previous kept as $old"))
         return target
+    }
+
+    // The new AppImage starts on its own, then this run exits. This run's
+    // AppImage variables are dropped so the new runtime sets its own, and
+    // the home folder is the working folder since this mount goes away.
+    fun restart() {
+        val target = target() ?: throw CheckFailed("GutapK is not running from an AppImage")
+        val pb = ProcessBuilder(target.toString())
+        listOf("APPIMAGE", "APPDIR", "ARGV0", "OWD").forEach { pb.environment().remove(it) }
+        pb.directory(File(System.getProperty("user.home")))
+        pb.redirectOutput(ProcessBuilder.Redirect.DISCARD)
+        pb.redirectError(ProcessBuilder.Redirect.DISCARD)
+        pb.start()
+        RunLog.line("restart: started $target")
     }
 
     private fun checkFile(file: Path, size: Long, sha256: String) {
