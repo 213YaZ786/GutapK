@@ -225,6 +225,7 @@ fun OverviewScreen(
     } else if (methods) {
         MethodsScreen(
             dir,
+            original,
             query = methodQuery,
             onQuery = { methodQuery = it },
             onMethod = { method = it },

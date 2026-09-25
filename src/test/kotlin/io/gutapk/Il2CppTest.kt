@@ -3,6 +3,7 @@ package io.gutapk
 import io.gutapk.core.il2cpp.Arm64Presets
 import io.gutapk.core.il2cpp.BytePatch
 import io.gutapk.core.il2cpp.DumpParser
+import io.gutapk.core.il2cpp.Find
 import io.gutapk.core.il2cpp.DumpRecord
 import io.gutapk.core.il2cpp.Il2CppDump
 import io.gutapk.core.il2cpp.MethodEntry
@@ -339,5 +340,42 @@ class Il2CppTest {
         val made = Patches.make(Arm64Presets.ABI, 0x40, byId.getValue("false"), "T m", 0x40, original, emptyList())
         assertNull(made.second)
         assertEquals("00 00 00 00 00 00 00 00", assertNotNull(made.first).old)
+    }
+
+    // An offset or bytes typed in the Methods search, never plain words.
+    @Test
+    fun readsOffsetsAndPatterns() {
+        assertEquals(0x21250F0L, Find.offset(" 0x21250f0 "))
+        assertNull(Find.offset("21250F0"))
+        assertNull(Find.offset("0xZZ"))
+        assertEquals(listOf(0x1f, 0x20, null, 0xd5), Find.pattern("1F 20 ?? d5"))
+        assertNull(Find.pattern("1F"))
+        assertNull(Find.pattern("?? ??"))
+        assertNull(Find.pattern("get player"))
+        assertNull(Find.pattern("1F2003D5"))
+    }
+
+    @Test
+    fun searchesBytesWithWildcards() {
+        val data = byteArrayOf(0, 0x1f, 0x20, 0x03, 0xd5.toByte(), 0x1f, 0x20, 0x07, 0xd5.toByte(), 0x1f, 0x20)
+        assertEquals(2 to listOf(1L, 5L), Find.search(data, listOf(0x1f, 0x20, null, 0xd5), 10))
+        assertEquals(2 to listOf(1L), Find.search(data, listOf(0x1f, 0x20, null, 0xd5), 1))
+        assertEquals(1 to listOf(1L), Find.search(data, listOf(null, null, 0x03), 10))
+        assertEquals(0 to emptyList(), Find.search(data, listOf(0x20, 0x04), 10))
+        assertEquals(Find.CAP, Find.search(ByteArray(Find.CAP + 50), listOf(0, 0), 5).first)
+    }
+
+    @Test
+    fun namesARawViewAfterItsMethod() {
+        val m = MethodEntry("A", "N", "T", "Get", 0x2000, 0x1000, 0x40)
+        val all = listOf(m)
+        assertEquals(m, Find.methodAt(all, 0x1000))
+        assertEquals(m, Find.methodAt(all, 0x103f))
+        assertNull(Find.methodAt(all, 0x1040))
+        val raw = Find.rawEntry(0x1010, m)
+        assertEquals("Get +0x10", raw.member)
+        assertEquals(0x2010L, raw.rva)
+        assertEquals(0x1010L, raw.offset)
+        assertEquals("0x2000", Find.rawEntry(0x2000, null).member)
     }
 }

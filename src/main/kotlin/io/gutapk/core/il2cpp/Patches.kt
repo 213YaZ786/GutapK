@@ -164,6 +164,13 @@ object Patches {
 object LibBytes {
     fun entry(abi: String): String = "lib/$abi/libil2cpp.so"
 
+    // The whole library, for a byte search. Daggerfall's is 73 MB.
+    fun readAll(apk: Path, abi: String): ByteArray = ZipFile(apk.toFile()).use { zip ->
+        val e = zip.getEntry(entry(abi)) ?: throw IOException("${entry(abi)} missing from the APK")
+        if (e.size > Int.MAX_VALUE - 16) throw IOException("the library is too large to search")
+        zip.getInputStream(e).use { it.readAllBytes() }
+    }
+
     fun read(apk: Path, abi: String, offset: Long, length: Int): ByteArray = ZipFile(apk.toFile()).use { zip ->
         val e = zip.getEntry(entry(abi)) ?: throw IOException("${entry(abi)} missing from the APK")
         if (offset < 0 || (e.size >= 0 && offset >= e.size)) throw IOException("offset 0x${offset.toString(16)} is outside the library")
