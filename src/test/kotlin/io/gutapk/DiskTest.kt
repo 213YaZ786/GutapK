@@ -15,7 +15,7 @@ class DiskTest {
     private fun withRoot(block: (Path) -> Unit) {
         val root = Files.createTempDirectory("gutapk-disk")
         try {
-            Storage.SUBDIRS.forEach { Files.createDirectories(root.resolve(it)) }
+            assertEquals(null, Storage.prepare(root))
             block(root)
         } finally {
             Storage.deleteTree(root, root.parent)
@@ -61,5 +61,20 @@ class DiskTest {
         assertTrue(Files.exists(root.resolve("logs")))
         assertEquals(1, freed)
         assertEquals(0, failed)
+    }
+
+    // A root without the marker may hold the user's own work/ or cache/.
+    // Nothing in it can be cleaned, even when asked.
+    @Test
+    fun unmarkedRootKeepsEverything() = withRoot { root ->
+        Files.delete(root.resolve(Storage.MARKER))
+        val theirs = bytes(root.resolve("work/thesis/chapter1.odt"), 3).parent
+        val report = Disk.scan(root, emptySet())
+
+        assertEquals(emptyList(), report.cleanable)
+        val (freed, failed) = Disk.delete(root, report.sections.flatMap { it.entries }.map { it.copy(protected = false) }) { false }
+        assertEquals(0, freed)
+        assertEquals(1, failed)
+        assertTrue(Files.exists(theirs))
     }
 }

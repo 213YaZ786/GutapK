@@ -37,7 +37,51 @@ class StorageTest {
         assertEquals(null, problemOf("/tmpfoo"))
         val ok = Storage.check("~/GutapK") as RootCheck.Ok
         assertEquals(Paths.get(home, "GutapK"), ok.path)
-        assertEquals(Paths.get(home), (Storage.check("~") as RootCheck.Ok).path)
+    }
+
+    // The home folder and everything above it would hold the user's own
+    // folders next to GutapK's.
+    @Test
+    fun refusesHomeAndAbove() {
+        assertEquals(RootProblem.TOO_WIDE, problemOf("~"))
+        assertEquals(RootProblem.TOO_WIDE, problemOf("~/"))
+        assertEquals(RootProblem.TOO_WIDE, problemOf("/"))
+        assertEquals(RootProblem.TOO_WIDE, problemOf(Paths.get(home).parent.toString()))
+        assertEquals(null, problemOf("~/Documents/GutapK"))
+    }
+
+    // A folder with other things in it is refused and left untouched. One
+    // holding only GutapK's folders, as roots made before the marker, is
+    // taken and marked.
+    @Test
+    fun preparesOnlyEmptyOrOwnFolders() {
+        val base = Files.createTempDirectory("gutapk-root")
+        try {
+            val busy = Files.createDirectories(base.resolve("busy"))
+            Files.createDirectories(busy.resolve("work").resolve("thesis"))
+            Files.writeString(busy.resolve("notes.txt"), "mine")
+            assertEquals(RootProblem.NOT_EMPTY, Storage.prepare(busy))
+            assertFalse(Files.exists(busy.resolve("dependencies")))
+            assertFalse(Storage.isMarked(busy))
+
+            val legacy = Files.createDirectories(base.resolve("legacy"))
+            Files.createDirectories(legacy.resolve("work"))
+            Files.createDirectories(legacy.resolve("logs"))
+            assertEquals(null, Storage.prepare(legacy))
+            assertTrue(Storage.isMarked(legacy))
+            assertEquals(null, Storage.prepare(legacy))
+
+            val fresh = base.resolve("fresh")
+            assertEquals(null, Storage.prepare(fresh))
+            assertTrue(Storage.SUBDIRS.all { Files.isDirectory(fresh.resolve(it)) })
+            assertTrue(Storage.isMarked(fresh))
+
+            // The saved root is kept even when busy, but never marked.
+            assertEquals(null, Storage.adopt(busy))
+            assertFalse(Storage.isMarked(busy))
+        } finally {
+            Storage.deleteTree(base, base.parent)
+        }
     }
 
     @Test

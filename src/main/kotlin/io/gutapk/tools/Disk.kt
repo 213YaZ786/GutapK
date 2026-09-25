@@ -66,6 +66,8 @@ object Disk {
 
     fun scan(root: Path, protectedPaths: Set<Path>): DiskReport {
         val keep = protectedPaths.map { it.toAbsolutePath().normalize() }.toSet()
+        // A root that is not GutapK's alone keeps everything.
+        val marked = Storage.isMarked(root)
         val named = mapOf(
             "dependencies" to SectionKind.DEPENDENCIES,
             "work" to SectionKind.WORK,
@@ -78,12 +80,12 @@ object Disk {
             val dir = root.resolve(name)
             val entries = children(dir).map { child ->
                 val abs = child.toAbsolutePath().normalize()
-                val prot = abs in keep || child.fileName.toString() == FINGERPRINTS
+                val prot = !marked || abs in keep || child.fileName.toString() == FINGERPRINTS
                 DiskEntry(child, size(child), prot)
             }.sortedByDescending { it.bytes }
             sections.add(DiskSection(kind, dir, entries.sumOf { it.bytes }, entries))
         }
-        val others = children(root).filter { it.fileName.toString() !in named.keys }
+        val others = children(root).filter { it.fileName.toString() !in named.keys && it.fileName.toString() != Storage.MARKER }
             .map { DiskEntry(it, size(it), true) }
         if (others.isNotEmpty()) {
             sections.add(DiskSection(SectionKind.OTHER, root, others.sumOf { it.bytes }, others))
@@ -101,6 +103,7 @@ object Disk {
     fun delete(root: Path, entries: List<DiskEntry>, cancelled: () -> Boolean): Pair<Int, Int> {
         var freed = 0
         var failed = 0
+        if (!Storage.isMarked(root)) return 0 to entries.size
         entries.filter { !it.protected }.forEach { e ->
             if (cancelled()) throw CancelledByUser()
             if (Storage.deleteTree(e.path, root)) {

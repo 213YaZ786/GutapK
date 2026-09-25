@@ -168,6 +168,8 @@ fun RootScreen(
                             when (it) {
                                 RootProblem.NOT_ABSOLUTE -> "root_bad_absolute"
                                 RootProblem.FORBIDDEN -> "root_bad_forbidden"
+                                RootProblem.TOO_WIDE -> "root_bad_wide"
+                                RootProblem.NOT_EMPTY -> "root_bad_not_empty"
                                 RootProblem.NOT_WRITABLE -> "root_bad_write"
                             },
                         ),

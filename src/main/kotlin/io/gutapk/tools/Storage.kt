@@ -10,7 +10,7 @@ import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 import kotlin.math.abs
 
-enum class RootProblem { NOT_ABSOLUTE, FORBIDDEN, NOT_WRITABLE }
+enum class RootProblem { NOT_ABSOLUTE, FORBIDDEN, TOO_WIDE, NOT_EMPTY, NOT_WRITABLE }
 
 sealed interface RootCheck {
     data class Ok(val path: Path) : RootCheck
@@ -19,6 +19,10 @@ sealed interface RootCheck {
 
 object Storage {
     val SUBDIRS = listOf("dependencies", "work", "logs", "packages", "cache")
+
+    // Written in every root GutapK prepares. The disk screen deletes only
+    // under a root that carries it, never in a folder the user owns.
+    const val MARKER = ".gutapk-root"
 
     private val home: String = System.getProperty("user.home")
 
@@ -55,14 +59,39 @@ object Storage {
         val n = p.normalize()
         // Path.startsWith compares whole components, so /tmpfoo passes.
         if (forbidden.any { n.startsWith(it) }) return RootCheck.Bad(RootProblem.FORBIDDEN)
+        // The home folder, or / above it, would mix GutapK's folders with
+        // the user's own ones of the same names.
+        if (Paths.get(home).normalize().startsWith(n)) return RootCheck.Bad(RootProblem.TOO_WIDE)
         return RootCheck.Ok(n)
     }
 
+    // Missing, empty, marked, or holding only GutapK's own folders, the
+    // shape of every root made before the marker existed.
+    fun isOwnRoot(root: Path): Boolean {
+        if (!Files.exists(root)) return true
+        if (!Files.isDirectory(root)) return false
+        if (Files.isRegularFile(root.resolve(MARKER))) return true
+        return Files.list(root).use { s -> s.allMatch { it.fileName.toString() in SUBDIRS } }
+    }
+
+    // For a root the user picks now. A folder already holding other things
+    // is refused before anything is written in it.
     fun prepare(root: Path): RootProblem? = runCatching {
+        if (!isOwnRoot(root)) return@runCatching RootProblem.NOT_EMPTY
+        adopt(root)
+    }.getOrElse { RootProblem.NOT_WRITABLE }
+
+    // For the root saved in the settings, chosen before this check existed.
+    // It is used as it is, the marker only lands where the folder is ours.
+    fun adopt(root: Path): RootProblem? = runCatching {
+        val own = isOwnRoot(root)
         Files.createDirectories(root)
         SUBDIRS.forEach { Files.createDirectories(root.resolve(it)) }
+        if (own && !Files.exists(root.resolve(MARKER))) Files.writeString(root.resolve(MARKER), "GutapK root\n")
         if (!Files.isWritable(root)) RootProblem.NOT_WRITABLE else null
     }.getOrElse { RootProblem.NOT_WRITABLE }
+
+    fun isMarked(root: Path): Boolean = Files.isRegularFile(root.resolve(MARKER))
 
     fun runDirName(pid: Long, startMs: Long) = "run-$pid-$startMs"
 
@@ -146,7 +175,7 @@ object RunSession {
     @Synchronized
     fun start(root: Path, version: String) {
         if (workDir != null) return
-        if (Storage.prepare(root) != null) return
+        if (Storage.adopt(root) != null) return
         val workRoot = root.resolve("work")
         val swept = Storage.sweepStale(workRoot)
 
@@ -169,6 +198,7 @@ object RunSession {
         RunLog.open(root.resolve("logs").resolve("$stamp.log"))
         RunLog.line("gutapk $version")
         RunLog.line("root $root")
+        if (!Storage.isMarked(root)) RunLog.line("root holds other folders, the disk screen will not delete in it")
         swept.forEach { RunLog.line("stale work folder removed ${it.fileName}") }
     }
 }
