@@ -624,6 +624,11 @@ class EditTest {
             code.save(pkg, entry, edited)
             assertEquals(1, code.edits(pkg).size)
             assertEquals(edited, code.current(pkg, entry))
+            val (count, hits) = code.grep(pkg, "NEW\"", 10) { true }
+            assertEquals(1, count)
+            assertEquals(3, hits.single().line)
+            assertEquals("com.x.Main", hits.single().cls.name)
+            assertEquals(0, code.grep(pkg, "old\"", 10) { true }.first)
 
             val decoded = base.resolve("decoded")
             java.nio.file.Files.createDirectories(decoded.resolve("classes/com/x"))

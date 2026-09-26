@@ -162,6 +162,8 @@ fun OverviewScreen(
     var code by remember { mutableStateOf(false) }
     var codeQuery by remember { mutableStateOf("") }
     var smali by remember { mutableStateOf<SmaliClass?>(null) }
+    var smaliLine by remember { mutableStateOf<Int?>(null) }
+    var codeInText by remember { mutableStateOf(false) }
     // The job this screen started. Another job finishing, a tool update for
     // instance, must not open this screen's report.
     var started by remember { mutableStateOf<Job?>(null) }
@@ -232,9 +234,20 @@ fun OverviewScreen(
             onBack = { editing = false },
         )
     } else if (code && shownSmali != null) {
-        SmaliScreen(dir, shownSmali, onBack = { smali = null })
+        SmaliScreen(dir, shownSmali, smaliLine, onBack = { smali = null })
     } else if (code) {
-        CodeScreen(dir, codeQuery, onQuery = { codeQuery = it }, onClass = { smali = it }, onBack = { code = false })
+        CodeScreen(
+            dir,
+            codeQuery,
+            codeInText,
+            onQuery = { codeQuery = it },
+            onInCode = { codeInText = it },
+            onClass = { c, line ->
+                smaliLine = line
+                smali = c
+            },
+            onBack = { code = false },
+        )
     } else if (methods && shownMethod != null) {
         HexScreen(dir, original, shownMethod, onBack = { method = null })
     } else if (methods) {

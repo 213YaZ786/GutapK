@@ -10,6 +10,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.Switch
+import io.gutapk.core.edit.SmaliHit
+import kotlinx.coroutines.job
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -41,17 +45,34 @@ import kotlinx.coroutines.withContext
 import java.nio.file.Path
 
 private const val SHOWN = 100
+private const val MIN_GREP = 3
 
 // Every class of the decoded code, searched by name. The query lives with
 // the caller, so Back from a class finds the same list.
 @Composable
-fun CodeScreen(packageDir: Path, query: String, onQuery: (String) -> Unit, onClass: (SmaliClass) -> Unit, onBack: () -> Unit) {
+fun CodeScreen(
+    packageDir: Path,
+    query: String,
+    inCode: Boolean,
+    onQuery: (String) -> Unit,
+    onInCode: (Boolean) -> Unit,
+    onClass: (SmaliClass, Int?) -> Unit,
+    onBack: () -> Unit,
+) {
     val all by produceState<List<SmaliClass>?>(null, packageDir) {
         value = withContext(Dispatchers.IO) { runCatching { SmaliCode.list(packageDir) }.getOrDefault(emptyList()) }
     }
     val found by produceState<Pair<Int, List<SmaliClass>>?>(null, all, query) {
         val a = all ?: return@produceState
         value = withContext(Dispatchers.Default) { SmaliCode.search(a, query, SHOWN) }
+    }
+    // Reading every class takes seconds on a big app, a new query cancels
+    // the one running.
+    val grepped by produceState<Pair<Int, List<SmaliHit>>?>(null, query, inCode) {
+        value = null
+        if (!inCode || query.trim().length < MIN_GREP) return@produceState
+        val job = coroutineContext.job
+        value = withContext(Dispatchers.IO) { runCatching { SmaliCode.grep(packageDir, query.trim(), SHOWN) { job.isActive } }.getOrNull() }
     }
     val edits by produceState(emptyList<io.gutapk.core.edit.SmaliEdit>(), packageDir) {
         value = withContext(Dispatchers.IO) { runCatching { SmaliCode.edits(packageDir) }.getOrDefault(emptyList()) }
@@ -70,20 +91,38 @@ fun CodeScreen(packageDir: Path, query: String, onQuery: (String) -> Unit, onCla
         OutlinedTextField(
             value = query,
             onValueChange = onQuery,
-            label = { Text(t("code_search")) },
+            label = { Text(t(if (inCode) "code_search_in" else "code_search")) },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
+        Zone(t("ap_filter")) {
+            ZoneRow(
+                t("code_in"),
+                t(if (inCode) "code_in_on" else "code_in_off"),
+                onClick = { onInCode(!inCode) },
+                trailing = { Switch(checked = inCode, onCheckedChange = onInCode) },
+            )
+        }
         val f = found
+        val g = grepped
         when {
             a == null -> BodyText(t("ov_reading"))
+            inCode && query.trim().length in 1 until MIN_GREP -> BodyText(t("code_in_short"))
+            inCode && query.isNotBlank() && g == null -> BodyText(t("code_in_searching"))
+            inCode && g != null && g.first == 0 -> BodyText(t("me_none"))
+            inCode && g != null -> Zone(t("code_in_count", if (g.first >= SmaliCode.GREP_CAP) "${SmaliCode.GREP_CAP}+" else g.first.toString())) {
+                g.second.forEach { h ->
+                    ZoneRow(h.text.take(160), h.cls.name + "  ·  " + t("code_line", h.line.toString()), onClick = { onClass(h.cls, h.line) })
+                }
+                if (g.first > g.second.size) BodyText(t("me_more", g.second.size.toString()))
+            }
             query.isBlank() -> {
                 BodyText(t("code_hint"))
                 if (edits.isNotEmpty()) {
                     Zone(t("code_edited_list", edits.size.toString())) {
                         edits.forEach { e ->
                             val ec = SmaliCode.classOf(e.entry)
-                            if (ec != null) ZoneRow(ec.name.substringAfterLast('.'), ec.name + "  ·  " + ec.dex, onClick = { onClass(ec) })
+                            if (ec != null) ZoneRow(ec.name.substringAfterLast('.'), ec.name + "  ·  " + ec.dex, onClick = { onClass(ec, null) })
                         }
                     }
                 }
@@ -92,7 +131,7 @@ fun CodeScreen(packageDir: Path, query: String, onQuery: (String) -> Unit, onCla
             f.first == 0 -> BodyText(t("me_none"))
             else -> Zone(t("me_count", f.first.toString())) {
                 f.second.forEach { c ->
-                    ZoneRow(c.name.substringAfterLast('.'), c.name + "  ·  " + c.dex, onClick = { onClass(c) })
+                    ZoneRow(c.name.substringAfterLast('.'), c.name + "  ·  " + c.dex, onClick = { onClass(c, null) })
                 }
                 if (f.first > f.second.size) BodyText(t("me_more", f.second.size.toString()))
             }
@@ -109,7 +148,7 @@ private sealed interface SmaliText {
 // One class, line by line with numbers. Edit turns it into a text field,
 // Save keeps the change with the package, applied by Rebuild and sign.
 @Composable
-fun SmaliScreen(packageDir: Path, c: SmaliClass, onBack: () -> Unit) {
+fun SmaliScreen(packageDir: Path, c: SmaliClass, line: Int?, onBack: () -> Unit) {
     var revision by remember { mutableStateOf(0) }
     val state by produceState<SmaliText>(SmaliText.Reading, c.entry, revision) {
         value = withContext(Dispatchers.IO) {
@@ -121,6 +160,7 @@ fun SmaliScreen(packageDir: Path, c: SmaliClass, onBack: () -> Unit) {
     var problem by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val dim = MaterialTheme.colorScheme.onSurfaceVariant
+    val accent = MaterialTheme.colorScheme.primary
     val ready = state as? SmaliText.Ready
     val d = draft
 
@@ -190,14 +230,16 @@ fun SmaliScreen(packageDir: Path, c: SmaliClass, onBack: () -> Unit) {
                 } else {
                     val lines = s.text.lines()
                     val width = lines.size.toString().length
+                    // A search hit opens at its line, a few above for context.
+                    val list = rememberLazyListState(initialFirstVisibleItemIndex = ((line ?: 1) - 4).coerceIn(0, maxOf(0, lines.size - 1)))
                     Zone(t("code_lines", lines.size.toString())) {
                         SelectionContainer {
-                            LazyColumn(Modifier.heightIn(max = 640.dp).padding(horizontal = 20.dp, vertical = 8.dp)) {
-                                itemsIndexed(lines) { i, line ->
+                            LazyColumn(Modifier.heightIn(max = 640.dp).padding(horizontal = 20.dp, vertical = 8.dp), state = list) {
+                                itemsIndexed(lines) { i, text ->
                                     Text(
                                         buildAnnotatedString {
                                             withStyle(SpanStyle(color = dim)) { append((i + 1).toString().padStart(width) + "  ") }
-                                            append(line)
+                                            if (i + 1 == line) withStyle(SpanStyle(color = accent)) { append(text) } else append(text)
                                         },
                                         fontFamily = FontFamily.Monospace,
                                         style = MaterialTheme.typography.bodySmall,

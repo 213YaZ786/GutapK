@@ -13,6 +13,9 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 
+// One line of the code that holds what was searched, numbered from 1.
+class SmaliHit(val cls: SmaliClass, val line: Int, val text: String)
+
 // One class of the decoded code: the dex it came from, its name with dots,
 // and its entry in the package's smali.zip.
 class SmaliClass(val dex: String, val name: String, val entry: String) {
@@ -178,6 +181,34 @@ object SmaliCode {
             Files.writeString(target, text)
             log("smali edited: ${base.relativize(target)}")
         }
+    }
+
+    // Past this many lines a search says nothing more, "invoke" for one.
+    const val GREP_CAP = 10_000
+
+    // Every line holding the text, case ignored, in every class, the user's
+    // edits read instead of the original. Counted up to GREP_CAP, the first
+    // limit kept. active is checked between classes, a new query stops it.
+    fun grep(packageDir: Path, needle: String, limit: Int, active: () -> Boolean): Pair<Int, List<SmaliHit>> {
+        val want = needle.lowercase()
+        val edited = edits(packageDir).map { it.entry }.toSet()
+        val hits = ArrayList<SmaliHit>()
+        var count = 0
+        ZipFile(zip(packageDir).toFile()).use { z ->
+            for (e in z.entries().asSequence()) {
+                if (!active() || count >= GREP_CAP) break
+                val cls = classOf(e.name) ?: continue
+                val text = if (e.name in edited) current(packageDir, e.name) else z.getInputStream(e).use { String(it.readBytes(), Charsets.UTF_8) }
+                if (!text.lowercase().contains(want)) continue
+                text.lineSequence().forEachIndexed { i, line ->
+                    if (count < GREP_CAP && line.lowercase().contains(want)) {
+                        count++
+                        if (hits.size < limit) hits.add(SmaliHit(cls, i + 1, line.trim()))
+                    }
+                }
+            }
+        }
+        return count to hits
     }
 
     // Every word must appear in the class name, in any order.
