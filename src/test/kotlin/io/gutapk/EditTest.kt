@@ -566,4 +566,25 @@ class EditTest {
         assertTrue(shape.problem("<manifest><application android:label='a < b'/></manifest>") != null)
         assertTrue(shape.problem("<manifest><!-- note --></manifest>") != null)
     }
+
+    // The advice follows the calls found in the app's own dex files.
+    @Test
+    fun advisesPerAppFromItsCalls() {
+        val r = io.gutapk.core.edit.PermissionRisks
+        val calls = setOf(
+            "android.os.PowerManager\$WakeLock.acquire",
+            "com.a.SyncService.startForeground",
+            "java.net.URL.openConnection",
+        )
+        assertEquals(io.gutapk.core.edit.PermissionAdvice.Keep(listOf("PowerManager.WakeLock.acquire")), r.advice("android.permission.WAKE_LOCK", "com.a", calls, false))
+        assertEquals(io.gutapk.core.edit.PermissionAdvice.Keep(listOf("SyncService.startForeground")), r.advice("android.permission.FOREGROUND_SERVICE_DATA_SYNC", "com.a", calls, false))
+        assertEquals(io.gutapk.core.edit.PermissionAdvice.Unused, r.advice("android.permission.ACCESS_NETWORK_STATE", "com.a", calls, false))
+        assertEquals(io.gutapk.core.edit.PermissionAdvice.Online(listOf("URL.openConnection"), true), r.advice("android.permission.INTERNET", "com.a", calls, true))
+        assertEquals(io.gutapk.core.edit.PermissionAdvice.Online(emptyList(), false), r.advice("android.permission.INTERNET", "com.a", emptySet(), false))
+        assertEquals(io.gutapk.core.edit.PermissionAdvice.Own, r.advice("com.a.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION", "com.a", calls, false))
+        assertEquals(null, r.advice("com.google.android.gms.permission.AD_ID", "com.a", calls, false))
+        assertTrue(r.wanted("android.net.ConnectivityManager", "getActiveNetworkInfo"))
+        assertTrue(r.wanted("com.x.AnyService", "startForeground"))
+        assertFalse(r.wanted("android.os.PowerManager", "acquire"))
+    }
 }

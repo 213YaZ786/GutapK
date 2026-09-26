@@ -40,6 +40,8 @@ import io.gutapk.core.edit.IconCheck
 import io.gutapk.core.edit.IconImage
 import io.gutapk.core.edit.IconRefusal
 import io.gutapk.core.edit.PackageId
+import io.gutapk.core.edit.PermissionAdvice
+import io.gutapk.core.edit.PermissionRisks
 import io.gutapk.core.edit.PackageIdRefusal
 import io.gutapk.core.edit.Tweaks
 import io.gutapk.core.sign.KeyChoice
@@ -107,6 +109,7 @@ fun startEdit(plan: EditPlan): Job? = JobQueue.start(RENAME_JOB) { job ->
 @Composable
 fun EditScreen(
     detection: Detection?,
+    calls: Set<String>,
     root: Path,
     packageDir: Path,
     original: Path,
@@ -497,9 +500,20 @@ fun EditScreen(
                 BodyText(t("edit_perm_note"))
                 info.permissions.forEach { perm ->
                     val on = kept[perm] != false
+                    val risk = when (val a = PermissionRisks.advice(perm, info.packageName, calls, info.nativeLibs > 0)) {
+                        is PermissionAdvice.Keep -> t("perm_keep", a.calls.take(3).joinToString(", "))
+                        PermissionAdvice.Unused -> t("perm_unused")
+                        PermissionAdvice.Own -> t("perm_own")
+                        is PermissionAdvice.Online -> when {
+                            a.calls.isNotEmpty() -> t("perm_online", a.calls.take(3).joinToString(", "))
+                            a.nativeCode -> t("perm_online_native")
+                            else -> t("perm_online_none")
+                        }
+                        null -> null
+                    }
                     ZoneRow(
                         perm.substringAfterLast('.'),
-                        perm,
+                        if (risk != null) risk + "\n" + perm else perm,
                         onClick = { kept[perm] = !on },
                         trailing = { Switch(checked = on, onCheckedChange = { kept[perm] = it }) },
                     )

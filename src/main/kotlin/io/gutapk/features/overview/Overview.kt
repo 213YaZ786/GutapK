@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import io.gutapk.core.apk.ApkInfo
 import io.gutapk.core.apk.ApkReader
 import io.gutapk.core.apk.DexClasses
+import io.gutapk.core.edit.PermissionRisks
 import io.gutapk.core.apk.Packages
 import io.gutapk.core.apk.SetRecord
 import io.gutapk.core.apk.SignatureInfo
@@ -82,6 +83,8 @@ private data class Loaded(
     val icon: ImageBitmap?,
     // Sorted class names from every dex, for the tracker check.
     val classes: List<String>,
+    // The calls some permission is checked on, for the Edit screen advice.
+    val calls: Set<String>,
     // What a merged split set was made of, null for a single APK.
     val set: SetRecord?,
     // Null for anything that is not a Unity game.
@@ -131,6 +134,7 @@ private fun load(original: Path): Loaded {
         sha256 = Hash.of(original, "SHA-256"),
         icon = bitmap,
         classes = runCatching { ZipFile(original.toFile()).use { DexClasses.read(it) } }.getOrDefault(emptyList()),
+        calls = runCatching { ZipFile(original.toFile()).use { DexClasses.methods(it, PermissionRisks::wanted) } }.getOrDefault(emptySet()),
         set = original.parent?.let { Packages.setRecord(it) },
         unity = runCatching { ZipFile(original.toFile()).use { UnityReader.read(it) } }.getOrNull(),
     )
@@ -207,6 +211,7 @@ fun OverviewScreen(
     if (editing && info != null && root != null) {
         EditScreen(
             detection = detection,
+            calls = loaded?.calls.orEmpty(),
             root = root,
             packageDir = dir,
             original = original,
