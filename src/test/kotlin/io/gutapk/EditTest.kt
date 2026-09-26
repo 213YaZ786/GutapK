@@ -644,4 +644,48 @@ class EditTest {
             io.gutapk.tools.Storage.deleteTree(base, base.parent)
         }
     }
+
+    @Test
+    fun smaliStructureIsChecked() {
+        val code = io.gutapk.core.edit.SmaliCode
+        val ok = """
+            .class public La
+            .super Ljava/lang/Object
+            .method public b()V
+                .locals 1
+                .param p1, "x"
+                    .annotation runtime Lc
+                    .end annotation
+                .end param
+                .local v0, "y"
+                .end local v0
+                const-string v0, ".end method"
+                return-void
+            .end method
+        """.trimIndent()
+        assertEquals(null, code.problem(ok))
+        assertTrue(code.problem(ok.replace(".end method", "")).orEmpty().contains("has no .end method"))
+        assertTrue(code.problem("# note\n" + ok.replace(".class public La", "")).orEmpty().contains(".class"))
+        assertTrue(code.problem(ok.replace("return-void", ".method public c()V")).orEmpty().contains("inside the method"))
+        assertTrue(code.problem(ok.replace(".end annotation", "")).orEmpty().contains(".annotation"))
+        // Forms seen in real classes: a subannotation opened mid line, and a
+        // list of them closed with a comma.
+        val nested = """
+            .class public La
+            .annotation system Ld
+                value = .subannotation Le
+                    c = ""
+                .end subannotation
+            .end annotation
+            .annotation runtime Lf
+                value = {
+                    .subannotation Lg
+                    .end subannotation,
+                    .subannotation Lg
+                    .end subannotation
+                }
+            .end annotation
+        """.trimIndent()
+        assertEquals(null, code.problem(nested))
+    }
 }

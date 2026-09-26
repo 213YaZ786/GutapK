@@ -141,8 +141,46 @@ object SmaliCode {
     // The text shown and edited: the user's version when there is one.
     fun current(packageDir: Path, entry: String): String = edited(packageDir, entry) ?: read(packageDir, entry)
 
+    // The blocks smali opens and closes. A broken pair is the mistake an
+    // edit makes most, and APKEditor would only say so at rebuild.
+    // .end local and .end param are left out: the first is a one line debug
+    // directive, the second only closes a parameter's annotations.
+    private val INLINE_SUB = Regex("""[=,{]\s*\.subannotation\b""")
+
+    private val BLOCKS = listOf("method", "annotation", "subannotation", "packed-switch", "sparse-switch", "array-data")
+
+    // The first structural problem, with its line, or null. Not a compiler:
+    // a wrong register or type still shows only when APKEditor builds.
+    fun problem(text: String): String? {
+        val lines = text.lines()
+        val first = lines.indexOfFirst { it.isNotBlank() && !it.trimStart().startsWith("#") }
+        if (first < 0 || !lines[first].trimStart().startsWith(".class ")) return "the first line must be the .class line"
+        val open = ArrayDeque<Pair<String, Int>>()
+        lines.forEachIndexed { i, raw ->
+            val line = raw.trim()
+            // A value can open one mid line: "value = .subannotation La".
+            if (!line.startsWith(".")) {
+                repeat(INLINE_SUB.findAll(line).count()) { open.addLast("subannotation" to i + 1) }
+                return@forEachIndexed
+            }
+            val word = line.substring(1).substringBefore(' ')
+            if (word == "end") {
+                // In a list of values, ".end subannotation," carries a comma.
+                val what = line.removePrefix(".end").trim().substringBefore(' ').trimEnd(',')
+                if (what !in BLOCKS) return@forEachIndexed
+                val top = open.removeLastOrNull() ?: return "line ${i + 1}: .end $what with nothing open"
+                if (top.first != what) return "line ${i + 1}: .end $what, but .${top.first} from line ${top.second} is still open"
+            } else if (word in BLOCKS) {
+                if (word == "method" && open.any { it.first == "method" }) return "line ${i + 1}: .method inside the method of line ${open.last { it.first == "method" }.second}"
+                open.addLast(word to i + 1)
+            }
+        }
+        return open.lastOrNull()?.let { "the .${it.first} of line ${it.second} has no .end ${it.first}" }
+    }
+
     // Saving the original text back is the same as removing the edit.
     fun save(packageDir: Path, entry: String, text: String) {
+        problem(text)?.let { throw CheckFailed("not saved, $it") }
         val original = read(packageDir, entry)
         if (text == original) {
             remove(packageDir, entry)
