@@ -263,7 +263,7 @@ private fun PatchDialog(method: MethodEntry, data: HexData, onSave: (BytePatch) 
     val issue = when (problem) {
         null -> null
         PatchProblem.BadHex -> t("hex_bad")
-        PatchProblem.OutOfRange -> t("hex_range", offsetText(method.offset), offsetText(method.offset + data.original.size - 1))
+        PatchProblem.OutOfRange -> t("hex_range", offsetText(method.offset), offsetText(method.offset + data.original.size - 1), data.original.size.toString())
         PatchProblem.Unchanged -> t("hex_same")
         is PatchProblem.Overlaps -> t("hex_overlap", offsetText(problem.other.offset))
     }
@@ -289,11 +289,19 @@ private fun PatchDialog(method: MethodEntry, data: HexData, onSave: (BytePatch) 
                     modifier = Modifier.fillMaxWidth(),
                 )
                 if (data.abi == Arm64Presets.ABI) {
+                    val room = Arm64Presets.room(at, method.offset, data.original.size)
                     Text(t("hex_presets"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Arm64Presets.all.forEach { p ->
-                            SuggestionChip(onClick = { bytes = p.bytes }, label = { Text(t("hex_preset_" + p.id)) })
+                            SuggestionChip(
+                                onClick = { bytes = p.bytes },
+                                label = { Text(t("hex_preset_" + p.id)) },
+                                enabled = p.size <= room,
+                            )
                         }
+                    }
+                    if (Arm64Presets.all.any { it.size > room }) {
+                        BodyText(t("hex_presets_room", room.toString()))
                     }
                 }
                 if (patch != null) {

@@ -23,7 +23,9 @@ object Hex {
 // Ready-made arm64 bodies, each read back with binutils 2.47 objdump. A
 // return sets w0 or s0 then returns, so the method stops there. arm64 only
 // by the user's choice, armeabi-v7a would need to know ARM from Thumb.
-data class Preset(val id: String, val bytes: String)
+data class Preset(val id: String, val bytes: String) {
+    val size: Int get() = bytes.split(' ').count { it.isNotEmpty() }
+}
 
 object Arm64Presets {
     const val ABI = "arm64-v8a"
@@ -40,6 +42,11 @@ object Arm64Presets {
         Preset("ret", RET),
         Preset("nop", "1F 20 03 D5"),
     )
+
+    // Bytes left from offset to the end of the method, 0 outside it. A
+    // longer value would run into the next method and break it.
+    fun room(offset: Long?, start: Long, length: Int): Long =
+        if (offset == null || offset < start || offset >= start + length) 0 else start + length - offset
 }
 
 // One change to libil2cpp.so of one ABI. old is what the untouched APK has

@@ -343,6 +343,19 @@ class Il2CppTest {
         assertEquals("00 00 00 00 00 00 00 00", assertNotNull(made.first).old)
     }
 
+    // A four byte constructor takes ret or nop, never an eight byte return.
+    @Test
+    fun presetsFitTheRoomLeft() {
+        assertEquals(4L, Arm64Presets.room(0x169aa0c, 0x169aa0c, 4))
+        assertEquals(4L, Arm64Presets.room(0x44, 0x40, 8))
+        assertEquals(0L, Arm64Presets.room(0x48, 0x40, 8))
+        assertEquals(0L, Arm64Presets.room(0x3c, 0x40, 8))
+        assertEquals(0L, Arm64Presets.room(null, 0x40, 8))
+        val fit = Arm64Presets.all.filter { it.size <= Arm64Presets.room(0x40, 0x40, 4) }.map { it.id }
+        assertEquals(listOf("ret", "nop"), fit)
+        Arm64Presets.all.forEach { assertEquals(assertNotNull(Hex.parse(it.bytes)).size, it.size, it.id) }
+    }
+
     // An offset or bytes typed in the Methods search, never plain words.
     @Test
     fun readsOffsetsAndPatterns() {
