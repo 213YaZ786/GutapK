@@ -607,17 +607,17 @@ class EditTest {
     fun smaliEditsKeepAndApply() {
         val base = java.nio.file.Files.createTempDirectory("gutapk-smali")
         try {
-            val pkg = base.resolve("pkg")
             val code = io.gutapk.core.edit.SmaliCode
-            java.nio.file.Files.createDirectories(code.dir(pkg))
+            val pkg = code.dir(base.resolve("pkg"))
+            java.nio.file.Files.createDirectories(pkg)
             val entry = "classes/com/x/Main.smali"
             val original = ".class public Lcom/x/Main\n.method a()V\n    const-string v0, \"old\"\n.end method\n"
-            java.util.zip.ZipOutputStream(java.nio.file.Files.newOutputStream(code.dir(pkg).resolve("smali.zip"))).use { z ->
+            java.util.zip.ZipOutputStream(java.nio.file.Files.newOutputStream(pkg.resolve("smali.zip"))).use { z ->
                 z.putNextEntry(java.util.zip.ZipEntry(entry))
                 z.write(original.toByteArray())
                 z.closeEntry()
             }
-            java.nio.file.Files.writeString(code.dir(pkg).resolve("code.properties"), "classes=1\ntool=1.4.9\n")
+            java.nio.file.Files.writeString(pkg.resolve("code.properties"), "classes=1\ntool=1.4.9\n")
             assertEquals(original, code.current(pkg, entry))
 
             val edited = original.replace("old", "new")

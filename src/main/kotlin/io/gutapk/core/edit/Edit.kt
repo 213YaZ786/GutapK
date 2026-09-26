@@ -53,6 +53,7 @@ data class Tweaks(
     // replaces.
     val bytePatches: List<BytePatch> = emptyList(),
     // The package folder when its smali edits are to be applied, else null.
+    // SmaliCode.dir gives each part's own.
     val smaliEditsFrom: Path? = null,
 )
 
@@ -101,10 +102,12 @@ object Edit {
         try {
             if (Parts.isSet(packageDir)) {
                 val out = ApkSigning.setOutput(packageDir, tweaks.packageId ?: packageName, version, choice)
-                val splitJar = when {
-                    tweaks.packageId == null -> null
-                    engine == Engine.APKEDITOR -> jar
-                    else -> Resolve.tool(root, Tools.byId(Engine.APKEDITOR.id) ?: throw IOException("apkeditor is not in the tool table"), sink, cancelled)
+                val splitJar = {
+                    if (engine == Engine.APKEDITOR) {
+                        jar
+                    } else {
+                        Resolve.tool(root, Tools.byId(Engine.APKEDITOR.id) ?: throw IOException("apkeditor is not in the tool table"), sink, cancelled)
+                    }
                 }
                 val signature = SetBuild.run(jar, engine, splitJar, Parts.of(packageDir), tweaks, work, out, key, signMin, appVersion, sink, cancelled)
                 return EditResult(out, signature)
@@ -179,10 +182,11 @@ object Edit {
         // Before anything else touches the smali, stripping debug lines for
         // one, so each class is still the text its edit was made on.
         tweaks.smaliEditsFrom?.let { from ->
-            val edits = SmaliCode.edits(from)
+            val code = SmaliCode.dir(from)
+            val edits = SmaliCode.edits(code)
             if (edits.isNotEmpty()) {
                 if (engine != Engine.APKEDITOR) throw CheckFailed("smali edits are made on APKEditor's smali, apktool writes other text. Rebuild with APKEditor.")
-                SmaliCode.apply(decoded.resolve("smali"), from, edits) { sink.emit(JobEvent.Line(it)) }
+                SmaliCode.apply(decoded.resolve("smali"), code, edits) { sink.emit(JobEvent.Line(it)) }
             }
         }
 
@@ -416,7 +420,7 @@ object Edit {
     // way aapt2 does for apktool. The manifest itself is already done.
     // Only the code and resource folders are walked: beside them sit copies
     // of original binary files, apktool's original/ for one, never text.
-    private fun renameInFiles(decoded: Path, map: Map<String, String>, sink: JobSink) {
+    internal fun renameInFiles(decoded: Path, map: Map<String, String>, sink: JobSink) {
         var files = 0
         var strings = 0
         val folders = Files.list(decoded).use { it.toList() }.filter { dir ->

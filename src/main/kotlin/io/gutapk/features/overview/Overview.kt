@@ -38,6 +38,7 @@ import io.gutapk.core.apk.DexClasses
 import io.gutapk.core.edit.PermissionRisks
 import io.gutapk.core.edit.SmaliClass
 import io.gutapk.core.apk.Packages
+import io.gutapk.core.apk.Part
 import io.gutapk.core.apk.Parts
 import io.gutapk.core.apk.SetRecord
 import io.gutapk.core.apk.SignatureInfo
@@ -46,6 +47,7 @@ import io.gutapk.core.apk.UnityInfo
 import io.gutapk.core.apk.UnityReader
 import io.gutapk.core.il2cpp.MethodEntry
 import io.gutapk.core.edit.Engine
+import io.gutapk.core.edit.SmaliCode
 import io.gutapk.core.sign.KeyChoice
 import io.gutapk.core.sign.keyChoiceOf
 import io.gutapk.job.Job
@@ -182,6 +184,13 @@ fun OverviewScreen(
     var smali by remember { mutableStateOf<SmaliClass?>(null) }
     var smaliLine by remember { mutableStateOf<Int?>(null) }
     var codeInText by remember { mutableStateOf(false) }
+    // The part whose code is shown, the base unless the user picks a split.
+    val codeParts by produceState(emptyList<Part>(), dir) {
+        value = withContext(Dispatchers.IO) { runCatching { Parts.withCode(dir) }.getOrDefault(emptyList()) }
+    }
+    var codePartName by remember { mutableStateOf(Parts.BASE) }
+    val codePart = codeParts.firstOrNull { it.name == codePartName } ?: Part(Parts.BASE, original)
+    val codeDir = SmaliCode.dir(dir, codePart.name)
     // The job this screen started. Another job finishing, a tool update for
     // instance, must not open this screen's report.
     var started by remember { mutableStateOf<Job?>(null) }
@@ -252,10 +261,10 @@ fun OverviewScreen(
             onBack = { editing = false },
         )
     } else if (code && shownSmali != null) {
-        SmaliScreen(dir, shownSmali, smaliLine, onBack = { smali = null })
+        SmaliScreen(codeDir, shownSmali, smaliLine, onBack = { smali = null })
     } else if (code) {
         CodeScreen(
-            dir,
+            codeDir,
             codeQuery,
             codeInText,
             onQuery = { codeQuery = it },
@@ -278,7 +287,21 @@ fun OverviewScreen(
             onBack = { methods = false },
         )
     } else {
-        OverviewPage(dir, root, loaded, info, original, detection, running, actionRow, onBack, onMethods = { methods = true }, onCode = { code = true })
+        OverviewPage(dir, root, loaded, info, original, detection, running, actionRow, onBack, onMethods = { methods = true }) {
+            if (root != null) {
+                CodeZone(
+                    root,
+                    codeDir,
+                    codePart,
+                    codeParts,
+                    onPart = {
+                        codePartName = it.name
+                        codeQuery = ""
+                    },
+                    onOpen = { code = true },
+                )
+            }
+        }
     }
 
     if (info != null && !editing && !methods && !code) {
@@ -356,7 +379,7 @@ private fun OverviewPage(
     actionRow: @Composable () -> Unit,
     onBack: () -> Unit,
     onMethods: () -> Unit,
-    onCode: () -> Unit,
+    codeZone: @Composable () -> Unit,
 ) {
     Page(
         title = info?.label ?: info?.packageName ?: dir.fileName.toString(),
@@ -370,7 +393,7 @@ private fun OverviewPage(
         when {
             loaded == null -> BodyText(t("ov_reading"))
             info == null -> Zone(t("ov_error")) { BodyText(loaded.error ?: "") }
-            else -> Body(loaded, info, original, root, detection, onMethods, onCode)
+            else -> Body(loaded, info, original, root, detection, onMethods, codeZone)
         }
     }
 }
@@ -404,7 +427,7 @@ private fun Header(l: Loaded) {
 }
 
 @Composable
-private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?, detection: Detection?, onMethods: () -> Unit, onCode: () -> Unit) {
+private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?, detection: Detection?, onMethods: () -> Unit, codeZone: @Composable () -> Unit) {
     var showPermissions by remember { mutableStateOf(false) }
     val identity: @Composable () -> Unit = {
         Zone(t("ov_identity")) {
@@ -514,7 +537,7 @@ private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?, detectio
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(24.dp)) {
                     signature()
                     l.unity?.let { UnityZone(it, root, original.parent, original, onMethods) }
-                    if (root != null) CodeZone(root, original.parent, original, onCode)
+                    codeZone()
                     file()
                 }
             }
@@ -524,7 +547,7 @@ private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?, detectio
                 signature()
                 content()
                 l.unity?.let { UnityZone(it, root, original.parent, original, onMethods) }
-                if (root != null) CodeZone(root, original.parent, original, onCode)
+                codeZone()
                 permissions()
                 if (root != null) TrackersZone(root, detection)
                 file()

@@ -51,7 +51,7 @@ private const val MIN_GREP = 3
 // the caller, so Back from a class finds the same list.
 @Composable
 fun CodeScreen(
-    packageDir: Path,
+    code: Path,
     query: String,
     inCode: Boolean,
     onQuery: (String) -> Unit,
@@ -59,8 +59,8 @@ fun CodeScreen(
     onClass: (SmaliClass, Int?) -> Unit,
     onBack: () -> Unit,
 ) {
-    val all by produceState<List<SmaliClass>?>(null, packageDir) {
-        value = withContext(Dispatchers.IO) { runCatching { SmaliCode.list(packageDir) }.getOrDefault(emptyList()) }
+    val all by produceState<List<SmaliClass>?>(null, code) {
+        value = withContext(Dispatchers.IO) { runCatching { SmaliCode.list(code) }.getOrDefault(emptyList()) }
     }
     val found by produceState<Pair<Int, List<SmaliClass>>?>(null, all, query) {
         val a = all ?: return@produceState
@@ -72,10 +72,10 @@ fun CodeScreen(
         value = null
         if (!inCode || query.trim().length < MIN_GREP) return@produceState
         val job = coroutineContext.job
-        value = withContext(Dispatchers.IO) { runCatching { SmaliCode.grep(packageDir, query.trim(), SHOWN) { job.isActive } }.getOrNull() }
+        value = withContext(Dispatchers.IO) { runCatching { SmaliCode.grep(code, query.trim(), SHOWN) { job.isActive } }.getOrNull() }
     }
-    val edits by produceState(emptyList<io.gutapk.core.edit.SmaliEdit>(), packageDir) {
-        value = withContext(Dispatchers.IO) { runCatching { SmaliCode.edits(packageDir) }.getOrDefault(emptyList()) }
+    val edits by produceState(emptyList<io.gutapk.core.edit.SmaliEdit>(), code) {
+        value = withContext(Dispatchers.IO) { runCatching { SmaliCode.edits(code) }.getOrDefault(emptyList()) }
     }
     Page(title = t("code_title"), width = 1040.dp, onBack = onBack) {
         val a = all
@@ -148,11 +148,11 @@ private sealed interface SmaliText {
 // One class, line by line with numbers. Edit turns it into a text field,
 // Save keeps the change with the package, applied by Rebuild and sign.
 @Composable
-fun SmaliScreen(packageDir: Path, c: SmaliClass, line: Int?, onBack: () -> Unit) {
+fun SmaliScreen(code: Path, c: SmaliClass, line: Int?, onBack: () -> Unit) {
     var revision by remember { mutableStateOf(0) }
     val state by produceState<SmaliText>(SmaliText.Reading, c.entry, revision) {
         value = withContext(Dispatchers.IO) {
-            runCatching { SmaliText.Ready(SmaliCode.current(packageDir, c.entry), SmaliCode.edited(packageDir, c.entry) != null) }
+            runCatching { SmaliText.Ready(SmaliCode.current(code, c.entry), SmaliCode.edited(code, c.entry) != null) }
                 .getOrElse { SmaliText.Failed(it.message ?: "?") }
         }
     }
@@ -166,7 +166,7 @@ fun SmaliScreen(packageDir: Path, c: SmaliClass, line: Int?, onBack: () -> Unit)
 
     fun save(text: String) {
         scope.launch {
-            val r = withContext(Dispatchers.IO) { runCatching { SmaliCode.save(packageDir, c.entry, text) } }
+            val r = withContext(Dispatchers.IO) { runCatching { SmaliCode.save(code, c.entry, text) } }
             problem = r.exceptionOrNull()?.message
             if (r.isSuccess) {
                 draft = null
@@ -177,7 +177,7 @@ fun SmaliScreen(packageDir: Path, c: SmaliClass, line: Int?, onBack: () -> Unit)
 
     fun revert() {
         scope.launch {
-            val r = withContext(Dispatchers.IO) { runCatching { SmaliCode.remove(packageDir, c.entry) } }
+            val r = withContext(Dispatchers.IO) { runCatching { SmaliCode.remove(code, c.entry) } }
             problem = r.exceptionOrNull()?.message
             draft = null
             revision++

@@ -36,6 +36,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import io.gutapk.core.apk.ApkInfo
 import io.gutapk.core.apk.IconKind
+import io.gutapk.core.apk.Parts
 import io.gutapk.core.edit.Edit
 import io.gutapk.core.edit.Engine
 import io.gutapk.core.edit.IconCheck
@@ -149,7 +150,9 @@ fun EditScreen(
     // The smali classes edited in the code view, on by default for the same
     // reason as the patches.
     val smaliEdits by produceState(emptyList<SmaliEdit>(), packageDir) {
-        value = withContext(Dispatchers.IO) { runCatching { SmaliCode.edits(packageDir) }.getOrDefault(emptyList()) }
+        value = withContext(Dispatchers.IO) {
+            runCatching { Parts.of(packageDir).flatMap { SmaliCode.edits(SmaliCode.dir(packageDir, it.name)) } }.getOrDefault(emptyList())
+        }
     }
     var applySmali by remember { mutableStateOf(true) }
     val useSmali = applySmali && smaliEdits.isNotEmpty()

@@ -3,7 +3,9 @@ package io.gutapk
 import io.gutapk.core.apk.Packages
 import io.gutapk.core.apk.Part
 import io.gutapk.core.apk.Parts
+import io.gutapk.core.edit.PackageId
 import io.gutapk.core.edit.SetBuild
+import io.gutapk.core.edit.SmaliCode
 import io.gutapk.core.edit.Tweaks
 import io.gutapk.core.il2cpp.BytePatch
 import io.gutapk.job.JobEvent
@@ -118,12 +120,20 @@ class PartsTest {
         assertEquals("New", SetBuild.baseTweaks(Tweaks(label = "New"), baseHasLibs = false).label)
     }
 
+    // A configuration split's manifest is one tag with an application:
+    // the rename the base gets changes its package and nothing else.
     @Test
-    fun renamesOnlyTheSplitManifestPackage() {
+    fun aSplitManifestTakesTheBaseRename() {
         val text = "<?xml version='1.0' encoding='utf-8' ?>\n<manifest android:versionCode=\"171310\"\n          package=\"com.old.app\"\n          split=\"config.arm64_v8a\" xmlns:android=\"http://schemas.android.com/apk/res/android\">\n  <application android:hasCode=\"false\" />\n</manifest>"
-        val out = SetBuild.splitPackage(text, "com.new.app")
-        assertEquals(text.replace("package=\"com.old.app\"", "package=\"com.new.app\""), out)
-        assertNull(SetBuild.splitPackage("<manifest split=\"x\"></manifest>", "com.new.app"))
+        val out = PackageId.rename(text, "com.new.app")
+        assertEquals(text.replace("package=\"com.old.app\"", "package=\"com.new.app\""), out.text)
+    }
+
+    @Test
+    fun eachPartKeepsItsOwnCode() {
+        val d = Path.of("pkg")
+        assertEquals(d.resolve("code"), SmaliCode.dir(d))
+        assertEquals(d.resolve("code").resolve("split_feature"), SmaliCode.dir(d, "feature"))
     }
 
     // The patched library stays stored, every other entry keeps its bytes

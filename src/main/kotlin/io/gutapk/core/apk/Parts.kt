@@ -67,6 +67,11 @@ object Parts {
             runCatching { ZipFile(f.toFile()).use { it.getEntry(entry) != null } }.getOrDefault(false)
         }
 
+    // The parts that carry dex code, the base first.
+    fun withCode(packageDir: Path): List<Part> = of(packageDir).filter { p ->
+        Files.isRegularFile(p.file) && runCatching { ZipFile(p.file.toFile()).use { it.getEntry("classes.dex") != null } }.getOrDefault(false)
+    }
+
     // A signed output is one APK, or a folder of them for a set.
     fun apks(output: Path): List<Path> {
         if (!Files.isDirectory(output)) return listOf(output)
