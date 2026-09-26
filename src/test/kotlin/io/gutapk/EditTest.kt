@@ -587,4 +587,16 @@ class EditTest {
         assertTrue(r.wanted("com.x.AnyService", "startForeground"))
         assertFalse(r.wanted("android.os.PowerManager", "acquire"))
     }
+
+    @Test
+    fun readsSmaliEntries() {
+        val code = io.gutapk.core.edit.SmaliCode
+        val c = code.classOf("classes2/com/x/Main\$1.smali")
+        assertEquals("com.x.Main\$1", c?.name)
+        assertEquals("classes2", c?.dex)
+        assertEquals(null, code.classOf("classes/readme.txt"))
+        val all = listOfNotNull(code.classOf("classes/com/x/Main.smali"), code.classOf("classes/com/x/net/Api.smali"), c)
+        assertEquals(listOf("com.x.net.Api"), code.search(all, "x API", 10).second.map { it.name })
+        assertEquals(3, code.search(all, "com", 1).first)
+    }
 }

@@ -658,6 +658,12 @@ object Edit {
         sink.emit(JobEvent.Line("label string $name set to \"$value\""))
     }
 
+    // The code alone, to read: resources stay raw (-t raw), which cuts the
+    // time, and no dex cache is written next to the output.
+    fun decodeCode(jar: Path, apk: Path, out: Path, work: Path, sink: JobSink, cancelled: () -> Boolean) {
+        runEngine(jar, Engine.APKEDITOR, work, listOf("d", "-t", "raw", "-no-cache", "-f", "-i", apk.toString(), "-o", out.toString()), sink, cancelled)
+    }
+
     // -clean-meta drops the parts' signatures, they no longer match the
     // merged APK and the user signs it after editing anyway.
     fun merge(jar: Path, parts: Path, out: Path, work: Path, sink: JobSink, cancelled: () -> Boolean) {

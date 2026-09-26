@@ -36,6 +36,7 @@ import io.gutapk.core.apk.ApkInfo
 import io.gutapk.core.apk.ApkReader
 import io.gutapk.core.apk.DexClasses
 import io.gutapk.core.edit.PermissionRisks
+import io.gutapk.core.edit.SmaliClass
 import io.gutapk.core.apk.Packages
 import io.gutapk.core.apk.SetRecord
 import io.gutapk.core.apk.SignatureInfo
@@ -158,6 +159,9 @@ fun OverviewScreen(
     var methods by remember { mutableStateOf(false) }
     var methodQuery by remember { mutableStateOf("") }
     var method by remember { mutableStateOf<MethodEntry?>(null) }
+    var code by remember { mutableStateOf(false) }
+    var codeQuery by remember { mutableStateOf("") }
+    var smali by remember { mutableStateOf<SmaliClass?>(null) }
     // The job this screen started. Another job finishing, a tool update for
     // instance, must not open this screen's report.
     var started by remember { mutableStateOf<Job?>(null) }
@@ -208,6 +212,7 @@ fun OverviewScreen(
     }
     val detection = if (root != null && loaded != null) rememberDetection(root, loaded.classes) else null
     val shownMethod = method
+    val shownSmali = smali
     if (editing && info != null && root != null) {
         EditScreen(
             detection = detection,
@@ -226,6 +231,10 @@ fun OverviewScreen(
             },
             onBack = { editing = false },
         )
+    } else if (code && shownSmali != null) {
+        SmaliScreen(dir, shownSmali, onBack = { smali = null })
+    } else if (code) {
+        CodeScreen(dir, codeQuery, onQuery = { codeQuery = it }, onClass = { smali = it }, onBack = { code = false })
     } else if (methods && shownMethod != null) {
         HexScreen(dir, original, shownMethod, onBack = { method = null })
     } else if (methods) {
@@ -238,10 +247,10 @@ fun OverviewScreen(
             onBack = { methods = false },
         )
     } else {
-        OverviewPage(dir, root, loaded, info, original, detection, running, actionRow, onBack, onMethods = { methods = true })
+        OverviewPage(dir, root, loaded, info, original, detection, running, actionRow, onBack, onMethods = { methods = true }, onCode = { code = true })
     }
 
-    if (info != null && !editing && !methods) {
+    if (info != null && !editing && !methods && !code) {
         when (dialog) {
             "sign" -> SignDialog(
                 dir = dir,
@@ -316,6 +325,7 @@ private fun OverviewPage(
     actionRow: @Composable () -> Unit,
     onBack: () -> Unit,
     onMethods: () -> Unit,
+    onCode: () -> Unit,
 ) {
     Page(
         title = info?.label ?: info?.packageName ?: dir.fileName.toString(),
@@ -329,7 +339,7 @@ private fun OverviewPage(
         when {
             loaded == null -> BodyText(t("ov_reading"))
             info == null -> Zone(t("ov_error")) { BodyText(loaded.error ?: "") }
-            else -> Body(loaded, info, original, root, detection, onMethods)
+            else -> Body(loaded, info, original, root, detection, onMethods, onCode)
         }
     }
 }
@@ -363,7 +373,7 @@ private fun Header(l: Loaded) {
 }
 
 @Composable
-private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?, detection: Detection?, onMethods: () -> Unit) {
+private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?, detection: Detection?, onMethods: () -> Unit, onCode: () -> Unit) {
     var showPermissions by remember { mutableStateOf(false) }
     val identity: @Composable () -> Unit = {
         Zone(t("ov_identity")) {
@@ -473,6 +483,7 @@ private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?, detectio
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(24.dp)) {
                     signature()
                     l.unity?.let { UnityZone(it, root, original.parent, original, onMethods) }
+                    if (root != null) CodeZone(root, original.parent, original, onCode)
                     file()
                 }
             }
@@ -482,6 +493,7 @@ private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?, detectio
                 signature()
                 content()
                 l.unity?.let { UnityZone(it, root, original.parent, original, onMethods) }
+                if (root != null) CodeZone(root, original.parent, original, onCode)
                 permissions()
                 if (root != null) TrackersZone(root, detection)
                 file()
