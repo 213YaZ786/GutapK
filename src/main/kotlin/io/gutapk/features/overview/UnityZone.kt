@@ -200,7 +200,7 @@ fun UnityZone(u: UnityInfo, root: Path?, packageDir: Path, apk: Path, dumper: St
     if (choosing) {
         ChoiceDialog(
             title = t("un_method"),
-            options = DUMPERS.map { it to dumperName(it) + "\n" + dumperNote(it) },
+            options = DUMPERS.map { it to dumperName(it) + "\n" + dumperNote(it, u.metadataVersion) },
             current = chosen,
             disabled = if (dumperReads(u.metadataVersion)) emptySet() else setOf("il2cppdumper"),
             onPick = {
@@ -240,10 +240,12 @@ private fun dumperName(id: String): String = when (id) {
 }
 
 @Composable
-private fun dumperNote(id: String): String = when (id) {
+private fun dumperNote(id: String, metadata: Int?): String = when (id) {
     "cpp2il" -> t("un_m_cpp2il_d")
     "cpp2il-nightly" -> t("un_m_nightly_d")
-    "il2cppdumper" -> t("un_m_dumper_d", Il2CppDump.DUMPER_METADATA_MAX.toString())
+    // Greyed out, so it says why, with this game's own version.
+    "il2cppdumper" -> t("un_m_dumper_d", Il2CppDump.DUMPER_METADATA_MAX.toString()) +
+        if (dumperReads(metadata)) "" else "\n" + t("un_m_dumper_no", metadata?.toString() ?: t("un_unknown"))
     else -> ""
 }
 
