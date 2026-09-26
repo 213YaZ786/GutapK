@@ -20,10 +20,12 @@ import io.gutapk.tools.Installer
 import io.gutapk.tools.RunSession
 import io.gutapk.tools.ToolStatus
 import io.gutapk.tools.Tools
+import io.gutapk.ui.Chooser
 import io.gutapk.ui.LookupDialog
 import io.gutapk.ui.Zone
 import io.gutapk.ui.ZoneRow
 import io.gutapk.ui.currentJobView
+import io.gutapk.ui.showInFolder
 import io.gutapk.ui.t
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -31,6 +33,13 @@ import java.nio.file.Path
 
 private const val CODE_JOB = "code"
 private const val DECODER = "apkeditor"
+
+private const val EXPORT_JOB = "codeexport"
+
+private fun startExport(packageDir: Path, target: Path): Job? = JobQueue.start(EXPORT_JOB) { job ->
+    SmaliCode.export(packageDir, target, job) { job.cancelRequested }
+    job.result = target.toString()
+}
 
 private fun startDecode(root: Path, packageDir: Path, apk: Path): Job? = JobQueue.start(CODE_JOB) { job ->
     val spec = Tools.byId(DECODER) ?: throw CheckFailed("apkeditor is not in the tool table")
@@ -59,6 +68,9 @@ fun CodeZone(root: Path, packageDir: Path, apk: Path, onOpen: () -> Unit) {
     var afterTool by remember { mutableStateOf(false) }
     var decodeJob by remember { mutableStateOf<Job?>(null) }
     var failure by remember { mutableStateOf<String?>(null) }
+    var exportJob by remember { mutableStateOf<Job?>(null) }
+    var exported by remember { mutableStateOf<String?>(null) }
+    val exportTitle = t("code_export")
 
     LaunchedEffect(view) {
         val job = JobQueue.current.value
@@ -69,6 +81,20 @@ fun CodeZone(root: Path, packageDir: Path, apk: Path, onOpen: () -> Unit) {
                     decodeJob = startDecode(root, packageDir, apk)
                 }
                 JobState.FAILED, JobState.CANCELLED -> afterTool = false
+                else -> {}
+            }
+        }
+        if (exportJob != null && job === exportJob && view != null) {
+            when (view.state) {
+                JobState.DONE -> {
+                    exportJob = null
+                    exported = view.message
+                }
+                JobState.FAILED -> {
+                    exportJob = null
+                    failure = view.message
+                }
+                JobState.CANCELLED -> exportJob = null
                 else -> {}
             }
         }
@@ -91,6 +117,11 @@ fun CodeZone(root: Path, packageDir: Path, apk: Path, onOpen: () -> Unit) {
         val r = record
         if (r != null) {
             ZoneRow(t("code_open"), t("code_open_d", r.classes.toString()), onClick = onOpen)
+            ZoneRow(t("code_export"), t("code_export_d"), onClick = {
+                Chooser.folder(exportTitle, System.getProperty("user.home")) { dir ->
+                    if (dir != null) exportJob = startExport(packageDir, dir.resolve(packageDir.fileName.toString() + "-smali"))
+                }
+            })
             ZoneRow(t("code_again"), t("code_again_d", r.tool), onClick = start)
         } else {
             ZoneRow(t("code_decode"), t("code_decode_d"), onClick = start)
@@ -100,6 +131,16 @@ fun CodeZone(root: Path, packageDir: Path, apk: Path, onOpen: () -> Unit) {
     val spec = Tools.byId(DECODER)
     if (asking && spec != null) {
         LookupDialog(root = root, spec = spec, onDismiss = { asking = false }, why = t("code_needs"), onStarted = { afterTool = true })
+    }
+    val e = exported
+    if (e != null) {
+        AlertDialog(
+            onDismissRequest = { exported = null },
+            title = { Text(t("code_export")) },
+            text = { Text(t("code_export_done", e)) },
+            confirmButton = { TextButton(onClick = { exported = null }) { Text(t("close")) } },
+            dismissButton = { TextButton(onClick = { showInFolder(Path.of(e)) }) { Text(t("key_show")) } },
+        )
     }
     val f = failure
     if (f != null) {

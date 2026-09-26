@@ -637,6 +637,12 @@ class EditTest {
             assertEquals(edited, java.nio.file.Files.readString(decoded.resolve(entry)))
             assertFailsWith<io.gutapk.tools.CheckFailed> { code.apply(decoded, pkg, code.edits(pkg)) {} }
 
+            val sink = object : io.gutapk.job.JobSink { override fun emit(event: io.gutapk.job.JobEvent) {} }
+            val out = base.resolve("export")
+            assertEquals(1, code.export(pkg, out, sink) { false })
+            assertEquals(edited, java.nio.file.Files.readString(out.resolve(entry)))
+            assertFailsWith<io.gutapk.tools.CheckFailed> { code.export(pkg, out, sink) { false } }
+
             code.save(pkg, entry, original)
             assertEquals(emptyList(), code.edits(pkg))
             assertFailsWith<io.gutapk.tools.CheckFailed> { code.save(pkg, "../../evil.smali", "x") }

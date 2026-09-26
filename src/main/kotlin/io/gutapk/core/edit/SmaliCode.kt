@@ -221,6 +221,34 @@ object SmaliCode {
         }
     }
 
+    // Every class as a .smali file under target, the user's edits in place
+    // of the original, for their own editor or tools. A copy: changes made
+    // there are not read back. target must not exist yet.
+    fun export(packageDir: Path, target: Path, sink: JobSink, cancelled: () -> Boolean): Int {
+        if (Files.exists(target)) throw CheckFailed("$target already exists, it is not replaced")
+        val base = target.toAbsolutePath().normalize()
+        val edited = edits(packageDir).map { it.entry }.toSet()
+        var count = 0
+        ZipFile(zip(packageDir).toFile()).use { z ->
+            val entries = z.entries().toList().filter { classOf(it.name) != null }
+            entries.forEachIndexed { i, e ->
+                if (cancelled()) throw CancelledByUser()
+                if (i % 500 == 0) sink.emit(JobEvent.Progress(i.toLong(), entries.size.toLong()))
+                val out = base.resolve(e.name).normalize()
+                if (!out.startsWith(base)) throw CheckFailed("unsafe entry ${e.name}")
+                Files.createDirectories(out.parent)
+                if (e.name in edited) {
+                    Files.writeString(out, current(packageDir, e.name))
+                } else {
+                    z.getInputStream(e).use { Files.copy(it, out) }
+                }
+                count++
+            }
+        }
+        sink.emit(JobEvent.Line("$count classes written to $base"))
+        return count
+    }
+
     // Past this many lines a search says nothing more, "invoke" for one.
     const val GREP_CAP = 10_000
 
