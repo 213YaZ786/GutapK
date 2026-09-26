@@ -21,6 +21,10 @@ class SmaliClass(val dex: String, val name: String, val entry: String) {
 
 class SmaliRecord(val classes: Int, val tool: String)
 
+// A class the user changed: its entry and the sha256 of the text it was
+// changed from, so a rebuild on other code refuses instead of guessing.
+data class SmaliEdit(val entry: String, val originalSha256: String)
+
 // The app's code as smali, decoded once by APKEditor and kept with the
 // package in a zip: a big game gives some 260 MB of text (fx, 28407
 // classes, 18 s), which compresses well and is read one class at a time.
@@ -28,6 +32,8 @@ object SmaliCode {
     private const val DIR = "code"
     private const val ZIP = "smali.zip"
     private const val INFO = "code.properties"
+    private const val EDITS = "edits"
+    private const val INDEX = "edits.tsv"
 
     fun dir(packageDir: Path): Path = packageDir.resolve(DIR)
 
@@ -96,6 +102,83 @@ object SmaliCode {
             val e = z.getEntry(entry) ?: throw CheckFailed("$entry is not in the decoded code")
             z.getInputStream(e).use { String(it.readBytes(), Charsets.UTF_8) }
         }
+
+    private fun sha256(text: String): String =
+        java.security.MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+
+    // An entry is ours, from the zip, but it is still kept inside the edits
+    // folder whatever it holds.
+    private fun editFile(packageDir: Path, entry: String): Path {
+        val base = dir(packageDir).resolve(EDITS).toAbsolutePath().normalize()
+        val f = base.resolve(entry).normalize()
+        if (!f.startsWith(base) || f == base || !entry.endsWith(".smali")) throw CheckFailed("not a smali entry: $entry")
+        return f
+    }
+
+    fun edits(packageDir: Path): List<SmaliEdit> {
+        val index = dir(packageDir).resolve(INDEX)
+        if (!Files.isRegularFile(index)) return emptyList()
+        return Files.readAllLines(index).mapNotNull { line ->
+            val p = line.split('\t')
+            if (p.size != 2) return@mapNotNull null
+            SmaliEdit(p[0], p[1]).takeIf { runCatching { Files.isRegularFile(editFile(packageDir, it.entry)) }.getOrDefault(false) }
+        }
+    }
+
+    private fun writeIndex(packageDir: Path, edits: List<SmaliEdit>) {
+        val index = dir(packageDir).resolve(INDEX)
+        val part = index.resolveSibling("$INDEX.part")
+        Files.writeString(part, edits.sortedBy { it.entry }.joinToString("") { it.entry + "\t" + it.originalSha256 + "\n" })
+        Files.move(part, index, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+    }
+
+    fun edited(packageDir: Path, entry: String): String? =
+        editFile(packageDir, entry).takeIf { Files.isRegularFile(it) }?.let { Files.readString(it) }
+
+    // The text shown and edited: the user's version when there is one.
+    fun current(packageDir: Path, entry: String): String = edited(packageDir, entry) ?: read(packageDir, entry)
+
+    // Saving the original text back is the same as removing the edit.
+    fun save(packageDir: Path, entry: String, text: String) {
+        val original = read(packageDir, entry)
+        if (text == original) {
+            remove(packageDir, entry)
+            return
+        }
+        val f = editFile(packageDir, entry)
+        Files.createDirectories(f.parent)
+        val part = f.resolveSibling(f.fileName.toString() + ".part")
+        Files.writeString(part, text)
+        Files.move(part, f, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        writeIndex(packageDir, edits(packageDir).filter { it.entry != entry } + SmaliEdit(entry, sha256(original)))
+    }
+
+    fun remove(packageDir: Path, entry: String) {
+        Files.deleteIfExists(editFile(packageDir, entry))
+        writeIndex(packageDir, edits(packageDir).filter { it.entry != entry })
+    }
+
+    // At rebuild, into APKEditor's decoded smali folder, which holds the
+    // same text the zip was made from (checked on deskclock, 2698 of 2698
+    // files equal). Every class is checked before any is written, so a
+    // rebuild on other code is refused whole.
+    fun apply(smaliRoot: Path, packageDir: Path, edits: List<SmaliEdit>, log: (String) -> Unit) {
+        val base = smaliRoot.toAbsolutePath().normalize()
+        val checked = edits.map { e ->
+            val target = base.resolve(e.entry).normalize()
+            if (!target.startsWith(base) || !Files.isRegularFile(target)) throw CheckFailed("${e.entry} is not in the decoded code")
+            val found = sha256(Files.readString(target))
+            if (found != e.originalSha256) {
+                throw CheckFailed("${e.entry} is not the code the edit was made on. Decode the code again and redo the edit.")
+            }
+            val text = edited(packageDir, e.entry) ?: throw CheckFailed("the edit of ${e.entry} is missing")
+            target to text
+        }
+        checked.forEach { (target, text) ->
+            Files.writeString(target, text)
+            log("smali edited: ${base.relativize(target)}")
+        }
+    }
 
     // Every word must appear in the class name, in any order.
     fun search(all: List<SmaliClass>, query: String, limit: Int): Pair<Int, List<SmaliClass>> {

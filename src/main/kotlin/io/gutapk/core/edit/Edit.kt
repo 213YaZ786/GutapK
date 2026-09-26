@@ -51,6 +51,8 @@ data class Tweaks(
     // Byte patches to libil2cpp.so, each checked against the bytes it
     // replaces.
     val bytePatches: List<BytePatch> = emptyList(),
+    // The package folder when its smali edits are to be applied, else null.
+    val smaliEditsFrom: Path? = null,
 )
 
 class EditResult(val output: Path, val signature: SignatureInfo)
@@ -144,6 +146,16 @@ object Edit {
         if (!Files.isRegularFile(manifest)) throw CheckFailed("decoded APK has no AndroidManifest.xml")
         var text = Files.readString(manifest)
         ManifestShape.problem(text)?.let { throw CheckFailed("$it. GutapK's edits do not handle this form, nothing was changed.") }
+
+        // Before anything else touches the smali, stripping debug lines for
+        // one, so each class is still the text its edit was made on.
+        tweaks.smaliEditsFrom?.let { from ->
+            val edits = SmaliCode.edits(from)
+            if (edits.isNotEmpty()) {
+                if (engine != Engine.APKEDITOR) throw CheckFailed("smali edits are made on APKEditor's smali, apktool writes other text. Rebuild with APKEditor.")
+                SmaliCode.apply(decoded.resolve("smali"), from, edits) { sink.emit(JobEvent.Line(it)) }
+            }
+        }
 
         // First, so the language list written later sees what is kept.
         if (tweaks.keepAbi != null) keepAbi(decoded, tweaks.keepAbi, sink)

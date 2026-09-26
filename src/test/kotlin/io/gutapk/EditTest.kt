@@ -21,6 +21,7 @@ import java.nio.file.Path
 import javax.imageio.ImageIO
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -598,5 +599,44 @@ class EditTest {
         val all = listOfNotNull(code.classOf("classes/com/x/Main.smali"), code.classOf("classes/com/x/net/Api.smali"), c)
         assertEquals(listOf("com.x.net.Api"), code.search(all, "x API", 10).second.map { it.name })
         assertEquals(3, code.search(all, "com", 1).first)
+    }
+
+    // An edit is kept with the package and written at rebuild only over
+    // the exact text it was made on.
+    @Test
+    fun smaliEditsKeepAndApply() {
+        val base = java.nio.file.Files.createTempDirectory("gutapk-smali")
+        try {
+            val pkg = base.resolve("pkg")
+            val code = io.gutapk.core.edit.SmaliCode
+            java.nio.file.Files.createDirectories(code.dir(pkg))
+            val entry = "classes/com/x/Main.smali"
+            val original = ".class public Lcom/x/Main\n.method a()V\n    const-string v0, \"old\"\n.end method\n"
+            java.util.zip.ZipOutputStream(java.nio.file.Files.newOutputStream(code.dir(pkg).resolve("smali.zip"))).use { z ->
+                z.putNextEntry(java.util.zip.ZipEntry(entry))
+                z.write(original.toByteArray())
+                z.closeEntry()
+            }
+            java.nio.file.Files.writeString(code.dir(pkg).resolve("code.properties"), "classes=1\ntool=1.4.9\n")
+            assertEquals(original, code.current(pkg, entry))
+
+            val edited = original.replace("old", "new")
+            code.save(pkg, entry, edited)
+            assertEquals(1, code.edits(pkg).size)
+            assertEquals(edited, code.current(pkg, entry))
+
+            val decoded = base.resolve("decoded")
+            java.nio.file.Files.createDirectories(decoded.resolve("classes/com/x"))
+            java.nio.file.Files.writeString(decoded.resolve(entry), original)
+            code.apply(decoded, pkg, code.edits(pkg)) {}
+            assertEquals(edited, java.nio.file.Files.readString(decoded.resolve(entry)))
+            assertFailsWith<io.gutapk.tools.CheckFailed> { code.apply(decoded, pkg, code.edits(pkg)) {} }
+
+            code.save(pkg, entry, original)
+            assertEquals(emptyList(), code.edits(pkg))
+            assertFailsWith<io.gutapk.tools.CheckFailed> { code.save(pkg, "../../evil.smali", "x") }
+        } finally {
+            io.gutapk.tools.Storage.deleteTree(base, base.parent)
+        }
     }
 }
