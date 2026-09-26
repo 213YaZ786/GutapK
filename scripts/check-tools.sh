@@ -130,6 +130,31 @@ print(best[1], best[2], best[3], best[4])
 PY
 }
 
+# Same rules as Releases.parseNightlyRun and parseNightlyArtifact: the
+# newest successful push build, the artifact by name, GitHub's digest, the
+# file through nightly.link by run id. Prints version, url, size, sha256.
+# Exits 3 when the build has no such artifact left, which is a warning.
+github_nightly_latest() {
+    python3 - "$1" "$2" "$3" "$4" <<'PY'
+import json, re, sys
+runs, arts, repo, name = sys.argv[1:5]
+r = json.load(open(runs)).get('workflow_runs') or []
+if not r:
+    sys.exit('no successful build')
+run = r[0]
+m = re.fullmatch(r'(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z', run['created_at'])
+version = ''.join(m.group(1, 2, 3)) + '.' + ''.join(m.group(4, 5, 6)) + '-' + run['head_sha'][:7]
+for a in json.load(open(arts)).get('artifacts', []):
+    if a['name'] == name and not a.get('expired'):
+        digest = (a.get('digest') or '').lower()
+        if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
+            sys.exit('artifact has no digest')
+        print(version, 'https://nightly.link/%s/actions/runs/%s/%s.zip' % (repo, run['id'], name), a['size_in_bytes'], digest[7:])
+        sys.exit(0)
+sys.exit(3)
+PY
+}
+
 # The app asks GitHub without an account, 60 lookups an hour. CI shares its
 # addresses with other jobs, so it uses the job token when one is given.
 gh_auth=()
@@ -186,6 +211,40 @@ while IFS=$'\t' read -r id source index pkg entry execdir licence licenceurl wha
             fi
             if ! line="$(github_pre_latest "$SCRATCH/release.json" "$pkg")"; then
                 echo "::error::$id lookup failed in the release answer"
+                fail=1
+                continue
+            fi
+            read -r version url size sha256 <<< "$line"
+            sha1=-
+            ;;
+        github-nightly)
+            repo="${index#https://github.com/}"
+            workflow="${pkg%%@*}"
+            rest="${pkg#*@}"
+            branch="${rest%%/*}"
+            artifact="${rest#*/}"
+            if ! curl -fsSL --retry 3 --retry-delay 5 "${gh_auth[@]}" -H "Accept: application/vnd.github+json" \
+                    -o "$SCRATCH/runs.json" "https://api.github.com/repos/$repo/actions/workflows/$workflow/runs?branch=$branch&status=success&event=push&per_page=1"; then
+                echo "::error::$id build lookup failed on the GitHub API"
+                fail=1
+                continue
+            fi
+            run_id="$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["workflow_runs"]; print(r[0]["id"] if r else "")' "$SCRATCH/runs.json")"
+            if [ -z "$run_id" ] || ! curl -fsSL --retry 3 --retry-delay 5 "${gh_auth[@]}" -H "Accept: application/vnd.github+json" \
+                    -o "$SCRATCH/artifacts.json" "https://api.github.com/repos/$repo/actions/runs/$run_id/artifacts?per_page=100"; then
+                echo "::error::$id artifact lookup failed on the GitHub API"
+                fail=1
+                continue
+            fi
+            set +e
+            line="$(github_nightly_latest "$SCRATCH/runs.json" "$SCRATCH/artifacts.json" "$repo" "$artifact")"
+            code=$?
+            set -e
+            if [ "$code" -eq 3 ]; then
+                echo "::warning::$id newest build has no $artifact left, GitHub keeps them 90 days"
+                continue
+            elif [ "$code" -ne 0 ]; then
+                echo "::error::$id lookup failed in the build answer"
                 fail=1
                 continue
             fi
@@ -258,7 +317,7 @@ while IFS=$'\t' read -r id source index pkg entry execdir licence licenceurl wha
             fi
             ;;
     esac
-    rm -f "$file" "$SCRATCH/index.xml" "$SCRATCH/release.json"
+    rm -f "$file" "$SCRATCH/index.xml" "$SCRATCH/release.json" "$SCRATCH/runs.json" "$SCRATCH/artifacts.json"
 done < "$TABLE"
 
 if [ "$checked" -eq 0 ]; then

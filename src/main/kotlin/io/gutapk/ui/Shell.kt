@@ -318,6 +318,8 @@ fun Shell(
                                     version = version,
                                     signKey = settings.signKey,
                                     onSignKey = { onChange(settings.copy(signKey = it.name)) },
+                                    dumper = settings.dumper,
+                                    onDumper = { onChange(settings.copy(dumper = it)) },
                                     onBack = { screen = Screen.HOME },
                                 )
                             } else {

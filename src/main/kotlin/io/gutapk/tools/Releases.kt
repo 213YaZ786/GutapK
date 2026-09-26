@@ -27,6 +27,15 @@ object Releases {
             parseGithub(fetchText(api, githubHeaders()), spec.pkg)
                 ?: throw IOException("no asset matching ${spec.pkg} in the latest release of $repo")
         }
+        ToolSource.GITHUB_NIGHTLY -> {
+            val repo = githubRepo(spec.index)
+            val (workflow, branch, artifact) = nightlyParts(spec.pkg) ?: throw IOException("bad nightly package ${spec.pkg}")
+            val runs = "https://api.github.com/repos/$repo/actions/workflows/$workflow/runs?branch=$branch&status=success&event=push&per_page=1"
+            val run = parseNightlyRun(fetchText(runs, githubHeaders())) ?: throw IOException("no successful $workflow build on $branch of $repo")
+            val artifacts = "https://api.github.com/repos/$repo/actions/runs/${run.id}/artifacts?per_page=100"
+            parseNightlyArtifact(fetchText(artifacts, githubHeaders()), repo, run, artifact)
+                ?: throw IOException("the newest $workflow build of $repo has no $artifact left, GitHub keeps them 90 days. The release works meanwhile.")
+        }
         ToolSource.GITHUB_PRE -> {
             val repo = githubRepo(spec.index)
             val api = "https://api.github.com/repos/$repo/releases?per_page=$PRE_PAGE"
@@ -82,6 +91,41 @@ object Releases {
         val hex = digest.removePrefix("sha256:")
         val sha256 = if (digest.startsWith("sha256:") && Regex("[0-9a-f]{64}").matches(hex)) hex else null
         return Release(version = version, url = url, size = size, sha1 = null, sha256 = sha256)
+    }
+
+    class NightlyRun(val id: Long, val sha: String, val created: String)
+
+    // workflow@branch/artifact, each part a plain name, so the table cannot
+    // turn the lookup into another path.
+    fun nightlyParts(pkg: String): Triple<String, String, String>? {
+        val m = Regex("""([A-Za-z0-9_.-]+\.ya?ml)@([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)""").matchEntire(pkg) ?: return null
+        return Triple(m.groupValues[1], m.groupValues[2], m.groupValues[3])
+    }
+
+    fun parseNightlyRun(json: String): NightlyRun? {
+        val run = ((Json.parse(json) as? Map<*, *>)?.get("workflow_runs") as? List<*>)?.firstOrNull() as? Map<*, *> ?: return null
+        val id = run["id"] as? Long ?: return null
+        val sha = (run["head_sha"] as? String)?.takeIf { Regex("[0-9a-f]{40}").matches(it) } ?: return null
+        val created = run["created_at"] as? String ?: return null
+        return NightlyRun(id, sha, created)
+    }
+
+    // GitHub's own digest is the check. The file itself comes through
+    // nightly.link, which serves an artifact without a GitHub account, by
+    // run id so it is this very build. The version is the build time and
+    // commit, 20260912.123713-b5ad444, which orders like a version.
+    fun parseNightlyArtifact(json: String, repo: String, run: NightlyRun, name: String): Release? {
+        val list = ((Json.parse(json) as? Map<*, *>)?.get("artifacts") as? List<*>)?.filterIsInstance<Map<*, *>>() ?: return null
+        val a = list.firstOrNull { it["name"] == name && it["expired"] != true } ?: return null
+        val size = a["size_in_bytes"] as? Long ?: return null
+        val digest = (a["digest"] as? String)?.trim()?.lowercase().orEmpty()
+        val hex = digest.removePrefix("sha256:")
+        if (!digest.startsWith("sha256:") || !Regex("[0-9a-f]{64}").matches(hex)) return null
+        val stamp = Regex("""(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z""").matchEntire(run.created) ?: return null
+        val g = stamp.groupValues
+        val version = g[1] + g[2] + g[3] + "." + g[4] + g[5] + g[6] + "-" + run.sha.take(7)
+        val url = "https://nightly.link/$repo/actions/runs/${run.id}/$name.zip"
+        return Release(version = version, url = url, size = size, sha1 = null, sha256 = hex)
     }
 
     // Dotted numeric versions, compared part by part. A missing part is 0,

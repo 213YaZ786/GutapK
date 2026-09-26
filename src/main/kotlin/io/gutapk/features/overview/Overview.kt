@@ -168,6 +168,8 @@ fun OverviewScreen(
     version: String,
     signKey: String?,
     onSignKey: (KeyChoice) -> Unit,
+    dumper: String,
+    onDumper: (String) -> Unit,
     onBack: () -> Unit,
 ) {
     val original = dir.resolve(Packages.ORIGINAL)
@@ -287,7 +289,20 @@ fun OverviewScreen(
             onBack = { methods = false },
         )
     } else {
-        OverviewPage(dir, root, loaded, info, original, detection, running, actionRow, onBack, onMethods = { methods = true }) {
+        OverviewPage(
+            dir,
+            root,
+            loaded,
+            info,
+            original,
+            detection,
+            running,
+            actionRow,
+            onBack,
+            unityZone = { u ->
+                if (u != null) UnityZone(u, root, dir, original, dumper, onDumper, onMethods = { methods = true })
+            },
+        ) {
             if (root != null) {
                 CodeZone(
                     root,
@@ -378,7 +393,7 @@ private fun OverviewPage(
     running: (@Composable () -> Unit)?,
     actionRow: @Composable () -> Unit,
     onBack: () -> Unit,
-    onMethods: () -> Unit,
+    unityZone: @Composable (UnityInfo?) -> Unit,
     codeZone: @Composable () -> Unit,
 ) {
     Page(
@@ -393,7 +408,7 @@ private fun OverviewPage(
         when {
             loaded == null -> BodyText(t("ov_reading"))
             info == null -> Zone(t("ov_error")) { BodyText(loaded.error ?: "") }
-            else -> Body(loaded, info, original, root, detection, onMethods, codeZone)
+            else -> Body(loaded, info, original, root, detection, unityZone, codeZone)
         }
     }
 }
@@ -427,7 +442,7 @@ private fun Header(l: Loaded) {
 }
 
 @Composable
-private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?, detection: Detection?, onMethods: () -> Unit, codeZone: @Composable () -> Unit) {
+private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?, detection: Detection?, unityZone: @Composable (UnityInfo?) -> Unit, codeZone: @Composable () -> Unit) {
     var showPermissions by remember { mutableStateOf(false) }
     val identity: @Composable () -> Unit = {
         Zone(t("ov_identity")) {
@@ -536,7 +551,7 @@ private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?, detectio
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(24.dp)) {
                     signature()
-                    l.unity?.let { UnityZone(it, root, original.parent, original, onMethods) }
+                    unityZone(l.unity)
                     codeZone()
                     file()
                 }
@@ -546,7 +561,7 @@ private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?, detectio
                 identity()
                 signature()
                 content()
-                l.unity?.let { UnityZone(it, root, original.parent, original, onMethods) }
+                unityZone(l.unity)
                 codeZone()
                 permissions()
                 if (root != null) TrackersZone(root, detection)

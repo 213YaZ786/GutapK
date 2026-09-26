@@ -24,6 +24,8 @@ data class Settings(
     // The signing key the user chose, a KeyChoice name. None until chosen:
     // nothing is signed with a key the user did not pick.
     val signKey: String? = null,
+    // The IL2CPP dumper, its id in tools.tsv.
+    val dumper: String = "cpp2il",
 )
 
 object SettingsStore {
@@ -47,6 +49,7 @@ object SettingsStore {
             root = p.getProperty("root")?.takeIf { it.isNotBlank() },
             checkUpdates = p.getProperty("updates") != "false",
             signKey = p.getProperty("signing")?.takeIf { it.isNotBlank() },
+            dumper = p.getProperty("dumper")?.takeIf { it.isNotBlank() } ?: "cpp2il",
         )
     }
 
@@ -61,6 +64,7 @@ object SettingsStore {
         s.root?.let { p.setProperty("root", it) }
         p.setProperty("updates", s.checkUpdates.toString())
         s.signKey?.let { p.setProperty("signing", it) }
+        p.setProperty("dumper", s.dumper)
         // Written next to the target, then moved. A crash mid-write leaves
         // the old file intact, and the temporary never touches /tmp.
         val part = dir.resolve("settings.properties.part")

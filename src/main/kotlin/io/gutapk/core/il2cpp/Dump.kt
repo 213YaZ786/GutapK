@@ -29,7 +29,8 @@ data class MethodEntry(
 }
 
 // What an index was made from, so a stale one is recognised.
-data class DumpRecord(val abi: String, val count: Int, val libSha256: String, val tool: String, val unity: String)
+// dumper is the tool's id in tools.tsv, tool its version.
+data class DumpRecord(val abi: String, val count: Int, val libSha256: String, val tool: String, val unity: String, val dumper: String = "cpp2il")
 
 // Cpp2IL's diffable-cs output, one file per type, read back line by line.
 // Every method it could place carries an Address attribute, followed by
@@ -131,6 +132,7 @@ object MethodIndex {
             libSha256 = p.getProperty("lib.sha256") ?: "",
             tool = p.getProperty("tool") ?: "",
             unity = p.getProperty("unity") ?: "",
+            dumper = p.getProperty("dumper") ?: "cpp2il",
         )
     }
 
@@ -173,6 +175,7 @@ object MethodIndex {
         p.setProperty("lib.sha256", record.libSha256)
         p.setProperty("tool", record.tool)
         p.setProperty("unity", record.unity)
+        p.setProperty("dumper", record.dumper)
         Files.newBufferedWriter(dir.resolve(INFO)).use { p.store(it, null) }
     }
 }
@@ -188,6 +191,7 @@ object Il2CppDump {
 
     fun run(
         tool: Path,
+        toolId: String,
         toolVersion: String,
         packageDir: Path,
         apk: Path,
@@ -229,7 +233,7 @@ object Il2CppDump {
                 "--output-as", "diffable-cs",
                 "--output-to", output.toString(),
             )
-            sink.emit(JobEvent.Line("cpp2il $toolVersion on $abi, Unity $version"))
+            sink.emit(JobEvent.Line("$toolId $toolVersion on $abi, Unity $version"))
             val pb = ProcessBuilder(cmd).redirectErrorStream(true).directory(work.toFile())
             // .NET unpacks itself and writes temporary files. Both stay in
             // the work folder, never in ~/.net or /tmp.
@@ -250,7 +254,7 @@ object Il2CppDump {
             if (!Files.isDirectory(cs)) throw CheckFailed("Cpp2IL wrote no C# output")
             val entries = DumpParser.parse(cs)
             if (entries.isEmpty()) throw CheckFailed("Cpp2IL placed no method")
-            val record = DumpRecord(abi, entries.size, libSha, toolVersion, version)
+            val record = DumpRecord(abi, entries.size, libSha, toolVersion, version, toolId)
             MethodIndex.write(packageDir, entries, record)
             sink.emit(JobEvent.Line("${entries.size} methods indexed for $abi"))
             return record

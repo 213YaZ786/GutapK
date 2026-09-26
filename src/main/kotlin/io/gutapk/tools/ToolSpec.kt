@@ -6,6 +6,10 @@ enum class ToolSource(val tag: String) {
     // Like github, for a publisher that only ships pre-releases. Chosen per
     // tool in the table, never as a fallback.
     GITHUB_PRE("github-pre"),
+    // The newest successful build of a GitHub Actions workflow, for a
+    // publisher whose releases lag its code. package is
+    // workflow@branch/artifact.
+    GITHUB_NIGHTLY("github-nightly"),
 }
 
 // In the execDir column, a tool whose program is a single file, a jar, with
@@ -61,6 +65,7 @@ object Tools {
             // For GitHub the package column is the asset name pattern. A bad
             // pattern fails here, at load, not at the first lookup.
             if (source == ToolSource.GITHUB || source == ToolSource.GITHUB_PRE) Regex(f[3])
+            if (source == ToolSource.GITHUB_NIGHTLY) require(Releases.nightlyParts(f[3]) != null) { "bad nightly package ${f[3]}" }
             ToolSpec(
                 id = f[0],
                 source = source,

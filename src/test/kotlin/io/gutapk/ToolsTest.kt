@@ -191,6 +191,29 @@ class ToolsTest {
         assertNull(Releases.parseGithubList("[]", pattern))
     }
 
+    // Shapes of the workflow runs and run artifacts answers, with Cpp2IL's
+    // values as GitHub served them on 2026-09-26.
+    @Test
+    fun readsANightlyBuild() {
+        val spec = assertNotNull(Tools.byId("cpp2il-nightly"))
+        assertEquals(Triple("dotnet-core.yml", "development", "Cpp2IL-net9-linux-x64"), Releases.nightlyParts(spec.pkg))
+        assertNull(Releases.nightlyParts("../x.yml@main/a"))
+        assertNull(Releases.nightlyParts("build.yml@main/a/../b"))
+        val runs = """{"total_count": 2, "workflow_runs": [{"id": 34694167702, "head_sha": "b5ad444f0000000000000000000000000000abcd", "created_at": "2026-09-12T12:37:13Z"}]}"""
+        val run = assertNotNull(Releases.parseNightlyRun(runs))
+        assertNull(Releases.parseNightlyRun("""{"workflow_runs": []}"""))
+        val artifacts = """{"artifacts": [
+            {"name": "Cpp2IL-net9-linux-arm64", "size_in_bytes": 10078197, "expired": false, "digest": "sha256:0e7a7aaeb4c8b8b63c048e22fdd310d9e2e881cfd6f04fd64172e59ce73de2bf"},
+            {"name": "Cpp2IL-net9-linux-x64", "size_in_bytes": 10358526, "expired": false, "digest": "sha256:82feb1b28651ea50be9575883233b927277efdb77d0407d56b1c09968833de43"}]}"""
+        val r = assertNotNull(Releases.parseNightlyArtifact(artifacts, "SamboyCoding/Cpp2IL", run, "Cpp2IL-net9-linux-x64"))
+        assertEquals("20260912.123713-b5ad444", r.version)
+        assertEquals("https://nightly.link/SamboyCoding/Cpp2IL/actions/runs/34694167702/Cpp2IL-net9-linux-x64.zip", r.url)
+        assertEquals(10358526L, r.size)
+        assertEquals("82feb1b28651ea50be9575883233b927277efdb77d0407d56b1c09968833de43", r.sha256)
+        assertNull(Releases.parseNightlyArtifact(artifacts.replace("\"expired\": false, \"digest\": \"sha256:82", "\"expired\": true, \"digest\": \"sha256:82"), "SamboyCoding/Cpp2IL", run, "Cpp2IL-net9-linux-x64"))
+        assertTrue(Releases.compare("20260926.010203-aaaaaaa", r.version) > 0)
+    }
+
     @Test
     fun githubRepoStaysOnGithub() {
         assertEquals("REAndroid/APKEditor", Releases.githubRepo("https://github.com/REAndroid/APKEditor"))
