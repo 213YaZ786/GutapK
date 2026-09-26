@@ -1,6 +1,9 @@
 package io.gutapk.device
 
 import io.gutapk.job.CancelWatch
+import io.gutapk.tools.Installer
+import io.gutapk.tools.ToolStatus
+import io.gutapk.tools.Tools
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -56,6 +59,14 @@ object Adb {
         reader.join(5000)
         if (process.exitValue() != 0) throw IOException("adb ${args.joinToString(" ")} exited with ${process.exitValue()}")
         return bytes
+    }
+
+    // The adb GutapK installed, checked file by file before it is used.
+    fun own(root: Path): Path? {
+        val spec = Tools.byId("platform-tools") ?: return null
+        val status = Installer.status(root, spec) as? ToolStatus.Installed ?: return null
+        if (!Installer.verify(root, spec)) return null
+        return Installer.entry(root, spec, status.version)
     }
 
     fun devices(adb: Path): List<AdbDevice> = parseDevices(run(adb, listOf("devices", "-l")).out)

@@ -158,6 +158,7 @@ fun OverviewScreen(
     // instance, must not open this screen's report.
     var started by remember { mutableStateOf<Job?>(null) }
     var report by remember { mutableStateOf<SignReport?>(null) }
+    var trying by remember { mutableStateOf<Path?>(null) }
     // The edit behind the running job, and the one a failed APKEditor run
     // offers to retry with apktool.
     var lastPlan by remember { mutableStateOf<EditPlan?>(null) }
@@ -283,8 +284,18 @@ fun OverviewScreen(
                 retryPlan = null
             },
             onRetry = retry,
+            onTry = if (root != null) {
+                { file ->
+                    report = null
+                    trying = file
+                }
+            } else {
+                null
+            },
         )
     }
+    val tryFile = trying
+    if (tryFile != null && root != null) TryOutDialog(root, tryFile, onClose = { trying = null })
 }
 
 @Composable

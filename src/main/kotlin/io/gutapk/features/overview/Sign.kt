@@ -2,6 +2,7 @@ package io.gutapk.features.overview
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
@@ -105,7 +106,7 @@ sealed interface SignReport {
 // The result is read back from the file itself, not from what the job
 // believed it wrote.
 @Composable
-fun SignReportDialog(report: SignReport, onClose: () -> Unit, onRetry: (() -> Unit)? = null) {
+fun SignReportDialog(report: SignReport, onClose: () -> Unit, onRetry: (() -> Unit)? = null, onTry: ((Path) -> Unit)? = null) {
     AlertDialog(
         onDismissRequest = onClose,
         title = { Text(t(if (report is SignReport.Done) "signed_title" else "sign_failed")) },
@@ -142,7 +143,10 @@ fun SignReportDialog(report: SignReport, onClose: () -> Unit, onRetry: (() -> Un
         confirmButton = { TextButton(onClick = onClose) { Text(t("close")) } },
         dismissButton = {
             if (report is SignReport.Done) {
-                TextButton(onClick = { showInFolder(report.file) }) { Text(t("show_folder")) }
+                Row {
+                    TextButton(onClick = { showInFolder(report.file) }) { Text(t("show_folder")) }
+                    if (onTry != null) TextButton(onClick = { onTry(report.file) }) { Text(t("try_button")) }
+                }
             } else if (onRetry != null) {
                 TextButton(onClick = onRetry) { Text(t("edit_retry")) }
             }

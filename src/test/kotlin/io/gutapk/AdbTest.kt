@@ -414,4 +414,23 @@ class AdbTest {
         kotlin.test.assertFailsWith<IllegalArgumentException> { SystemInfo.putCommand("global", "a b", "1") }
         kotlin.test.assertFailsWith<IllegalArgumentException> { SystemInfo.listCommand("root") }
     }
+
+    // What the try on the phone dialog lists is what it runs, in order.
+    @Test
+    fun triesOutInOrder() {
+        val apk = java.nio.file.Path.of("/r/out/a.apk")
+        val plan = io.gutapk.device.TryOut.plan("X1", apk, "com.a", uninstallFirst = true)
+        assertEquals(
+            listOf(
+                "adb -s X1 uninstall com.a",
+                "adb -s X1 install -r /r/out/a.apk",
+                "adb -s X1 shell monkey --pct-syskeys 0 -p 'com.a' -c android.intent.category.LAUNCHER 1",
+                "adb -s X1 logcat -d -v threadtime -t 300 --pid=<pid>",
+            ),
+            plan,
+        )
+        assertEquals(3, io.gutapk.device.TryOut.plan("X1", apk, "com.a", uninstallFirst = false).size)
+        assertEquals(listOf("-s", "X1", "logcat", "-d", "-v", "threadtime", "-t", "300", "-b", "crash"), io.gutapk.device.TryOut.logArgs("X1", null))
+        assertEquals("--pid=42", io.gutapk.device.TryOut.logArgs("X1", 42).last())
+    }
 }

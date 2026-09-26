@@ -29,9 +29,7 @@ import io.gutapk.device.DeviceState
 import io.gutapk.job.JobState
 import io.gutapk.registry.Feature
 import io.gutapk.registry.Source
-import io.gutapk.tools.Installer
 import io.gutapk.tools.RunLog
-import io.gutapk.tools.ToolStatus
 import io.gutapk.tools.Tools
 import io.gutapk.ui.BodyText
 import io.gutapk.ui.GIcons
@@ -68,12 +66,7 @@ private sealed interface Link {
 
 // The adb GutapK installed, verified once per visit: hashing it every two
 // seconds would cost more than the poll itself.
-private fun ownAdb(root: Path): Path? {
-    val spec = Tools.byId(TOOL) ?: return null
-    val status = Installer.status(root, spec) as? ToolStatus.Installed ?: return null
-    if (!Installer.verify(root, spec)) return null
-    return Installer.entry(root, spec, status.version)
-}
+private fun ownAdb(root: Path): Path? = Adb.own(root)
 
 // A server of another version would be restarted by any adb command, the
 // user's own adb cut off without a word. So the version is read over the
