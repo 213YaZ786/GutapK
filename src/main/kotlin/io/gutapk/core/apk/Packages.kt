@@ -21,6 +21,8 @@ object Packages {
     const val ORIGINAL = "original.apk"
     private const val INFO = "package.properties"
     const val PARTS = "parts"
+    private const val LAYOUT = "layout"
+    private const val LAYOUT_PARTS = "parts"
 
     fun dir(root: Path): Path = root.resolve("packages")
 
@@ -33,59 +35,75 @@ object Packages {
         val sha = Hash.of(source, "SHA-256")
 
         sink.emit(JobEvent.Step("copy", 3, 3))
-        val target = place(root, source, info, sha, sha)
+        val target = place(root, source, info, sha)
         writeInfo(target, info, sha, source.toAbsolutePath().toString(), null)
         sink.emit(JobEvent.Line("opened ${info.packageName} into $target"))
         return target
     }
 
-    // A split set, merged by APKEditor into one APK that every screen reads
-    // like any other. The parts are kept as they came, installing them as a
-    // set needs them. merge turns the folder of parts into one APK.
-    fun importSet(
-        root: Path,
-        sources: List<Path>,
-        work: Path,
-        sink: JobSink,
-        cancelled: () -> Boolean,
-        merge: (Path, Path) -> Unit,
-    ): Path {
-        sink.emit(JobEvent.Step("read", 1, 4))
+    // A split set, kept as its parts. original.apk is the base, a hard link
+    // to parts/base.apk when the disk allows it, so screens that read one
+    // APK read the base and the parts cost no second copy.
+    fun importSet(root: Path, sources: List<Path>, work: Path, sink: JobSink, cancelled: () -> Boolean): Path {
+        sink.emit(JobEvent.Step("read", 1, 3))
         val set = SplitSet.gather(sources, work, sink, cancelled)
         if (set.problem != null) throw SetIncomplete(set)
+        val base = set.base ?: throw SetIncomplete(set)
         val sha = set.sha256()
 
-        sink.emit(JobEvent.Step("merge", 2, 4))
-        val merged = work.resolve("merged.apk")
-        merge(set.dir, merged)
-        if (!Files.isRegularFile(merged)) throw ApkFormatError("the merge produced no APK")
+        sink.emit(JobEvent.Step("check", 2, 3))
+        val info = ApkReader.read(base.file)
+        if (info.packageName.isBlank()) throw ApkFormatError("no package name in the base manifest")
 
-        sink.emit(JobEvent.Step("check", 3, 4))
-        val info = ApkReader.read(merged)
-        if (info.packageName.isBlank()) throw ApkFormatError("no package name in the merged manifest")
-
-        sink.emit(JobEvent.Step("copy", 4, 4))
+        sink.emit(JobEvent.Step("copy", 3, 3))
         val described = sources.joinToString("\n") { it.toAbsolutePath().toString() }
-        val target = place(root, merged, info, sha, null)
+        val target = dir(root).resolve("${safe(info.packageName)}-${sha.take(8)}")
         val parts = target.resolve(PARTS)
         Files.createDirectories(parts)
         set.parts.forEach { p ->
             val to = parts.resolve(p.file.fileName.toString())
             if (!Files.isRegularFile(to)) Files.copy(p.file, to, StandardCopyOption.REPLACE_EXISTING)
         }
+        linkBase(target)
         writeInfo(target, info, sha, described, set)
-        sink.emit(JobEvent.Line("merged ${set.parts.size} parts of ${info.packageName} into $target"))
+        sink.emit(JobEvent.Line("kept ${set.parts.size} parts of ${info.packageName} in $target, nothing merged"))
         return target
     }
 
+    // Before 0.1.93 a set was merged and original.apk was the merge. The
+    // dex and the libraries were the parts' own bytes, so the code, the
+    // patches and the method index made on it stay valid on the base.
+    fun migrate(dir: Path) {
+        val p = Properties()
+        runCatching { Files.newBufferedReader(dir.resolve(INFO)).use { p.load(it) } }
+        if (p.getProperty("parts") == null || p.getProperty(LAYOUT) == LAYOUT_PARTS) return
+        if (!Files.isRegularFile(dir.resolve(PARTS).resolve("base.apk"))) return
+        linkBase(dir)
+        p.setProperty(LAYOUT, LAYOUT_PARTS)
+        Files.newBufferedWriter(dir.resolve(INFO)).use { p.store(it, null) }
+    }
+
+    private fun linkBase(target: Path) {
+        val base = target.resolve(PARTS).resolve("base.apk")
+        val original = target.resolve(ORIGINAL)
+        if (Files.isRegularFile(original) && runCatching { Files.isSameFile(original, base) }.getOrDefault(false)) return
+        val part = target.resolve("$ORIGINAL.part")
+        Files.deleteIfExists(part)
+        try {
+            runCatching { Files.createLink(part, base) }.getOrElse { Files.copy(base, part) }
+            Files.move(part, original, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        } finally {
+            Files.deleteIfExists(part)
+        }
+    }
+
     // The folder is named after the package and the sha of what the user
-    // gave, never after the merge output, which may differ between runs. A
-    // single APK is its own original, so its copy is checked against it.
-    private fun place(root: Path, file: Path, info: ApkInfo, sha: String, expected: String?): Path {
+    // gave. A single APK is its own original, so its copy is checked
+    // against it.
+    private fun place(root: Path, file: Path, info: ApkInfo, sha: String): Path {
         val target = dir(root).resolve("${safe(info.packageName)}-${sha.take(8)}")
         val original = target.resolve(ORIGINAL)
-        val kept = Files.isRegularFile(original) &&
-            (if (expected != null) Hash.of(original, "SHA-256") == expected else Files.isRegularFile(target.resolve(INFO)))
+        val kept = Files.isRegularFile(original) && Hash.of(original, "SHA-256") == sha
         if (!kept) {
             Files.createDirectories(target)
             val part = target.resolve("$ORIGINAL.part")
@@ -108,12 +126,13 @@ object Packages {
         p.setProperty("source", from)
         if (set != null) {
             p.setProperty("parts", set.parts.joinToString(",") { it.split ?: "base" })
+            p.setProperty(LAYOUT, LAYOUT_PARTS)
             if (set.obbs.isNotEmpty()) p.setProperty("obb", set.obbs.joinToString(",") { it.name })
         }
         Files.newBufferedWriter(target.resolve(INFO)).use { p.store(it, null) }
     }
 
-    // What a merged set was made of, for the overview. Null for a single APK.
+    // What a set is made of, for the overview. Null for a single APK.
     fun setRecord(dir: Path): SetRecord? {
         val p = Properties()
         runCatching { Files.newBufferedReader(dir.resolve(INFO)).use { p.load(it) } }

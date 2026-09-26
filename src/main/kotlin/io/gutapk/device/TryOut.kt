@@ -1,13 +1,15 @@
 package io.gutapk.device
 
+import io.gutapk.core.apk.Parts
 import io.gutapk.job.JobEvent
 import io.gutapk.job.JobSink
 import io.gutapk.tools.CancelledByUser
 import java.io.IOException
 import java.nio.file.Path
 
-// A freshly signed APK installed on one phone, opened, and what it logged
-// read back, for the edit, sign and try loop. The commands are the ones
+// A freshly signed APK, or every part of a signed set, installed on one
+// phone, opened, and what it logged read back, for the edit, sign and try
+// loop. The commands are the ones
 // listed to the user before anything runs, in the same order.
 object TryOut {
     private const val LOG_LINES = 300
@@ -28,7 +30,7 @@ object TryOut {
 
     fun plan(serial: String, apk: Path, pkg: String, uninstallFirst: Boolean): List<String> = buildList {
         if (uninstallFirst) add("adb " + uninstallArgs(serial, pkg).joinToString(" "))
-        add("adb " + DeviceInstall.args(serial, listOf(apk), false).joinToString(" "))
+        add("adb " + DeviceInstall.args(serial, Parts.apks(apk), false).joinToString(" "))
         add("adb -s $serial shell " + launchCommand(pkg))
         add("adb " + logArgs(serial, null).dropLast(2).joinToString(" ") + " --pid=<pid>")
     }
@@ -44,7 +46,7 @@ object TryOut {
             r.out.lines().filter { it.isNotBlank() }.forEach { sink.emit(JobEvent.Line(it.trim())) }
         }
         sink.emit(JobEvent.Step("install", step++, steps))
-        DeviceInstall.install(adb, serial, listOf(apk), false, sink, cancelled)
+        DeviceInstall.install(adb, serial, Parts.apks(apk), false, sink, cancelled)
 
         sink.emit(JobEvent.Step("open", step++, steps))
         val command = launchCommand(pkg)

@@ -27,6 +27,10 @@ object ApkSigning {
         return packageDir.resolve("out").resolve(safe(packageName) + v + "-signed-" + choice.name.lowercase() + ".apk")
     }
 
+    // A split set is signed into a folder, one APK per part.
+    fun setOutput(packageDir: Path, packageName: String, version: String?, choice: KeyChoice): Path =
+        output(packageDir, packageName, version, choice).let { it.resolveSibling(it.fileName.toString().removeSuffix(".apk")) }
+
     // apksig aligns every stored entry while it signs, 4 bytes, and native
     // libraries on 16 KB, the page size of Android 15 devices that use it,
     // which is also a multiple of 4 KB. No separate zipalign pass. The result

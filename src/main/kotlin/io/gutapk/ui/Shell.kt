@@ -27,7 +27,6 @@ import io.gutapk.core.apk.Packages
 import io.gutapk.core.apk.SetIncomplete
 import io.gutapk.core.apk.SetProblem
 import io.gutapk.core.apk.SplitSet
-import io.gutapk.core.edit.Edit
 import io.gutapk.features.device.DeviceScreen
 import io.gutapk.features.overview.OverviewScreen
 import io.gutapk.job.JobQueue
@@ -46,10 +45,7 @@ import io.gutapk.settings.SettingsStore
 import io.gutapk.tools.Release
 import io.gutapk.tools.RunSession
 import io.gutapk.tools.SelfUpdate
-import io.gutapk.tools.Installer
 import io.gutapk.tools.Storage
-import io.gutapk.tools.ToolStatus
-import io.gutapk.tools.Tools
 import io.gutapk.tools.Update
 import io.gutapk.tools.Updates
 import kotlinx.coroutines.Dispatchers
@@ -104,11 +100,7 @@ private sealed interface ImportNeed {
     val sources: List<Path>
 
     data class Parts(override val sources: List<Path>, val set: GatheredSet) : ImportNeed
-
-    data class Merger(override val sources: List<Path>) : ImportNeed
 }
-
-private class MergerMissing : Exception("APKEditor is not installed")
 
 // An ordinary APK takes the short path. A lone split, a base that needs its
 // splits, several files or an archive go the set way. A job that stops on a
@@ -123,16 +115,9 @@ private fun startImport(root: Path, sources: List<Path>, onNeed: (ImportNeed) ->
             val work = RunSession.workDir?.resolve("import") ?: throw IOException("no work folder for this run")
             Storage.deleteTree(work, work.parent)
             try {
-                job.result = Packages.importSet(root, sources, work, job, { job.cancelRequested }) { parts, out ->
-                    val spec = Tools.byId("apkeditor") ?: throw IOException("apkeditor is not in the tool table")
-                    val status = Installer.status(root, spec) as? ToolStatus.Installed
-                    if (status == null || !Installer.verify(root, spec)) throw MergerMissing()
-                    Edit.merge(Installer.entry(root, spec, status.version), parts, out, work, job) { job.cancelRequested }
-                }.toString()
+                job.result = Packages.importSet(root, sources, work, job) { job.cancelRequested }.toString()
             } catch (e: SetIncomplete) {
                 SwingUtilities.invokeLater { onNeed(ImportNeed.Parts(sources, e.set)) }
-            } catch (e: MergerMissing) {
-                SwingUtilities.invokeLater { onNeed(ImportNeed.Merger(sources)) }
             } finally {
                 Storage.deleteTree(work, work.parent)
             }
@@ -167,8 +152,6 @@ fun Shell(
     var overviewDir by remember { mutableStateOf<Path?>(null) }
     var importError by remember { mutableStateOf<String?>(null) }
     var importNeed by remember { mutableStateOf<ImportNeed?>(null) }
-    // Files waiting for APKEditor's download to end.
-    var afterMerger by remember { mutableStateOf<List<Path>?>(null) }
     var dropping by remember { mutableStateOf(false) }
     var dropRejected by remember { mutableStateOf(false) }
     // The licence opens from the Home footer and from Settings. Back returns
@@ -208,24 +191,6 @@ fun Shell(
                 JobState.FAILED -> {
                     handled = job
                     importError = jobView.message
-                }
-                else -> {}
-            }
-        }
-    }
-    // The download the import asked for ended, the import goes on with the
-    // same files. A failed or cancelled download drops them.
-    LaunchedEffect(jobView) {
-        val waiting = afterMerger
-        val r = RunSession.root
-        if (waiting != null && r != null && jobView != null && jobView.title == "apkeditor") {
-            when (jobView.state) {
-                JobState.DONE -> {
-                    afterMerger = null
-                    startImport(r, waiting) { importNeed = it }
-                }
-                JobState.FAILED, JobState.CANCELLED -> {
-                    afterMerger = null
                 }
                 else -> {}
             }
@@ -392,7 +357,7 @@ fun Shell(
                         Screen.DEVICE -> DeviceScreen(
                             root,
                             // Pulled APKs are imported like files the user
-                            // picked, a split set merged the same way.
+                            // picked, a split set the same way.
                             onPulled = { files -> if (root != null) startImport(root, files) { importNeed = it } },
                             onBack = { screen = Screen.HOME },
                         )
@@ -419,16 +384,6 @@ fun Shell(
                                 }
                             },
                             onDismiss = { importNeed = null },
-                        )
-                    }
-                    val merger = Tools.byId("apkeditor")
-                    if (need is ImportNeed.Merger && root != null && merger != null) {
-                        LookupDialog(
-                            root = root,
-                            spec = merger,
-                            onDismiss = { importNeed = null },
-                            why = t("set_merge_needs"),
-                            onStarted = { afterMerger = need.sources },
                         )
                     }
                     if (dropRejected) {

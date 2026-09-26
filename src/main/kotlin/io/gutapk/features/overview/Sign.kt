@@ -20,8 +20,11 @@ import io.gutapk.core.apk.ApkInfo
 import io.gutapk.core.apk.ApkReader
 import io.gutapk.core.apk.Change
 import io.gutapk.core.apk.Compare
+import io.gutapk.core.apk.Part
+import io.gutapk.core.apk.Parts
 import io.gutapk.core.apk.SignatureInfo
 import io.gutapk.core.apk.Signatures
+import io.gutapk.core.edit.SetBuild
 import io.gutapk.core.sign.ApkSigning
 import io.gutapk.core.sign.KeyChoice
 import io.gutapk.core.sign.OwnKey
@@ -54,7 +57,15 @@ fun SignDialog(
     onStarted: (Job) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val output = if (choice != null) ApkSigning.output(dir, info.packageName, info.versionName, choice) else null
+    val parts by produceState<List<Part>?>(null, dir) {
+        value = withContext(Dispatchers.IO) { Parts.of(dir) }
+    }
+    val set = parts?.takeIf { it.size > 1 }
+    val output = when {
+        choice == null || parts == null -> null
+        set != null -> ApkSigning.setOutput(dir, info.packageName, info.versionName, choice)
+        else -> ApkSigning.output(dir, info.packageName, info.versionName, choice)
+    }
     // An own key chosen once, then its file removed by hand, cannot sign.
     val ownMissing = choice == KeyChoice.OWN && !OwnKey.exists()
     val ready = choice != null && output != null && !ownMissing
@@ -81,6 +92,9 @@ fun SignDialog(
                 if (output != null) {
                     SelectionContainer { Fact(t("sign_output"), output.toString()) }
                 }
+                if (set != null) {
+                    Fact(t("sign_parts"), set.joinToString(", ") { it.name })
+                }
                 Text(t("sign_install_note"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         },
@@ -95,7 +109,11 @@ fun SignDialog(
                             // Loaded inside the job: the own key asks the
                             // keyring, which may show its unlock dialog.
                             val signing = if (key == KeyChoice.OWN) OwnKey.load() else TestKey.load()
-                            ApkSigning.sign(original, out, signing, info.minSdk, version, job)
+                            if (set != null) {
+                                SetBuild.sign(set.map { it.file }, out, signing, info.minSdk, version, job)
+                            } else {
+                                ApkSigning.sign(original, out, signing, info.minSdk, version, job)
+                            }
                             job.result = out.toString()
                         }
                         if (job != null) onStarted(job)
@@ -140,19 +158,26 @@ fun SignReportDialog(
                 }
                 is SignReport.Done -> {
                     val check by produceState<SignatureInfo?>(null, report.file) {
-                        value = withContext(Dispatchers.IO) { Signatures.verify(report.file) }
+                        value = withContext(Dispatchers.IO) { Signatures.verify(Parts.base(report.file)) }
+                    }
+                    val files by produceState<List<Path>>(emptyList(), report.file) {
+                        value = withContext(Dispatchers.IO) { Parts.apks(report.file) }
                     }
                     val changes by produceState<List<Change>?>(null, report.file, original) {
                         if (original == null) return@produceState
                         value = withContext(Dispatchers.IO) {
                             runCatching {
+                                // A set compares its bases, and the sizes of
+                                // all its parts.
+                                val before = original.parent?.let { Parts.of(it) }?.map { it.file } ?: listOf(original)
+                                val after = Parts.apks(report.file)
                                 Compare.changes(
                                     ApkReader.read(original),
-                                    ApkReader.read(report.file),
-                                    Files.size(original),
-                                    Files.size(report.file),
+                                    ApkReader.read(after.first()),
+                                    before.sumOf { Files.size(it) },
+                                    after.sumOf { Files.size(it) },
                                     Signatures.verify(original).signers.firstOrNull()?.sha256,
-                                    Signatures.verify(report.file).signers.firstOrNull()?.sha256,
+                                    Signatures.verify(after.first()).signers.firstOrNull()?.sha256,
                                 )
                             }.getOrNull()
                         }
@@ -163,6 +188,9 @@ fun SignReportDialog(
                             verticalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
                             Fact(t("signed_file"), report.file.toString())
+                            if (files.size > 1) {
+                                Fact(t("signed_parts"), files.joinToString("\n") { it.fileName.toString() })
+                            }
                             val c = check
                             if (c != null) {
                                 Fact(t("signed_schemes"), c.schemes.joinToString(", "))

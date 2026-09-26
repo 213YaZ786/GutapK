@@ -10,7 +10,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-// The rules that decide whether a set can be merged, on parts described by
+// The rules that decide whether a set is complete, on parts described by
 // hand. Reading a real manifest is ApkTest's job.
 class SplitSetTest {
 

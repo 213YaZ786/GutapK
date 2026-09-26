@@ -37,10 +37,10 @@ sealed interface SetProblem {
 }
 
 // An expansion file shipped next to the APKs. It is not part of any APK,
-// so it is named and set aside, never merged.
+// so it is named and set aside.
 data class Obb(val name: String, val size: Long)
 
-// dir holds the parts and nothing else, the form APKEditor merges.
+// dir holds the parts and nothing else.
 class GatheredSet(val dir: Path, val parts: List<SplitPart>, val obbs: List<Obb>, val problem: SetProblem?) {
     val base: SplitPart? get() = parts.firstOrNull { it.split == null }
 
@@ -57,7 +57,7 @@ class SetIncomplete(val set: GatheredSet) : Exception("the split set is incomple
 
 // A split set in any of the forms users have it: several .apk files, or a
 // .apks, .xapk or .apkm archive holding them. Everything ends up as plain
-// APK files in one folder, which APKEditor then merges.
+// APK files in one folder, kept apart from then on.
 object SplitSet {
     val CONTAINERS = setOf("apks", "xapk", "apkm")
     val OPENABLE = CONTAINERS + "apk"

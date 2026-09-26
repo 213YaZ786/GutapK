@@ -1,5 +1,6 @@
 package io.gutapk.core.il2cpp
 
+import io.gutapk.core.apk.Parts
 import io.gutapk.core.apk.UnityInfo
 import io.gutapk.job.CancelWatch
 import io.gutapk.job.JobEvent
@@ -208,8 +209,10 @@ object Il2CppDump {
             sink.emit(JobEvent.Step("extract", 1, 3))
             val lib = input.resolve("libil2cpp.so")
             val metadata = input.resolve("global-metadata.dat")
-            ZipFile(apk.toFile()).use { zip ->
-                listOf("lib/$abi/libil2cpp.so" to lib, metadataPath to metadata).forEach { (name, target) ->
+            // In a split set the library and the metadata sit in two parts.
+            listOf("lib/$abi/libil2cpp.so" to lib, metadataPath to metadata).forEach { (name, target) ->
+                val from = Parts.holding(packageDir, name) ?: apk
+                ZipFile(from.toFile()).use { zip ->
                     val e = zip.getEntry(name) ?: throw CheckFailed("$name missing from the APK")
                     zip.getInputStream(e).use { Files.copy(it, target, StandardCopyOption.REPLACE_EXISTING) }
                 }

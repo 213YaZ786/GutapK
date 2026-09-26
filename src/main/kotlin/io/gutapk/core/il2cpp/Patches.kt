@@ -1,5 +1,6 @@
 package io.gutapk.core.il2cpp
 
+import io.gutapk.core.apk.Parts
 import java.io.IOException
 import java.io.RandomAccessFile
 import java.nio.file.Files
@@ -233,14 +234,18 @@ object Patches {
 object LibBytes {
     fun entry(abi: String): String = "lib/$abi/libil2cpp.so"
 
+    // apk is a package's original.apk. In a split set the library sits in
+    // the ABI split next to it, read from there.
+    private fun holder(apk: Path, abi: String): Path = apk.parent?.let { Parts.holding(it, entry(abi)) } ?: apk
+
     // The whole library, for a byte search. Daggerfall's is 73 MB.
-    fun readAll(apk: Path, abi: String): ByteArray = ZipFile(apk.toFile()).use { zip ->
+    fun readAll(apk: Path, abi: String): ByteArray = ZipFile(holder(apk, abi).toFile()).use { zip ->
         val e = zip.getEntry(entry(abi)) ?: throw IOException("${entry(abi)} missing from the APK")
         if (e.size > Int.MAX_VALUE - 16) throw IOException("the library is too large to search")
         zip.getInputStream(e).use { it.readAllBytes() }
     }
 
-    fun read(apk: Path, abi: String, offset: Long, length: Int): ByteArray = ZipFile(apk.toFile()).use { zip ->
+    fun read(apk: Path, abi: String, offset: Long, length: Int): ByteArray = ZipFile(holder(apk, abi).toFile()).use { zip ->
         val e = zip.getEntry(entry(abi)) ?: throw IOException("${entry(abi)} missing from the APK")
         if (offset < 0 || (e.size >= 0 && offset >= e.size)) throw IOException("offset 0x${offset.toString(16)} is outside the library")
         zip.getInputStream(e).use { input ->

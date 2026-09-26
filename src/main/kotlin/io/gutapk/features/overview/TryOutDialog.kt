@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import io.gutapk.core.apk.ApkReader
+import io.gutapk.core.apk.Parts
 import io.gutapk.device.Adb
 import io.gutapk.device.AdbDevice
 import io.gutapk.device.DeviceState
@@ -59,7 +60,7 @@ private sealed interface Probe {
 // server of another version would be restarted by the first command, and
 // that choice stays on the ADB side of Home, where it is asked.
 private fun probe(root: Path, apk: Path): Probe {
-    val pkg = ApkReader.read(apk).packageName
+    val pkg = ApkReader.read(Parts.base(apk)).packageName
     val adb = Adb.own(root) ?: return Probe.NoTool
     val client = Adb.clientVersion(adb).first
     val server = Adb.serverVersion()

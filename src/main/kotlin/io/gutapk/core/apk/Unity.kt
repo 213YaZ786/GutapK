@@ -38,9 +38,16 @@ object UnityReader {
     private const val HEAD = 256
     private const val LIB_MAX = 256L shl 20
 
-    fun read(zip: ZipFile): UnityInfo? {
-        val entries = zip.entries().toList().filter { !it.isDirectory }
-        val names = entries.map { it.name }
+    fun read(zip: ZipFile): UnityInfo? = read(listOf(zip))
+
+    // A split set spreads the game over its parts: the engine in the ABI
+    // split, the data in the base or an asset pack. They are read as one.
+    fun read(zips: List<ZipFile>): UnityInfo? {
+        val owner = LinkedHashMap<String, Pair<ZipFile, java.util.zip.ZipEntry>>()
+        zips.forEach { z -> z.entries().asSequence().filter { !it.isDirectory }.forEach { e -> owner.putIfAbsent(e.name, z to e) } }
+        val entries = owner.values.map { it.second }
+        val names = owner.keys.toList()
+        fun open(e: java.util.zip.ZipEntry) = owner.getValue(e.name).first.getInputStream(e)
         val engine = entries.filter { lib(it.name, "libunity.so") }
         if (engine.isEmpty() && names.none { it.startsWith(DATA) }) return null
 
@@ -54,15 +61,15 @@ object UnityReader {
         }
 
         val version = listOf("${DATA}globalgamemanagers", "${DATA}data.unity3d")
-            .firstNotNullOfOrNull { name -> zip.getEntry(name)?.let { e -> zip.getInputStream(e).use { versionIn(it.readNBytes(HEAD)) } } }
-            ?: engine.firstOrNull { it.size in 1..LIB_MAX }?.let { e -> zip.getInputStream(e).use { libVersionIn(it.readBytes()) } }
+            .firstNotNullOfOrNull { name -> owner[name]?.let { (_, e) -> open(e).use { versionIn(it.readNBytes(HEAD)) } } }
+            ?: engine.firstOrNull { it.size in 1..LIB_MAX }?.let { e -> open(e).use { libVersionIn(it.readBytes()) } }
 
         return UnityInfo(
             backend = backend,
             version = version,
             metadataPath = metadata?.name,
             metadataSize = metadata?.size?.takeIf { it >= 0 },
-            metadataVersion = metadata?.let { e -> zip.getInputStream(e).use { metadataVersion(it.readNBytes(8)) } },
+            metadataVersion = metadata?.let { e -> open(e).use { metadataVersion(it.readNBytes(8)) } },
             il2cpp = il2cpp.sortedBy { it.abi },
             engineAbis = engine.map { it.name.split('/')[1] }.distinct().sorted(),
             assemblies = names.count { it.startsWith("${DATA}Managed/") && it.endsWith(".dll") },

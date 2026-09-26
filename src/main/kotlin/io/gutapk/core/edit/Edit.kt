@@ -1,5 +1,6 @@
 package io.gutapk.core.edit
 
+import io.gutapk.core.apk.Parts
 import io.gutapk.core.apk.SignatureInfo
 import io.gutapk.core.il2cpp.BytePatch
 import io.gutapk.core.il2cpp.Patches
@@ -89,47 +90,75 @@ object Edit {
     ): EditResult {
         val spec = Tools.byId(engine.id) ?: throw IOException("${engine.id} is not in the tool table")
         val jar = Resolve.tool(root, spec, sink, cancelled)
+        val choice = keyChoiceSuffix(keyName)
+        // The signing floor follows the tweak: a lowered minSdk means v1
+        // is needed for the older versions it now installs on.
+        val signMin = tweaks.minSdk ?: minSdk
 
         val work = packageDir.resolve("work-rename")
         Storage.deleteTree(work, packageDir)
         Files.createDirectories(work)
         try {
-            val decoded = work.resolve("decoded")
-            val rebuilt = work.resolve("rebuilt.apk")
-            // apktool's framework and the aapt2 it extracts stay in the
-            // work folder, never in ~/.local or /tmp.
-            val framework = work.resolve("framework")
-            val (decode, build) = when (engine) {
-                Engine.APKEDITOR -> Pair(
-                    listOf("d", "-i", input.toString(), "-o", decoded.toString(), "-f"),
-                    listOf("b", "-i", decoded.toString(), "-o", rebuilt.toString(), "-f"),
-                )
-                Engine.APKTOOL -> Pair(
-                    listOf("d", "-f", "-p", framework.toString(), "-o", decoded.toString(), input.toString()),
-                    listOf("b", "-f", "-p", framework.toString(), "-o", rebuilt.toString(), decoded.toString()),
-                )
+            if (Parts.isSet(packageDir)) {
+                val out = ApkSigning.setOutput(packageDir, tweaks.packageId ?: packageName, version, choice)
+                val splitJar = when {
+                    tweaks.packageId == null -> null
+                    engine == Engine.APKEDITOR -> jar
+                    else -> Resolve.tool(root, Tools.byId(Engine.APKEDITOR.id) ?: throw IOException("apkeditor is not in the tool table"), sink, cancelled)
+                }
+                val signature = SetBuild.run(jar, engine, splitJar, Parts.of(packageDir), tweaks, work, out, key, signMin, appVersion, sink, cancelled)
+                return EditResult(out, signature)
             }
-
-            sink.emit(JobEvent.Step("decode", 1, 4))
-            runEngine(jar, engine, work, decode, sink, cancelled)
-
-            sink.emit(JobEvent.Step("edit", 2, 4))
-            apply(decoded, tweaks, engine, sink)
-
-            sink.emit(JobEvent.Step("build", 3, 4))
-            runEngine(jar, engine, work, build, sink, cancelled)
-            if (!Files.isRegularFile(rebuilt)) throw CheckFailed("${engine.id} produced no APK")
-
+            val rebuilt = work.resolve("rebuilt.apk")
+            rebuild(jar, engine, input, tweaks, work, rebuilt, 4, sink, cancelled)
             sink.emit(JobEvent.Step("sign", 4, 4))
-            val out = ApkSigning.output(packageDir, tweaks.packageId ?: packageName, version, keyChoiceSuffix(keyName))
-            // The signing floor follows the tweak: a lowered minSdk means v1
-            // is needed for the older versions it now installs on.
-            val signMin = tweaks.minSdk ?: minSdk
+            val out = ApkSigning.output(packageDir, tweaks.packageId ?: packageName, version, choice)
             val signature = ApkSigning.sign(rebuilt, out, key, signMin, appVersion, sink)
             return EditResult(out, signature)
         } finally {
             Storage.deleteTree(work, packageDir)
         }
+    }
+
+    // Decode, apply, build, into rebuilt. steps is the job's step count,
+    // the three steps here are its first ones. work is emptied first.
+    internal fun rebuild(
+        jar: Path,
+        engine: Engine,
+        input: Path,
+        tweaks: Tweaks,
+        work: Path,
+        rebuilt: Path,
+        steps: Int,
+        sink: JobSink,
+        cancelled: () -> Boolean,
+    ) {
+        val decoded = work.resolve("decoded")
+        Storage.deleteTree(decoded, work)
+        // apktool's framework and the aapt2 it extracts stay in the work
+        // folder, never in ~/.local or /tmp.
+        val framework = work.resolve("framework")
+        val (decode, build) = when (engine) {
+            Engine.APKEDITOR -> Pair(
+                listOf("d", "-i", input.toString(), "-o", decoded.toString(), "-f"),
+                listOf("b", "-i", decoded.toString(), "-o", rebuilt.toString(), "-f"),
+            )
+            Engine.APKTOOL -> Pair(
+                listOf("d", "-f", "-p", framework.toString(), "-o", decoded.toString(), input.toString()),
+                listOf("b", "-f", "-p", framework.toString(), "-o", rebuilt.toString(), decoded.toString()),
+            )
+        }
+
+        sink.emit(JobEvent.Step("decode", 1, steps))
+        runEngine(jar, engine, work, decode, sink, cancelled)
+
+        sink.emit(JobEvent.Step("edit", 2, steps))
+        apply(decoded, tweaks, engine, sink)
+
+        sink.emit(JobEvent.Step("build", 3, steps))
+        runEngine(jar, engine, work, build, sink, cancelled)
+        if (!Files.isRegularFile(rebuilt)) throw CheckFailed("${engine.id} produced no APK")
+        Storage.deleteTree(decoded, work)
     }
 
     // The APKEditor output path already carries the key name, so the edit
@@ -676,13 +705,7 @@ object Edit {
         runEngine(jar, Engine.APKEDITOR, work, listOf("d", "-t", "raw", "-no-cache", "-f", "-i", apk.toString(), "-o", out.toString()), sink, cancelled)
     }
 
-    // -clean-meta drops the parts' signatures, they no longer match the
-    // merged APK and the user signs it after editing anyway.
-    fun merge(jar: Path, parts: Path, out: Path, work: Path, sink: JobSink, cancelled: () -> Boolean) {
-        runEngine(jar, Engine.APKEDITOR, work, listOf("m", "-i", parts.toString(), "-o", out.toString(), "-f", "-clean-meta"), sink, cancelled)
-    }
-
-    private fun runEngine(jar: Path, engine: Engine, work: Path, args: List<String>, sink: JobSink, cancelled: () -> Boolean) {
+    internal fun runEngine(jar: Path, engine: Engine, work: Path, args: List<String>, sink: JobSink, cancelled: () -> Boolean) {
         // apktool extracts aapt2 through createTempFile, so java.io.tmpdir
         // points into the work folder. Harmless for APKEditor.
         val tmp = work.resolve("tmp")

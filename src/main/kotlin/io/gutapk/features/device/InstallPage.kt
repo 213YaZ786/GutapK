@@ -21,6 +21,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import io.gutapk.core.apk.Packages
+import io.gutapk.core.apk.Parts
 import io.gutapk.core.apk.SplitSet
 import io.gutapk.device.AdbDevice
 import io.gutapk.device.DeviceInstall
@@ -53,18 +54,19 @@ private const val LISTED = 30
 // parts, an archive as the APKs inside it.
 private class Installable(val title: String, val detail: String, val files: List<Path>)
 
-// What GutapK itself holds: every APK it signed, newest first, then the
-// original of every package opened, its parts when it was a split set.
+// What GutapK itself holds: every APK or set it signed, newest first, then
+// the original of every package opened, its parts when it was a split set.
 private fun gutapkInstallables(root: Path): Pair<List<Installable>, List<Installable>> {
     val opened = Packages.recent(root, LISTED)
     val rebuilt = opened.flatMap { p ->
         val out = p.dir.resolve("out")
         if (!Files.isDirectory(out)) return@flatMap emptyList<Pair<Path, Long>>()
         Files.list(out).use { it.toList() }
-            .filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".apk") }
+            .filter { (Files.isRegularFile(it) && it.fileName.toString().endsWith(".apk")) || (Files.isDirectory(it) && !it.fileName.toString().endsWith(".part")) }
             .map { it to Files.getLastModifiedTime(it).toMillis() }
-    }.sortedByDescending { it.second }.take(LISTED).map { (file, _) ->
-        Installable(file.fileName.toString(), file.parent.parent.fileName.toString(), listOf(file))
+    }.sortedByDescending { it.second }.take(LISTED).mapNotNull { (file, _) ->
+        val files = Parts.apks(file)
+        if (files.isEmpty()) null else Installable(file.fileName.toString(), file.parent.parent.fileName.toString(), files)
     }
     val originals = opened.mapNotNull { p ->
         val parts = p.dir.resolve(Packages.PARTS)

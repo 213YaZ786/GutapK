@@ -38,6 +38,7 @@ import io.gutapk.core.apk.DexClasses
 import io.gutapk.core.edit.PermissionRisks
 import io.gutapk.core.edit.SmaliClass
 import io.gutapk.core.apk.Packages
+import io.gutapk.core.apk.Parts
 import io.gutapk.core.apk.SetRecord
 import io.gutapk.core.apk.SignatureInfo
 import io.gutapk.core.apk.Signatures
@@ -86,7 +87,7 @@ private data class Loaded(
     val classes: List<String>,
     // The calls some permission is checked on, for the Edit screen advice.
     val calls: Set<String>,
-    // What a merged split set was made of, null for a single APK.
+    // What a split set is made of, null for a single APK.
     val set: SetRecord?,
     // Null for anything that is not a Unity game.
     val unity: UnityInfo?,
@@ -123,7 +124,17 @@ internal fun apiName(level: Int?): String {
 }
 
 private fun load(original: Path): Loaded {
-    val info = runCatching { ApkReader.read(original) }
+    val dir = original.parent
+    if (dir != null) runCatching { Packages.migrate(dir) }
+    val files = dir?.let { d -> Parts.of(d).map { it.file }.filter { Files.isRegularFile(it) } }?.ifEmpty { null } ?: listOf(original)
+    // A set's ABIs and languages live in splits of their own.
+    val info = runCatching {
+        val base = ApkReader.read(original)
+        if (dir == null || files.size < 2) base else base.copy(
+            abis = (base.abis + Parts.abis(dir)).distinct().sorted(),
+            languages = (base.languages + Parts.languages(dir)).distinct().sorted(),
+        )
+    }
     val bitmap = info.getOrNull()?.iconPath?.let { ApkReader.iconBytes(original, it) }?.let { bytes ->
         runCatching { org.jetbrains.skia.Image.makeFromEncoded(bytes).toComposeImageBitmap() }.getOrNull()
     }
@@ -131,13 +142,20 @@ private fun load(original: Path): Loaded {
         info = info.getOrNull(),
         error = info.exceptionOrNull()?.message,
         signature = Signatures.verify(original, info.getOrNull()?.minSdk),
-        size = Files.size(original),
+        size = files.sumOf { Files.size(it) },
         sha256 = Hash.of(original, "SHA-256"),
         icon = bitmap,
         classes = runCatching { ZipFile(original.toFile()).use { DexClasses.read(it) } }.getOrDefault(emptyList()),
         calls = runCatching { ZipFile(original.toFile()).use { DexClasses.methods(it, PermissionRisks::wanted) } }.getOrDefault(emptySet()),
-        set = original.parent?.let { Packages.setRecord(it) },
-        unity = runCatching { ZipFile(original.toFile()).use { UnityReader.read(it) } }.getOrNull(),
+        set = dir?.let { Packages.setRecord(it) },
+        unity = runCatching {
+            val zips = files.map { ZipFile(it.toFile()) }
+            try {
+                UnityReader.read(zips)
+            } finally {
+                zips.forEach { it.close() }
+            }
+        }.getOrNull(),
     )
 }
 
