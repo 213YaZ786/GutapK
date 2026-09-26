@@ -191,6 +191,12 @@ sealed interface Dumper {
     class Il2CppDumper(override val version: String, val dotnet: Path, val content: Path) : Dumper {
         override val id: String get() = "il2cppdumper"
     }
+
+    // Il2CppInspectorRedux's command line, a .NET program that needs the
+    // ASP.NET Core runtime.
+    class Inspector(override val version: String, val dotnet: Path, val program: Path) : Dumper {
+        override val id: String get() = "il2cppinspector"
+    }
 }
 
 // Runs a dumper on one ABI of the APK and keeps only the method index. Its
@@ -249,6 +255,7 @@ object Il2CppDump {
             val entries = when (dumper) {
                 is Dumper.Cpp2Il -> cpp2il(dumper, lib, metadata, version, work, output, tmp, sink, cancelled)
                 is Dumper.Il2CppDumper -> il2cppDumper(dumper, lib, metadata, work, output, tmp, sink, cancelled)
+                is Dumper.Inspector -> inspector(dumper, lib, metadata, work, output, tmp, sink, cancelled)
             }
             if (entries.isEmpty()) throw CheckFailed("${dumper.id} placed no method")
             sink.emit(JobEvent.Step("read", 3, 3))
@@ -331,6 +338,67 @@ object Il2CppDump {
         if (!Files.isRegularFile(dump)) throw CheckFailed("Il2CppDumper wrote no dump.cs, the log has its reason")
         return Files.newBufferedReader(dump).useLines { DumpCs.parse(it) }
     }
+
+    // The C# stub alone. The CLI starts a web server on 127.0.0.1:5000
+    // and talks to it (Program.cs of 2026.2), which any local program or
+    // web page could reach too. So it runs in a network namespace of its
+    // own, loopback only, that nothing outside can see, or not at all.
+    // It then logs "Export finished" and keeps running, checked on fx: it
+    // is stopped at that line. Without the line it failed.
+    private fun inspector(
+        d: Dumper.Inspector,
+        lib: Path,
+        metadata: Path,
+        work: Path,
+        output: Path,
+        tmp: Path,
+        sink: JobSink,
+        cancelled: () -> Boolean,
+    ): List<MethodEntry> {
+        val unshare = firstProgram("unshare", listOf("/usr/bin", "/bin"))
+            ?: throw CheckFailed("Il2CppInspectorRedux runs a local web server, GutapK isolates it with unshare, which is not on this system. Use Cpp2IL.")
+        val ip = firstProgram("ip", listOf("/usr/sbin", "/sbin", "/usr/bin", "/bin"))
+            ?: throw CheckFailed("Il2CppInspectorRedux runs a local web server, GutapK isolates it with unshare and ip, and ip is not on this system. Use Cpp2IL.")
+        val tool = listOf(d.program.toString(), "process", lib.toString(), metadata.toString(), "-o", output.toString(), "-s")
+        // sh brings the namespace's loopback up, then becomes the tool.
+        val isolated = listOf(unshare.toString(), "--net", "--map-root-user", "sh", "-c", "\"$1\" link set lo up && shift && exec \"$@\"", "sh", ip.toString()) + tool
+        val pb = ProcessBuilder(isolated)
+            .redirectErrorStream(true)
+            .redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
+            .directory(work.toFile())
+        val env = pb.environment()
+        env["DOTNET_ROOT"] = d.dotnet.parent.toString()
+        env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
+        env["TMPDIR"] = tmp.toString()
+        val process = pb.start()
+        var finished = false
+        CancelWatch.guard(process, cancelled) {
+            process.inputStream.bufferedReader().useLines { lines ->
+                for (line in lines) {
+                    // Its progress lines are many, the percentages are left out.
+                    if (line.isNotBlank() && !line.contains("%)")) sink.emit(JobEvent.Line(line.trim()))
+                    if (line.contains("Export finished")) {
+                        finished = true
+                        break
+                    }
+                }
+            }
+            if (finished) {
+                process.destroy()
+                if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) process.destroyForcibly()
+            } else {
+                val code = process.waitFor()
+                throw CheckFailed("Il2CppInspectorRedux exited with $code before its export. A refused network namespace means this system forbids unprivileged ones, use Cpp2IL then.")
+            }
+        }
+        val files = Files.walk(output).use { s -> s.filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".cs") }.toList() }
+        if (files.isEmpty()) throw CheckFailed("Il2CppInspectorRedux wrote no C# file")
+        val segments = ElfSegments.read(lib)
+        return files.flatMap { f -> Files.newBufferedReader(f).useLines { InspectorCs.parse(it, segments::fileOffset) } }
+    }
+
+    private fun firstProgram(name: String, dirs: List<String>): Path? =
+        dirs.map { Path.of(it, name) }.firstOrNull { Files.isExecutable(it) }
 
     internal fun dumperConfig(json: String): String =
         listOf("RequireAnyKey", "GenerateDummyDll", "GenerateStruct").fold(json) { text, key ->

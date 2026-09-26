@@ -498,4 +498,53 @@ class Il2CppTest {
         assertEquals("{\n  \"GenerateDummyDll\": false,\n  \"GenerateStruct\": false,\n  \"RequireAnyKey\": false,\n  \"DumpMethod\": true\n}", out)
     }
 
+
+    // Il2CppInspectorRedux 2026.2's C# stub, cut from fx: image ranges, a
+    // namespace, a nested type, a property with two accessors, fields and
+    // a constant that carry no code. Addresses are virtual, 0x4000 above
+    // the file offsets here.
+    @Test
+    fun readsIl2CppInspectorOutput() {
+        val text = listOf(
+            "// Image 0: Assembly-CSharp.dll - Assembly: Assembly-CSharp, Version=1.0.2.0, Culture=neutral, PublicKeyToken=null - Types 0-4708",
+            "// Image 1: mscorlib.dll - Assembly: mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089 - Types 4709-6471",
+            "",
+            "public class FeatherweightNoAdService : IAdService // TypeDefIndex: 1911",
+            "{",
+            "\t// Constructors",
+            "\tpublic FeatherweightNoAdService() // 0x0169EA0C-0x0169EA10",
+            "",
+            "\t// Methods",
+            "\tpublic override eAdStatus GetAdStatus(string placementID) // 0x0169E92C-0x0169E934",
+            "}",
+            "",
+            "namespace Game.Items",
+            "{",
+            "\tpublic class Shop // TypeDefIndex: 4800",
+            "\t{",
+            "\t\tprivate int count // 0x10",
+            "\t\tpublic float Speed { get set } // 0x01445788-0x0144579C 0x0144579C-0x014457B0",
+            "\t\tpublic event Action<int, string> Changed { add remove } // 0x00000000-0x00000000 0x00000000-0x00000000",
+            "\t\tpublic class Entry // TypeDefIndex: 4801",
+            "\t\t{",
+            "\t\t\tpublic bool IsFree() // 0x01447000-0x01447010",
+            "\t\t}",
+            "\t}",
+            "}",
+        ).map { it.replace(") // 0x", ")" + Char(0x3B) + " // 0x").replace("count // 0x", "count" + Char(0x3B) + " // 0x").replace("{ get set }", "{ get" + Char(0x3B) + " set" + Char(0x3B) + " }").replace("{ add remove }", "{ add" + Char(0x3B) + " remove" + Char(0x3B) + " }") }
+        val entries = io.gutapk.core.il2cpp.InspectorCs.parse(text.asSequence()) { va -> va - 0x4000 }
+        assertEquals(listOf("public FeatherweightNoAdService()", "public override eAdStatus GetAdStatus(string placementID)", "Speed.get", "Speed.set", "public bool IsFree()"), entries.map { it.member })
+        val ad = entries[1]
+        assertEquals("Assembly-CSharp", ad.assembly)
+        assertEquals("", ad.namespace)
+        assertEquals("FeatherweightNoAdService", ad.type)
+        assertEquals(0x0169E92CL, ad.rva)
+        assertEquals(0x0169A92CL, ad.offset)
+        assertEquals(8L, ad.length)
+        assertEquals("mscorlib", entries[2].assembly)
+        assertEquals("Game.Items", entries[2].namespace)
+        assertEquals(0x14L, entries[3].length)
+        assertEquals("Shop.Entry", entries[4].type)
+    }
+
 }

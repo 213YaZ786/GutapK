@@ -146,17 +146,21 @@ object Releases {
             ?.takeIf { it.startsWith("https://") && URI(it).host == host }
     }
 
-    // The channel's latest runtime, its file of that name, Microsoft's
-    // sha512. The size is not in the index: 0 here, asked from the server.
+    // The release of the channel's latest runtime, the file of that name in
+    // its runtime or its ASP.NET Core runtime, Microsoft's sha512. The size
+    // is not in the index: 0 here, asked from the server.
     fun parseDotnetChannel(json: String, file: String, index: String): Release? {
         val root = Json.parse(json) as? Map<*, *> ?: return null
         val latest = root["latest-runtime"] as? String ?: return null
         val releases = (root["releases"] as? List<*>)?.filterIsInstance<Map<*, *>>() ?: return null
-        val runtime = releases.mapNotNull { it["runtime"] as? Map<*, *> }.firstOrNull { it["version"] == latest } ?: return null
+        val release = releases.firstOrNull { (it["runtime"] as? Map<*, *>)?.get("version") == latest } ?: return null
+        val runtime = listOf("runtime", "aspnetcore-runtime").mapNotNull { release[it] as? Map<*, *> }
+            .firstOrNull { r -> (r["files"] as? List<*>)?.filterIsInstance<Map<*, *>>()?.any { it["name"] == file } == true } ?: return null
         val f = (runtime["files"] as? List<*>)?.filterIsInstance<Map<*, *>>()?.firstOrNull { it["name"] == file } ?: return null
         val url = (f["url"] as? String)?.takeIf { it.startsWith("https://") && URI(it).host == URI(index).host } ?: return null
         val hash = (f["hash"] as? String)?.lowercase()?.takeIf { Regex("[0-9a-f]{128}").matches(it) } ?: return null
-        return Release(version = latest, url = url, size = 0, sha1 = null, sha256 = null, sha512 = hash)
+        val version = runtime["version"] as? String ?: return null
+        return Release(version = version, url = url, size = 0, sha1 = null, sha256 = null, sha512 = hash)
     }
 
     private fun contentLength(url: String): Long {

@@ -45,9 +45,13 @@ private const val DUMP_JOB = "dump"
 
 // The dumpers offered, their ids in tools.tsv, with every tool each one
 // needs installed.
-private val DUMPERS = listOf("cpp2il", "cpp2il-nightly", "il2cppdumper")
+private val DUMPERS = listOf("cpp2il", "cpp2il-nightly", "il2cppinspector", "il2cppdumper")
 
-private fun toolsFor(dumper: String): List<String> = if (dumper == "il2cppdumper") listOf("dotnet", "il2cppdumper") else listOf(dumper)
+private fun toolsFor(dumper: String): List<String> = when (dumper) {
+    "il2cppdumper" -> listOf("dotnet", "il2cppdumper")
+    "il2cppinspector" -> listOf("aspnetcore", "il2cppinspector")
+    else -> listOf(dumper)
+}
 
 private fun installed(root: Path, id: String): Pair<ToolSpec, ToolStatus.Installed> {
     val spec = Tools.byId(id) ?: throw CheckFailed("$id is not in the tool table")
@@ -57,13 +61,21 @@ private fun installed(root: Path, id: String): Pair<ToolSpec, ToolStatus.Install
 }
 
 private fun startDump(root: Path, packageDir: Path, apk: Path, u: UnityInfo, dumper: String): Job? = JobQueue.start(DUMP_JOB) { job ->
-    val tool = if (dumper == "il2cppdumper") {
-        val (dotnetSpec, dotnet) = installed(root, "dotnet")
-        val (_, dll) = installed(root, "il2cppdumper")
-        Dumper.Il2CppDumper(dll.version, Installer.entry(root, dotnetSpec, dotnet.version), dll.location)
-    } else {
-        val (spec, status) = installed(root, dumper)
-        Dumper.Cpp2Il(dumper, status.version, Installer.entry(root, spec, status.version))
+    val tool = when (dumper) {
+        "il2cppdumper" -> {
+            val (dotnetSpec, dotnet) = installed(root, "dotnet")
+            val (_, dll) = installed(root, "il2cppdumper")
+            Dumper.Il2CppDumper(dll.version, Installer.entry(root, dotnetSpec, dotnet.version), dll.location)
+        }
+        "il2cppinspector" -> {
+            val (aspSpec, asp) = installed(root, "aspnetcore")
+            val (cliSpec, cli) = installed(root, "il2cppinspector")
+            Dumper.Inspector(cli.version, Installer.entry(root, aspSpec, asp.version), Installer.entry(root, cliSpec, cli.version))
+        }
+        else -> {
+            val (spec, status) = installed(root, dumper)
+            Dumper.Cpp2Il(dumper, status.version, Installer.entry(root, spec, status.version))
+        }
     }
     val work = RunSession.workDir?.resolve("dump") ?: throw CheckFailed("no work folder for this run")
     val record = Il2CppDump.run(tool, packageDir, apk, u, work, job) {
@@ -216,7 +228,13 @@ fun UnityZone(u: UnityInfo, root: Path?, packageDir: Path, apk: Path, dumper: St
             root = root,
             specs = asked,
             onDismiss = { asking = false },
-            why = t(if (chosen == "il2cppdumper") "un_dump_needs_dumper" else "un_dump_needs"),
+            why = t(
+                when (chosen) {
+                    "il2cppdumper" -> "un_dump_needs_dumper"
+                    "il2cppinspector" -> "un_dump_needs_inspector"
+                    else -> "un_dump_needs"
+                },
+            ),
             onStarted = { afterTool = true },
         )
     }
@@ -236,6 +254,7 @@ private fun dumperName(id: String): String = when (id) {
     "cpp2il" -> t("un_m_cpp2il")
     "cpp2il-nightly" -> t("un_m_nightly")
     "il2cppdumper" -> t("un_m_dumper")
+    "il2cppinspector" -> t("un_m_inspector")
     else -> id
 }
 
@@ -243,6 +262,7 @@ private fun dumperName(id: String): String = when (id) {
 private fun dumperNote(id: String, metadata: Int?): String = when (id) {
     "cpp2il" -> t("un_m_cpp2il_d")
     "cpp2il-nightly" -> t("un_m_nightly_d")
+    "il2cppinspector" -> t("un_m_inspector_d")
     // Greyed out, so it says why, with this game's own version.
     "il2cppdumper" -> t("un_m_dumper_d", Il2CppDump.DUMPER_METADATA_MAX.toString()) +
         if (dumperReads(metadata)) "" else "\n" + t("un_m_dumper_no", metadata?.toString() ?: t("un_unknown"))

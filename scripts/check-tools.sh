@@ -184,18 +184,19 @@ chan_file, index_url, name = sys.argv[1:4]
 d = json.load(open(chan_file))
 latest = d['latest-runtime']
 for r in d['releases']:
-    rt = r.get('runtime') or {}
-    if rt.get('version') != latest:
+    if (r.get('runtime') or {}).get('version') != latest:
         continue
-    for f in rt.get('files', []):
-        if f['name'] == name:
-            if not f['url'].startswith('https://') or urlparse(f['url']).hostname != urlparse(index_url).hostname:
-                sys.exit('file on another host')
-            h = f['hash'].lower()
-            if not re.fullmatch(r'[0-9a-f]{128}', h):
-                sys.exit('no sha512')
-            print(latest, f['url'], h)
-            sys.exit(0)
+    for section in ('runtime', 'aspnetcore-runtime'):
+        rt = r.get(section) or {}
+        for f in rt.get('files', []):
+            if f['name'] == name:
+                if not f['url'].startswith('https://') or urlparse(f['url']).hostname != urlparse(index_url).hostname:
+                    sys.exit('file on another host')
+                h = f['hash'].lower()
+                if not re.fullmatch(r'[0-9a-f]{128}', h):
+                    sys.exit('no sha512')
+                print(rt['version'], f['url'], h)
+                sys.exit(0)
 sys.exit('%s not in the latest runtime' % name)
 PY
 }

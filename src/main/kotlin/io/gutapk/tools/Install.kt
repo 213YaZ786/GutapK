@@ -185,6 +185,9 @@ object Installer {
                 placeSingle(archive, staging, spec.entry)
                 spec.execDirOrNull?.let { markExecutable(staging.resolve(it)) }
             }
+            // The program itself, whatever its name: a dotted one like
+            // Il2CppInspector.Redux.CLI is skipped by markExecutable.
+            if (spec.execDirOrNull != null) staging.resolve(spec.entry).takeIf { Files.isRegularFile(it) }?.let { markExecutable(it) }
             Files.move(staging, content, StandardCopyOption.ATOMIC_MOVE)
         } finally {
             Storage.deleteTree(staging, dir)
@@ -336,16 +339,18 @@ object Installer {
 
     // Tools ship their programs without an extension and their libraries
     // with one. Only the first get the execute bit.
-    private fun markExecutable(dir: Path) {
-        if (!Files.isDirectory(dir)) return
-        Files.list(dir).use { files ->
-            files.filter { Files.isRegularFile(it) && !it.fileName.toString().contains('.') }.forEach {
-                val perms = Files.getPosixFilePermissions(it).toMutableSet()
-                perms.add(PosixFilePermission.OWNER_EXECUTE)
-                perms.add(PosixFilePermission.GROUP_EXECUTE)
-                perms.add(PosixFilePermission.OTHERS_EXECUTE)
-                Files.setPosixFilePermissions(it, perms)
-            }
+    private fun markExecutable(path: Path) {
+        if (Files.isRegularFile(path)) {
+            val perms = Files.getPosixFilePermissions(path).toMutableSet()
+            perms.add(PosixFilePermission.OWNER_EXECUTE)
+            perms.add(PosixFilePermission.GROUP_EXECUTE)
+            perms.add(PosixFilePermission.OTHERS_EXECUTE)
+            Files.setPosixFilePermissions(path, perms)
+            return
+        }
+        if (!Files.isDirectory(path)) return
+        Files.list(path).use { files ->
+            files.filter { Files.isRegularFile(it) && !it.fileName.toString().contains('.') }.forEach { markExecutable(it) }
         }
     }
 }

@@ -236,6 +236,10 @@ class ToolsTest {
         assertEquals("dotnet-runtime-10.0.12-linux-x64.tar.gz", r.fileName)
         assertEquals(hash, r.sha512)
         assertNull(Releases.parseDotnetChannel(channel.replace("https://builds.dotnet.microsoft.com/dotnet/Runtime/10.0.12/dotnet-runtime-10.0.12-linux-x64", "https://evil.example/x"), spec.pkg, index))
+        // The ASP.NET Core runtime sits in its own section of the release.
+        val asp = channel.replace("}]}}]}", "}]}, \"aspnetcore-runtime\": {\"version\": \"10.0.12\", \"files\": [{\"name\": \"aspnetcore-runtime-linux-x64.tar.gz\", \"url\": \"https://builds.dotnet.microsoft.com/dotnet/aspnetcore/Runtime/10.0.12/aspnetcore-runtime-10.0.12-linux-x64.tar.gz\", \"hash\": \"$hash\"}]}}]}")
+        val a = assertNotNull(Releases.parseDotnetChannel(asp, assertNotNull(Tools.byId("aspnetcore")).pkg, index))
+        assertEquals("aspnetcore-runtime-10.0.12-linux-x64.tar.gz", a.fileName)
     }
 
     @Test
