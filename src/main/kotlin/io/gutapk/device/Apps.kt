@@ -133,6 +133,35 @@ object DeviceApps {
         }
     }
 
+    class SaveAllResult(val saved: Int, val files: Int, val failed: List<Pair<String, String>>)
+
+    // Every APK of every app given, each app in its own folder named after
+    // its package. One app that fails is noted and the others go on.
+    fun saveAll(adb: Path, serial: String, apps: List<InstalledApp>, user: Int, dir: Path, sink: JobSink, cancelled: () -> Boolean): SaveAllResult {
+        var saved = 0
+        var files = 0
+        val failed = mutableListOf<Pair<String, String>>()
+        apps.forEachIndexed { i, app ->
+            if (cancelled()) throw CancelledByUser()
+            sink.emit(JobEvent.Step(app.packageName, i + 1, apps.size))
+            val result = runCatching {
+                require(PACKAGE.matches(app.packageName)) { "not a package name" }
+                val paths = parsePaths(Adb.shell(adb, serial, "pm path --user $user " + Adb.quote(app.packageName)).out)
+                if (paths.isEmpty()) throw IOException("pm path printed no APK")
+                pull(adb, serial, paths, dir.resolve(app.packageName), sink, cancelled).size
+            }
+            result.onSuccess {
+                saved++
+                files += it
+            }.onFailure { e ->
+                if (e is CancelledByUser) throw e
+                failed.add(app.packageName to (e.message ?: "?"))
+                sink.emit(JobEvent.Line("${app.packageName}: ${e.message}"))
+            }
+        }
+        return SaveAllResult(saved, files, failed)
+    }
+
     // Every APK of the app into dir, under its own file name. adb pull
     // takes the path as an argument, no shell reads it.
     fun pull(adb: Path, serial: String, apks: List<String>, dir: Path, sink: JobSink, cancelled: () -> Boolean): List<Path> {

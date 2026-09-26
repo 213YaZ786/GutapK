@@ -12,7 +12,9 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
@@ -46,6 +48,8 @@ import io.gutapk.tools.CheckFailed
 import io.gutapk.tools.RunSession
 import io.gutapk.ui.AppIcon
 import io.gutapk.ui.BodyText
+import io.gutapk.ui.Fact
+import io.gutapk.ui.Chooser
 import io.gutapk.ui.Page
 import io.gutapk.ui.Zone
 import io.gutapk.ui.ZoneRow
@@ -71,6 +75,8 @@ private sealed interface AppsState {
 }
 
 
+private const val SAVE_ALL_JOB = "saveapks"
+
 // The pulled files, one per line, as the job's result.
 private fun startPull(adb: Path, serial: String, app: InstalledApp, apks: List<String>): Job? = JobQueue.start(PULL_JOB) { job ->
     val work = RunSession.workDir?.resolve("pull")?.resolve(app.packageName) ?: throw CheckFailed("no work folder for this run")
@@ -95,6 +101,13 @@ fun AppsPage(root: Path?, adb: Path, d: AdbDevice, onPulled: (List<Path>) -> Uni
     var open by remember { mutableStateOf<InstalledApp?>(null) }
     var pullJob by remember { mutableStateOf<Job?>(null) }
     var failure by remember { mutableStateOf<String?>(null) }
+    // Saving every listed app: the folder picked, then its job and result.
+    var saveTarget by remember { mutableStateOf<Path?>(null) }
+    var saveApps by remember { mutableStateOf<List<InstalledApp>>(emptyList()) }
+    var saveJob by remember { mutableStateOf<Job?>(null) }
+    var saveResult by remember { mutableStateOf<DeviceApps.SaveAllResult?>(null) }
+    var saveFailure by remember { mutableStateOf<String?>(null) }
+    val saveTitle = t("ap_save_all")
     // Bumped when an app leaves this user, the list is read again.
     var listRevision by remember { mutableStateOf(0) }
     val state by produceState<AppsState>(AppsState.Reading, d.serial, system, user, listRevision) {
@@ -129,6 +142,16 @@ fun AppsPage(root: Path?, adb: Path, d: AdbDevice, onPulled: (List<Path>) -> Uni
     val view = currentJobView()
     LaunchedEffect(view) {
         val job = JobQueue.current.value
+        if (saveJob != null && job === saveJob && view != null) {
+            when (view.state) {
+                JobState.FAILED -> {
+                    saveJob = null
+                    saveFailure = view.message
+                }
+                JobState.DONE, JobState.CANCELLED -> saveJob = null
+                else -> {}
+            }
+        }
         if (pullJob != null && job === pullJob && view != null) {
             when (view.state) {
                 JobState.DONE -> {
@@ -183,6 +206,18 @@ fun AppsPage(root: Path?, adb: Path, d: AdbDevice, onPulled: (List<Path>) -> Uni
                 onClick = { system = !system },
                 trailing = { Switch(checked = system, onCheckedChange = { system = it }) },
             )
+            if (hits.isNotEmpty()) {
+                ZoneRow(t("ap_save_all"), t("ap_save_all_d", hits.size.toString()), onClick = {
+                    val listed = hits
+                    Chooser.folder(saveTitle, System.getProperty("user.home")) { dir ->
+                        if (dir != null) {
+                            val name = (d.model ?: d.serial).map { c -> if (c.isLetterOrDigit() || c == '.' || c == '_') c else '-' }.joinToString("")
+                            saveApps = listed
+                            saveTarget = dir.resolve("GutapK-apks-$name-" + java.time.LocalDate.now())
+                        }
+                    }
+                })
+            }
         }
         OutlinedTextField(
             value = query,
@@ -218,6 +253,58 @@ fun AppsPage(root: Path?, adb: Path, d: AdbDevice, onPulled: (List<Path>) -> Uni
             user = it
             choosingUser = false
         }, onDismiss = { choosingUser = false })
+    }
+    val target = saveTarget
+    if (target != null) {
+        AlertDialog(
+            onDismissRequest = { saveTarget = null },
+            title = { Text(t("ap_save_all")) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Fact(t("ap_save_count"), saveApps.size.toString())
+                    SelectionContainer { Fact(t("ap_save_to"), target.toString()) }
+                    Text(t("ap_save_how"), style = MaterialTheme.typography.bodyMedium)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val apps = saveApps
+                    val u = user
+                    saveTarget = null
+                    saveJob = JobQueue.start(SAVE_ALL_JOB) { job ->
+                        val r = DeviceApps.saveAll(adb, d.serial, apps, u, target, job) { job.cancelRequested }
+                        saveResult = r
+                        job.result = target.toString()
+                    }
+                }) { Text(t("ap_save_go")) }
+            },
+            dismissButton = { TextButton(onClick = { saveTarget = null }) { Text(t("cancel")) } },
+        )
+    }
+    val sr = saveResult
+    if (sr != null && saveJob == null) {
+        AlertDialog(
+            onDismissRequest = { saveResult = null },
+            title = { Text(t("ap_save_done_title")) },
+            text = {
+                SelectionContainer {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(t("ap_save_done", sr.saved.toString(), sr.files.toString()), style = MaterialTheme.typography.bodyMedium)
+                        sr.failed.forEach { (pkg, why) -> Text("$pkg: $why", style = MaterialTheme.typography.bodyMedium) }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { saveResult = null }) { Text(t("close")) } },
+        )
+    }
+    val sf = saveFailure
+    if (sf != null) {
+        AlertDialog(
+            onDismissRequest = { saveFailure = null },
+            title = { Text(t("ap_save_failed")) },
+            text = { Text(sf) },
+            confirmButton = { TextButton(onClick = { saveFailure = null }) { Text(t("close")) } },
+        )
     }
     val f = failure
     if (f != null) {
