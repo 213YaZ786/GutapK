@@ -554,4 +554,16 @@ class EditTest {
         assertEquals("\\?a\\\\b @c ?d", Label.escape("?a\\b @c ?d", aapt = true))
         assertEquals("&lt;b&gt;", Label.escape("<b>", aapt = true))
     }
+
+    // The forms both engines write pass, the ones the patterns would cut
+    // at the wrong place are refused before any edit.
+    @Test
+    fun manifestShapeGuardsThePatterns() {
+        val shape = io.gutapk.core.edit.ManifestShape
+        assertEquals(null, shape.problem(labelled))
+        assertEquals(null, shape.problem("<?xml version='1.0' encoding='utf-8' ?>\n<manifest a=\"x &gt; y\" b='say \"hi\"'/>"))
+        assertTrue(shape.problem("<manifest><application android:label=\"a > b\"/></manifest>") != null)
+        assertTrue(shape.problem("<manifest><application android:label='a < b'/></manifest>") != null)
+        assertTrue(shape.problem("<manifest><!-- note --></manifest>") != null)
+    }
 }

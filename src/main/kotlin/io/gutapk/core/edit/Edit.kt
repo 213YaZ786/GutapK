@@ -143,6 +143,7 @@ object Edit {
         val manifest = decoded.resolve("AndroidManifest.xml")
         if (!Files.isRegularFile(manifest)) throw CheckFailed("decoded APK has no AndroidManifest.xml")
         var text = Files.readString(manifest)
+        ManifestShape.problem(text)?.let { throw CheckFailed("$it. GutapK's edits do not handle this form, nothing was changed.") }
 
         // First, so the language list written later sees what is kept.
         if (tweaks.keepAbi != null) keepAbi(decoded, tweaks.keepAbi, sink)
