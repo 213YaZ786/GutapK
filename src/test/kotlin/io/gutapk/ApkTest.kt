@@ -429,4 +429,23 @@ class ApkTest {
         assertTrue(io.gutapk.core.sign.OwnKey.matches(a.private, certA))
         assertFalse(io.gutapk.core.sign.OwnKey.matches(b.private, certA))
     }
+
+    // The table lists size and signer, then only what differs.
+    @Test
+    fun comparesBeforeAndAfter() {
+        val a = io.gutapk.core.apk.ApkInfo(
+            packageName = "com.a", versionName = "1.0", versionCode = 1, minSdk = 21, targetSdk = 30, label = "Game",
+            iconPath = null, iconArt = null, iconKind = io.gutapk.core.apk.IconKind.ADAPTIVE,
+            predictiveBack = false, hasLocaleConfig = false, nativeLibsFromApk = false, allowsBackup = true,
+            debuggable = false, fragileUserData = false, memoryTagging = false, split = null,
+            permissions = listOf("android.permission.INTERNET", "android.permission.READ_CONTACTS"),
+            languages = listOf("de", "fr"), components = listOf("a.Main"), dexCount = 2,
+            abis = listOf("arm64-v8a", "armeabi-v7a"), nativeLibs = 4, engines = emptyList(), entries = 100,
+        )
+        val b = a.copy(label = "Mine", targetSdk = 35, permissions = listOf("android.permission.INTERNET"), abis = listOf("arm64-v8a"), allowsBackup = false)
+        val c = io.gutapk.core.apk.Compare.changes(a, b, 1000, 800, "AA", "BB")
+        assertEquals(listOf("size", "signer", "label", "target_sdk", "permissions_removed", "abis", "backup"), c.map { it.key })
+        assertEquals(listOf("android.permission.READ_CONTACTS"), c.first { it.key == "permissions_removed" }.before)
+        assertEquals(listOf("size", "signer"), io.gutapk.core.apk.Compare.changes(a, a, 1, 1, "AA", "AA").map { it.key })
+    }
 }

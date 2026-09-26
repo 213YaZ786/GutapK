@@ -284,6 +284,7 @@ fun OverviewScreen(
                 retryPlan = null
             },
             onRetry = retry,
+            original = original,
             onTry = if (root != null) {
                 { file ->
                     report = null

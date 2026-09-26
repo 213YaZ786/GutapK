@@ -3,7 +3,10 @@ package io.gutapk.features.overview
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -11,8 +14,12 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import io.gutapk.core.apk.ApkInfo
+import io.gutapk.core.apk.ApkReader
+import io.gutapk.core.apk.Change
+import io.gutapk.core.apk.Compare
 import io.gutapk.core.apk.SignatureInfo
 import io.gutapk.core.apk.Signatures
 import io.gutapk.core.sign.ApkSigning
@@ -22,12 +29,14 @@ import io.gutapk.core.sign.TestKey
 import io.gutapk.job.Job
 import io.gutapk.job.JobQueue
 import io.gutapk.ui.Fact
+import io.gutapk.ui.humanSize
 import io.gutapk.ui.keyFingerprint
 import io.gutapk.ui.keyLabel
 import io.gutapk.ui.showInFolder
 import io.gutapk.ui.t
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.nio.file.Files
 import java.nio.file.Path
 
 const val SIGN_JOB = "sign"
@@ -106,7 +115,13 @@ sealed interface SignReport {
 // The result is read back from the file itself, not from what the job
 // believed it wrote.
 @Composable
-fun SignReportDialog(report: SignReport, onClose: () -> Unit, onRetry: (() -> Unit)? = null, onTry: ((Path) -> Unit)? = null) {
+fun SignReportDialog(
+    report: SignReport,
+    onClose: () -> Unit,
+    onRetry: (() -> Unit)? = null,
+    onTry: ((Path) -> Unit)? = null,
+    original: Path? = null,
+) {
     AlertDialog(
         onDismissRequest = onClose,
         title = { Text(t(if (report is SignReport.Done) "signed_title" else "sign_failed")) },
@@ -127,13 +142,35 @@ fun SignReportDialog(report: SignReport, onClose: () -> Unit, onRetry: (() -> Un
                     val check by produceState<SignatureInfo?>(null, report.file) {
                         value = withContext(Dispatchers.IO) { Signatures.verify(report.file) }
                     }
+                    val changes by produceState<List<Change>?>(null, report.file, original) {
+                        if (original == null) return@produceState
+                        value = withContext(Dispatchers.IO) {
+                            runCatching {
+                                Compare.changes(
+                                    ApkReader.read(original),
+                                    ApkReader.read(report.file),
+                                    Files.size(original),
+                                    Files.size(report.file),
+                                    Signatures.verify(original).signers.firstOrNull()?.sha256,
+                                    Signatures.verify(report.file).signers.firstOrNull()?.sha256,
+                                )
+                            }.getOrNull()
+                        }
+                    }
                     SelectionContainer {
-                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column(
+                            Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
                             Fact(t("signed_file"), report.file.toString())
                             val c = check
                             if (c != null) {
                                 Fact(t("signed_schemes"), c.schemes.joinToString(", "))
                                 c.signers.firstOrNull()?.let { Fact(t("signed_signer"), it.sha256) }
+                            }
+                            changes?.let { list ->
+                                Text(t("cmp_title"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                                list.forEach { ChangeRow(it) }
                             }
                         }
                     }
@@ -152,4 +189,31 @@ fun SignReportDialog(report: SignReport, onClose: () -> Unit, onRetry: (() -> Un
             }
         },
     )
+}
+
+@Composable
+private fun changeValue(v: Any?): String = when (v) {
+    null -> t("cmp_none")
+    is Boolean -> t(if (v) "cmp_on" else "cmp_off")
+    is List<*> -> if (v.isEmpty()) t("cmp_none") else v.joinToString(", ")
+    else -> v.toString()
+}
+
+// One field, before then after. A permission list reads better as one
+// name per line, without the android.permission. prefix.
+@Composable
+private fun ChangeRow(c: Change) {
+    val text = when (c.key) {
+        "size" -> {
+            val a = c.before as Long
+            val b = c.after as Long
+            val delta = b - a
+            humanSize(a) + "  →  " + humanSize(b) + "  (" + (if (delta >= 0) "+" else "-") + humanSize(kotlin.math.abs(delta)) + ")"
+        }
+        "signer" -> changeValue((c.before as? String)?.take(23)) + "  →  " + changeValue((c.after as? String)?.take(23))
+        "permissions_removed" -> (c.before as List<*>).joinToString("\n") { it.toString().removePrefix("android.permission.") }
+        "permissions_added" -> (c.after as List<*>).joinToString("\n") { it.toString().removePrefix("android.permission.") }
+        else -> changeValue(c.before) + "  →  " + changeValue(c.after)
+    }
+    Fact(t("cmp_" + c.key), text)
 }
