@@ -155,6 +155,51 @@ sys.exit(3)
 PY
 }
 
+# Same rules as Releases.dotnetChannel and parseDotnetChannel: newest long
+# term channel still supported, its latest runtime, the file by name, its
+# sha512. Prints version, url, sha512.
+dotnet_latest() {
+    python3 - "$1" "$2" "$3" <<'PY'
+import json, re, sys
+from urllib.parse import urlparse
+index_file, index_url, name = sys.argv[1:4]
+host = urlparse(index_url).hostname
+def key(v):
+    return [int(x) if x.isdigit() else 0 for x in re.split(r'[.-]', v)]
+chans = [c for c in json.load(open(index_file))['releases-index'] if c.get('release-type') == 'lts' and c.get('support-phase') in ('active', 'maintenance')]
+if not chans:
+    sys.exit('no supported lts channel')
+c = max(chans, key=lambda c: key(c['channel-version']))
+url = c['releases.json']
+if not url.startswith('https://') or urlparse(url).hostname != host:
+    sys.exit('channel index on another host')
+print(url)
+PY
+}
+dotnet_file() {
+    python3 - "$1" "$2" "$3" <<'PY'
+import json, re, sys
+from urllib.parse import urlparse
+chan_file, index_url, name = sys.argv[1:4]
+d = json.load(open(chan_file))
+latest = d['latest-runtime']
+for r in d['releases']:
+    rt = r.get('runtime') or {}
+    if rt.get('version') != latest:
+        continue
+    for f in rt.get('files', []):
+        if f['name'] == name:
+            if not f['url'].startswith('https://') or urlparse(f['url']).hostname != urlparse(index_url).hostname:
+                sys.exit('file on another host')
+            h = f['hash'].lower()
+            if not re.fullmatch(r'[0-9a-f]{128}', h):
+                sys.exit('no sha512')
+            print(latest, f['url'], h)
+            sys.exit(0)
+sys.exit('%s not in the latest runtime' % name)
+PY
+}
+
 # The app asks GitHub without an account, 60 lookups an hour. CI shares its
 # addresses with other jobs, so it uses the job token when one is given.
 gh_auth=()
@@ -216,6 +261,20 @@ while IFS=$'\t' read -r id source index pkg entry execdir licence licenceurl wha
             fi
             read -r version url size sha256 <<< "$line"
             sha1=-
+            ;;
+        dotnet)
+            if ! curl -fsSL --retry 3 --retry-delay 5 -o "$SCRATCH/index.json" "$index" \
+                    || ! chan="$(dotnet_latest "$SCRATCH/index.json" "$index" "$pkg")" \
+                    || ! curl -fsSL --retry 3 --retry-delay 5 -o "$SCRATCH/channel.json" "$chan" \
+                    || ! line="$(dotnet_file "$SCRATCH/channel.json" "$index" "$pkg")"; then
+                echo "::error::$id lookup failed in the .NET release index"
+                fail=1
+                continue
+            fi
+            read -r version url sha512 <<< "$line"
+            size="$(curl -fsSI --retry 3 "$url" | tr -d '\r' | awk 'tolower($1)=="content-length:" {print $2}' | tail -1)"
+            sha1=-
+            sha256=-
             ;;
         github-nightly)
             repo="${index#https://github.com/}"
@@ -284,7 +343,15 @@ while IFS=$'\t' read -r id source index pkg entry execdir licence licenceurl wha
         echo "::error::$id sha256 is $got_sha256, publisher says $sha256"
         fail=1
     fi
-    if [ "$sha1" = "-" ] && [ "$sha256" = "-" ]; then
+    if [ -n "${sha512:-}" ]; then
+        got_sha512="$(sha512sum "$file" | cut -d' ' -f1)"
+        if [ "$got_sha512" != "$sha512" ]; then
+            echo "::error::$id sha512 is $got_sha512, publisher says $sha512"
+            fail=1
+        else
+            echo "sha512 matches the publisher"
+        fi
+    elif [ "$sha1" = "-" ] && [ "$sha256" = "-" ]; then
         echo "::warning::$id publishes no checksum, the app records it on first download"
     fi
 
@@ -317,7 +384,8 @@ while IFS=$'\t' read -r id source index pkg entry execdir licence licenceurl wha
             fi
             ;;
     esac
-    rm -f "$file" "$SCRATCH/index.xml" "$SCRATCH/release.json" "$SCRATCH/runs.json" "$SCRATCH/artifacts.json"
+    rm -f "$file" "$SCRATCH/index.xml" "$SCRATCH/release.json" "$SCRATCH/runs.json" "$SCRATCH/artifacts.json" "$SCRATCH/index.json" "$SCRATCH/channel.json"
+    sha512=
 done < "$TABLE"
 
 if [ "$checked" -eq 0 ]; then

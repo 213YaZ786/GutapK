@@ -10,6 +10,9 @@ enum class ToolSource(val tag: String) {
     // publisher whose releases lag its code. package is
     // workflow@branch/artifact.
     GITHUB_NIGHTLY("github-nightly"),
+    // Microsoft's .NET release index, index is releases-index.json,
+    // package the file name of one runtime archive.
+    DOTNET("dotnet"),
 }
 
 // In the execDir column, a tool whose program is a single file, a jar, with
@@ -41,6 +44,7 @@ data class Release(
     val size: Long,
     val sha1: String?,
     val sha256: String?,
+    val sha512: String? = null,
 ) {
     val fileName: String get() = url.substringAfterLast('/')
 }

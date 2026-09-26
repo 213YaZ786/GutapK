@@ -15,6 +15,7 @@ import androidx.compose.runtime.setValue
 import io.gutapk.core.apk.UnityBackend
 import io.gutapk.core.apk.UnityInfo
 import io.gutapk.core.il2cpp.DumpRecord
+import io.gutapk.core.il2cpp.Dumper
 import io.gutapk.core.il2cpp.Il2CppDump
 import io.gutapk.core.il2cpp.MethodIndex
 import io.gutapk.core.il2cpp.Patches
@@ -25,6 +26,7 @@ import io.gutapk.tools.CheckFailed
 import io.gutapk.tools.Installer
 import io.gutapk.tools.RunSession
 import io.gutapk.tools.ToolStatus
+import io.gutapk.tools.ToolSpec
 import io.gutapk.tools.Tools
 import io.gutapk.ui.BodyText
 import io.gutapk.ui.ChoiceDialog
@@ -32,6 +34,7 @@ import io.gutapk.ui.LookupDialog
 import io.gutapk.ui.Zone
 import io.gutapk.ui.ZoneRow
 import io.gutapk.ui.currentJobView
+import io.gutapk.ui.jobTitle
 import io.gutapk.ui.humanSize
 import io.gutapk.ui.t
 import kotlinx.coroutines.Dispatchers
@@ -40,17 +43,30 @@ import java.nio.file.Path
 
 private const val DUMP_JOB = "dump"
 
-// The dumpers offered, their ids in tools.tsv.
-private val DUMPERS = listOf("cpp2il", "cpp2il-nightly")
+// The dumpers offered, their ids in tools.tsv, with every tool each one
+// needs installed.
+private val DUMPERS = listOf("cpp2il", "cpp2il-nightly", "il2cppdumper")
 
-private class ToolState(val ready: Boolean)
+private fun toolsFor(dumper: String): List<String> = if (dumper == "il2cppdumper") listOf("dotnet", "il2cppdumper") else listOf(dumper)
+
+private fun installed(root: Path, id: String): Pair<ToolSpec, ToolStatus.Installed> {
+    val spec = Tools.byId(id) ?: throw CheckFailed("$id is not in the tool table")
+    val status = Installer.status(root, spec) as? ToolStatus.Installed ?: throw CheckFailed("$id is not installed")
+    if (!Installer.verify(root, spec)) throw CheckFailed("$id changed since it was installed, it will not run")
+    return spec to status
+}
 
 private fun startDump(root: Path, packageDir: Path, apk: Path, u: UnityInfo, dumper: String): Job? = JobQueue.start(DUMP_JOB) { job ->
-    val spec = Tools.byId(dumper) ?: throw CheckFailed("$dumper is not in the tool table")
-    val status = Installer.status(root, spec) as? ToolStatus.Installed ?: throw CheckFailed("$dumper is not installed")
-    if (!Installer.verify(root, spec)) throw CheckFailed("$dumper changed since it was installed, it will not run")
+    val tool = if (dumper == "il2cppdumper") {
+        val (dotnetSpec, dotnet) = installed(root, "dotnet")
+        val (_, dll) = installed(root, "il2cppdumper")
+        Dumper.Il2CppDumper(dll.version, Installer.entry(root, dotnetSpec, dotnet.version), dll.location)
+    } else {
+        val (spec, status) = installed(root, dumper)
+        Dumper.Cpp2Il(dumper, status.version, Installer.entry(root, spec, status.version))
+    }
     val work = RunSession.workDir?.resolve("dump") ?: throw CheckFailed("no work folder for this run")
-    val record = Il2CppDump.run(Installer.entry(root, spec, status.version), dumper, status.version, packageDir, apk, u, work, job) {
+    val record = Il2CppDump.run(tool, packageDir, apk, u, work, job) {
         job.cancelRequested
     }
     job.result = record.count.toString()
@@ -72,17 +88,21 @@ fun UnityZone(u: UnityInfo, root: Path?, packageDir: Path, apk: Path, dumper: St
         value = withContext(Dispatchers.IO) { Patches.read(packageDir).size }
     }
     // Verify hashes the program, so it runs on IO and again when a job ends.
-    val tool by produceState<ToolState?>(null, root, chosen, view?.state) {
-        val spec = Tools.byId(chosen)
-        value = if (root == null || spec == null) {
-            ToolState(false)
+    // The tools the chosen method still needs, none when all are ready.
+    val missing by produceState<List<ToolSpec>?>(null, root, chosen, view?.state) {
+        value = if (root == null) {
+            null
         } else {
             withContext(Dispatchers.IO) {
-                ToolState(Installer.status(root, spec) is ToolStatus.Installed && Installer.verify(root, spec))
+                toolsFor(chosen).mapNotNull { Tools.byId(it) }.filter { spec ->
+                    !(Installer.status(root, spec) is ToolStatus.Installed && Installer.verify(root, spec))
+                }
             }
         }
     }
     var asking by remember { mutableStateOf(false) }
+    // The tool ids the download dialog was opened for, which name its job.
+    var missingAsked by remember { mutableStateOf(emptyList<String>()) }
     var afterTool by remember { mutableStateOf(false) }
     var dumpJob by remember { mutableStateOf<Job?>(null) }
     var failure by remember { mutableStateOf<String?>(null) }
@@ -90,7 +110,7 @@ fun UnityZone(u: UnityInfo, root: Path?, packageDir: Path, apk: Path, dumper: St
 
     LaunchedEffect(view) {
         val job = JobQueue.current.value
-        if (afterTool && root != null && view != null && view.title == chosen) {
+        if (afterTool && root != null && view != null && view.title == jobTitle(missingAsked)) {
             when (view.state) {
                 JobState.DONE -> {
                     afterTool = false
@@ -155,9 +175,11 @@ fun UnityZone(u: UnityInfo, root: Path?, packageDir: Path, apk: Path, dumper: St
         val r = record
         if (dumpable && root != null) {
             val start = {
-                if (tool?.ready == true) {
+                val m = missing
+                if (m != null && m.isEmpty()) {
                     dumpJob = startDump(root, packageDir, apk, u, chosen)
-                } else {
+                } else if (m != null) {
+                    missingAsked = m.map { it.id }
                     asking = true
                 }
             }
@@ -180,6 +202,7 @@ fun UnityZone(u: UnityInfo, root: Path?, packageDir: Path, apk: Path, dumper: St
             title = t("un_method"),
             options = DUMPERS.map { it to dumperName(it) + "\n" + dumperNote(it) },
             current = chosen,
+            disabled = if (dumperReads(u.metadataVersion)) emptySet() else setOf("il2cppdumper"),
             onPick = {
                 choosing = false
                 onDumper(it)
@@ -187,13 +210,13 @@ fun UnityZone(u: UnityInfo, root: Path?, packageDir: Path, apk: Path, dumper: St
             onDismiss = { choosing = false },
         )
     }
-    val spec = Tools.byId(chosen)
-    if (asking && root != null && spec != null) {
+    val asked = missingAsked.mapNotNull { Tools.byId(it) }
+    if (asking && root != null && asked.isNotEmpty()) {
         LookupDialog(
             root = root,
-            spec = spec,
+            specs = asked,
             onDismiss = { asking = false },
-            why = t("un_dump_needs"),
+            why = t(if (chosen == "il2cppdumper") "un_dump_needs_dumper" else "un_dump_needs"),
             onStarted = { afterTool = true },
         )
     }
@@ -212,6 +235,7 @@ fun UnityZone(u: UnityInfo, root: Path?, packageDir: Path, apk: Path, dumper: St
 private fun dumperName(id: String): String = when (id) {
     "cpp2il" -> t("un_m_cpp2il")
     "cpp2il-nightly" -> t("un_m_nightly")
+    "il2cppdumper" -> t("un_m_dumper")
     else -> id
 }
 
@@ -219,5 +243,9 @@ private fun dumperName(id: String): String = when (id) {
 private fun dumperNote(id: String): String = when (id) {
     "cpp2il" -> t("un_m_cpp2il_d")
     "cpp2il-nightly" -> t("un_m_nightly_d")
+    "il2cppdumper" -> t("un_m_dumper_d", Il2CppDump.DUMPER_METADATA_MAX.toString())
     else -> ""
 }
+
+private fun dumperReads(version: Int?): Boolean =
+    version != null && version in Il2CppDump.DUMPER_METADATA_MIN..Il2CppDump.DUMPER_METADATA_MAX

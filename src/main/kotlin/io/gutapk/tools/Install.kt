@@ -236,6 +236,7 @@ object Installer {
             size != release.size -> "size is $size, the publisher says ${release.size}"
             release.sha1 != null && sha1 != release.sha1 -> "sha1 is $sha1, the publisher says ${release.sha1}"
             release.sha256 != null && sha256 != release.sha256 -> "sha256 is $sha256, the publisher says ${release.sha256}"
+            release.sha512 != null && Hash.of(archive, "SHA-512") != release.sha512 -> "sha512 differs from the one the publisher states"
             recorded != null && sha256 != recorded -> "sha256 is $sha256, recorded $recorded"
             else -> null
         }

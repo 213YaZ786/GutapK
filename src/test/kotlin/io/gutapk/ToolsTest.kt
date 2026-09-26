@@ -214,6 +214,30 @@ class ToolsTest {
         assertTrue(Releases.compare("20260926.010203-aaaaaaa", r.version) > 0)
     }
 
+    // Microsoft's index and one channel's releases.json, cut to the fields
+    // read, values as served on 2026-09-26.
+    @Test
+    fun readsTheDotnetIndex() {
+        val index = "https://builds.dotnet.microsoft.com/dotnet/release-metadata/releases-index.json"
+        val json = """{"releases-index": [
+            {"channel-version": "11.0", "release-type": "sts", "support-phase": "go-live", "releases.json": "https://builds.dotnet.microsoft.com/dotnet/release-metadata/11.0/releases.json"},
+            {"channel-version": "10.0", "release-type": "lts", "support-phase": "active", "releases.json": "https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0/releases.json"},
+            {"channel-version": "8.0", "release-type": "lts", "support-phase": "maintenance", "releases.json": "https://builds.dotnet.microsoft.com/dotnet/release-metadata/8.0/releases.json"},
+            {"channel-version": "6.0", "release-type": "lts", "support-phase": "eol", "releases.json": "https://builds.dotnet.microsoft.com/dotnet/release-metadata/6.0/releases.json"}]}"""
+        assertEquals("https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0/releases.json", Releases.dotnetChannel(json, index))
+        assertNull(Releases.dotnetChannel(json.replace("https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0", "https://evil.example/10.0").replace("\"8.0\", \"release-type\": \"lts\"", "\"8.0\", \"release-type\": \"sts\""), index))
+        val hash = "58388fdde4f13bd703c7a6f7defb3300b17e42ba5fe8bca50066f80f64ac7406620dcdfb4acc1eff7992750c8cc5cff8369dd12d09730c8a9e8760d6032f7f6e"
+        val channel = """{"latest-runtime": "10.0.12", "releases": [{"runtime": {"version": "10.0.12", "files": [
+            {"name": "dotnet-runtime-linux-arm64.tar.gz", "rid": "linux-arm64", "url": "https://builds.dotnet.microsoft.com/dotnet/Runtime/10.0.12/dotnet-runtime-10.0.12-linux-arm64.tar.gz", "hash": "$hash"},
+            {"name": "dotnet-runtime-linux-x64.tar.gz", "rid": "linux-x64", "url": "https://builds.dotnet.microsoft.com/dotnet/Runtime/10.0.12/dotnet-runtime-10.0.12-linux-x64.tar.gz", "hash": "$hash"}]}}]}"""
+        val spec = assertNotNull(Tools.byId("dotnet"))
+        val r = assertNotNull(Releases.parseDotnetChannel(channel, spec.pkg, index))
+        assertEquals("10.0.12", r.version)
+        assertEquals("dotnet-runtime-10.0.12-linux-x64.tar.gz", r.fileName)
+        assertEquals(hash, r.sha512)
+        assertNull(Releases.parseDotnetChannel(channel.replace("https://builds.dotnet.microsoft.com/dotnet/Runtime/10.0.12/dotnet-runtime-10.0.12-linux-x64", "https://evil.example/x"), spec.pkg, index))
+    }
+
     @Test
     fun githubRepoStaysOnGithub() {
         assertEquals("REAndroid/APKEditor", Releases.githubRepo("https://github.com/REAndroid/APKEditor"))

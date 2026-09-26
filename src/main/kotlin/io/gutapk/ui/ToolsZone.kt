@@ -2,10 +2,13 @@ package io.gutapk.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -260,6 +263,68 @@ fun LookupDialog(root: Path, spec: ToolSpec, onDismiss: () -> Unit, why: String?
         },
         dismissButton = {
             if (l !is Lookup.Busy && !upToDate) TextButton(onClick = onDismiss) { Text(t("cancel")) }
+        },
+    )
+}
+
+private sealed interface Lookups {
+    data object Busy : Lookups
+    data class Found(val releases: List<Pair<ToolSpec, Release>>) : Lookups
+    data class Failed(val message: String) : Lookups
+}
+
+// Several tools one feature needs together, looked up at once and fetched
+// in one job, each shown with its own facts. specs holds the missing ones.
+@Composable
+fun LookupDialog(root: Path, specs: List<ToolSpec>, onDismiss: () -> Unit, why: String? = null, onStarted: () -> Unit = {}) {
+    var attempt by remember { mutableStateOf(0) }
+    val lookup by produceState<Lookups>(Lookups.Busy, specs, attempt) {
+        value = Lookups.Busy
+        value = withContext(Dispatchers.IO) {
+            runCatching { Lookups.Found(specs.map { it to Releases.latest(it) }) }
+                .getOrElse { Lookups.Failed(it.message ?: it.javaClass.simpleName) }
+        }
+    }
+    val l = lookup
+    val hosts = specs.joinToString(", ") { it.host }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(t("dl_title", specs.joinToString(" + ") { it.id })) },
+        text = {
+            SelectionContainer {
+                when (l) {
+                    Lookups.Busy -> Text(t("dl_looking", hosts))
+                    is Lookups.Failed -> Text(t("dl_lookup_failed", hosts, l.message), color = MaterialTheme.colorScheme.error)
+                    is Lookups.Found -> Column(
+                        Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(24.dp),
+                    ) {
+                        if (why != null) Text(why)
+                        l.releases.forEach { (spec, release) ->
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(spec.id, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                                ReleaseFacts(root, spec, release, null)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            when (l) {
+                is Lookups.Failed -> TextButton(onClick = { attempt++ }) { Text(t("retry")) }
+                is Lookups.Found -> TextButton(
+                    onClick = {
+                        onDismiss()
+                        startInstall(root, l.releases)
+                        onStarted()
+                    },
+                ) { Text(t("dl_go")) }
+                Lookups.Busy -> TextButton(onClick = onDismiss) { Text(t("close")) }
+            }
+        },
+        dismissButton = {
+            if (l !is Lookups.Busy) TextButton(onClick = onDismiss) { Text(t("cancel")) }
         },
     )
 }

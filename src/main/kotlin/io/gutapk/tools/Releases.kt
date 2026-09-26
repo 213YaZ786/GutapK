@@ -36,6 +36,11 @@ object Releases {
             parseNightlyArtifact(fetchText(artifacts, githubHeaders()), repo, run, artifact)
                 ?: throw IOException("the newest $workflow build of $repo has no $artifact left, GitHub keeps them 90 days. The release works meanwhile.")
         }
+        ToolSource.DOTNET -> {
+            val channel = dotnetChannel(fetchText(spec.index), spec.index) ?: throw IOException("no supported long term .NET release in ${spec.index}")
+            val found = parseDotnetChannel(fetchText(channel), spec.pkg, spec.index) ?: throw IOException("${spec.pkg} not found in $channel")
+            found.copy(size = contentLength(found.url))
+        }
         ToolSource.GITHUB_PRE -> {
             val repo = githubRepo(spec.index)
             val api = "https://api.github.com/repos/$repo/releases?per_page=$PRE_PAGE"
@@ -126,6 +131,46 @@ object Releases {
         val version = g[1] + g[2] + g[3] + "." + g[4] + g[5] + g[6] + "-" + run.sha.take(7)
         val url = "https://nightly.link/$repo/actions/runs/${run.id}/$name.zip"
         return Release(version = version, url = url, size = size, sha1 = null, sha256 = hex)
+    }
+
+    // The newest channel with long term support that is still supported:
+    // what Microsoft would install for a user who wants it to last. Its
+    // releases.json must live on the index's own host.
+    fun dotnetChannel(json: String, index: String): String? {
+        val list = ((Json.parse(json) as? Map<*, *>)?.get("releases-index") as? List<*>)?.filterIsInstance<Map<*, *>>() ?: return null
+        val host = URI(index).host
+        return list
+            .filter { it["release-type"] == "lts" && it["support-phase"] in setOf("active", "maintenance") }
+            .maxWithOrNull { a, b -> compare(a["channel-version"] as? String ?: "0", b["channel-version"] as? String ?: "0") }
+            ?.let { it["releases.json"] as? String }
+            ?.takeIf { it.startsWith("https://") && URI(it).host == host }
+    }
+
+    // The channel's latest runtime, its file of that name, Microsoft's
+    // sha512. The size is not in the index: 0 here, asked from the server.
+    fun parseDotnetChannel(json: String, file: String, index: String): Release? {
+        val root = Json.parse(json) as? Map<*, *> ?: return null
+        val latest = root["latest-runtime"] as? String ?: return null
+        val releases = (root["releases"] as? List<*>)?.filterIsInstance<Map<*, *>>() ?: return null
+        val runtime = releases.mapNotNull { it["runtime"] as? Map<*, *> }.firstOrNull { it["version"] == latest } ?: return null
+        val f = (runtime["files"] as? List<*>)?.filterIsInstance<Map<*, *>>()?.firstOrNull { it["name"] == file } ?: return null
+        val url = (f["url"] as? String)?.takeIf { it.startsWith("https://") && URI(it).host == URI(index).host } ?: return null
+        val hash = (f["hash"] as? String)?.lowercase()?.takeIf { Regex("[0-9a-f]{128}").matches(it) } ?: return null
+        return Release(version = latest, url = url, size = 0, sha1 = null, sha256 = null, sha512 = hash)
+    }
+
+    private fun contentLength(url: String): Long {
+        val conn = URI(url).toURL().openConnection() as HttpURLConnection
+        conn.requestMethod = "HEAD"
+        conn.connectTimeout = 20_000
+        conn.readTimeout = 30_000
+        try {
+            val code = conn.responseCode
+            if (code != HttpURLConnection.HTTP_OK) throw IOException(refusal(conn, code))
+            return conn.contentLengthLong.takeIf { it > 0 } ?: throw IOException("${conn.url.host} gave no size for $url")
+        } finally {
+            conn.disconnect()
+        }
     }
 
     // Dotted numeric versions, compared part by part. A missing part is 0,

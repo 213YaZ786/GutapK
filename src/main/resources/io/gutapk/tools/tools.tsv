@@ -15,6 +15,8 @@
 #              github-nightly: the newest successful push build of a
 #              workflow, package is workflow@branch/artifact. Checked
 #              against GitHub's digest, fetched through nightly.link.
+#              dotnet: Microsoft's .NET release index, the newest supported
+#              long term channel, package is the runtime file's name.
 #              A .tar.gz is unpacked without its top folder, which carries
 #              the version.
 #
@@ -25,3 +27,5 @@ platform-tools	google-repo	https://dl.google.com/android/repository/repository2-
 cpp2il	github-pre	https://github.com/SamboyCoding/Cpp2IL	Cpp2IL-[0-9][0-9A-Za-z.-]*-Linux	Cpp2IL	.	MIT	https://github.com/SamboyCoding/Cpp2IL/blob/development/LICENSE	Dumps Unity IL2CPP games: types, methods and their offsets in libil2cpp.so. Pre-releases only.
 cpp2il-nightly	github-nightly	https://github.com/SamboyCoding/Cpp2IL	dotnet-core.yml@development/Cpp2IL-net9-linux-x64	Cpp2IL	.	MIT	https://github.com/SamboyCoding/Cpp2IL/blob/development/LICENSE	Cpp2IL built from its newest code, a development build that may be broken. Kept by GitHub 90 days.
 scrcpy	github	https://github.com/Genymobile/scrcpy	scrcpy-linux-x86_64-v[0-9][0-9.]*\.tar\.gz	scrcpy	.	Apache-2.0	https://github.com/Genymobile/scrcpy/blob/master/LICENSE	Shows and controls the phone's screen on the computer, over adb.
+il2cppdumper	github	https://github.com/Perfare/Il2CppDumper	Il2CppDumper-net6-v[0-9][0-9.]*\.zip	Il2CppDumper.dll	-	MIT	https://github.com/Perfare/Il2CppDumper/blob/master/LICENSE	Dumps Unity IL2CPP games whose metadata is version 31 or older, Unity 2022 and before. Runs on the .NET runtime.
+dotnet	dotnet	https://builds.dotnet.microsoft.com/dotnet/release-metadata/releases-index.json	dotnet-runtime-linux-x64.tar.gz	dotnet	.	MIT	https://github.com/dotnet/runtime/blob/main/LICENSE.TXT	The .NET runtime for Linux, from Microsoft, the newest long term version. Runs Il2CppDumper.

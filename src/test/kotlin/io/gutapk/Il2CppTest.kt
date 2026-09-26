@@ -433,4 +433,69 @@ class Il2CppTest {
             Storage.deleteTree(dir, dir.parent)
         }
     }
+
+    // Il2CppDumper 6.7.46's dump.cs, cut from a Unity 2022 game: images,
+    // namespaces, nested types, a generic method without code, and the
+    // generic instances it lists in a comment.
+    @Test
+    fun readsIl2CppDumperOutput() {
+        val text = listOf(
+            "// Image 0: mscorlib.dll - 0",
+            "// Image 1: Assembly-CSharp.dll - 1710",
+            "",
+            "// Namespace: Mono.Math",
+            "internal class BigInteger // TypeDefIndex: 81",
+            "{",
+            "\t// Fields",
+            "",
+            "\t// Methods",
+            "",
+            "\t// RVA: 0x18D5258 Offset: 0x18D5258 VA: 0x18D5258",
+            "\tpublic void .ctor(BigInteger.Sign sign, uint len) { }",
+            "",
+            "\t// RVA: -1 Offset: -1",
+            "\tpublic T Get<T>() { }",
+            "\t/* GenericInstMethod :",
+            "\t|",
+            "\t|-RVA: 0x18D5300 Offset: 0x18D5300 VA: 0x18D5300",
+            "\t|-BigInteger.Get<int>",
+            "\t*/",
+            "",
+            "\t// RVA: 0x18D52D8 Offset: 0x18D52D8 VA: 0x18D52D8 Slot: 3",
+            "\tpublic override string ToString() { }",
+            "}",
+            "",
+            "// Namespace: ",
+            "private class Game.Inner : Game.IThing // TypeDefIndex: 1712",
+            "{",
+            "\t// RVA: 0x12B7C9C Offset: 0x12B7C9C VA: 0x12B7C9C",
+            "\tpublic bool get_IsVip() { }",
+            "}",
+        )
+        val entries = io.gutapk.core.il2cpp.DumpCs.parse(text.asSequence())
+        assertEquals(3, entries.size)
+        val ctor = entries[0]
+        assertEquals("mscorlib", ctor.assembly)
+        assertEquals("Mono.Math", ctor.namespace)
+        assertEquals("BigInteger", ctor.type)
+        assertEquals("public void .ctor(BigInteger.Sign sign, uint len)", ctor.member)
+        assertEquals(0x18D5258L, ctor.offset)
+        // Runs to the next offset, the last one gets one instruction.
+        assertEquals(0x18D52D8L - 0x18D5258L, ctor.length)
+        assertEquals("public override string ToString()", entries[1].member)
+        assertEquals(4L, entries[1].length)
+        val vip = entries[2]
+        assertEquals("Assembly-CSharp", vip.assembly)
+        assertEquals("", vip.namespace)
+        assertEquals("Game.Inner", vip.type)
+        assertEquals(0x18D5258L - 0x12B7C9CL, vip.length)
+    }
+
+    @Test
+    fun il2cppDumperRunsWithoutAKeyPress() {
+        val config = "{\n  \"GenerateDummyDll\": true,\n  \"GenerateStruct\": true,\n  \"RequireAnyKey\": true,\n  \"DumpMethod\": true\n}"
+        val out = io.gutapk.core.il2cpp.Il2CppDump.dumperConfig(config)
+        assertEquals("{\n  \"GenerateDummyDll\": false,\n  \"GenerateStruct\": false,\n  \"RequireAnyKey\": false,\n  \"DumpMethod\": true\n}", out)
+    }
+
 }
