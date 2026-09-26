@@ -17,10 +17,12 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import io.gutapk.core.QrCode
 import io.gutapk.device.Adb
 import io.gutapk.device.AdbDevice
 import io.gutapk.device.MdnsService
@@ -29,6 +31,7 @@ import io.gutapk.device.Wireless
 import io.gutapk.tools.RunLog
 import io.gutapk.ui.BodyText
 import io.gutapk.ui.Page
+import io.gutapk.ui.QrImage
 import io.gutapk.ui.Zone
 import io.gutapk.ui.ZoneRow
 import io.gutapk.ui.t
@@ -58,6 +61,7 @@ fun WirelessConnect(adb: Path) {
     var connecting by remember { mutableStateOf(false) }
     var answer by remember { mutableStateOf<String?>(null) }
     var found by remember { mutableStateOf<List<MdnsService>>(emptyList()) }
+    var qr by remember { mutableStateOf<Wireless.QrPairing?>(null) }
     LaunchedEffect(adb) {
         while (true) {
             found = withContext(Dispatchers.IO) {
@@ -74,6 +78,7 @@ fun WirelessConnect(adb: Path) {
                 ZoneRow(t("wl_connect_found", s.name), s.address, onClick = { host(scope, adb, Wireless.connect(s.address)) { answer = it } })
             }
         }
+        ZoneRow(t("wl_qr"), t("wl_qr_d"), onClick = { qr = Wireless.newQrPairing() })
         ZoneRow(t("wl_pair"), t("wl_pair_d"), onClick = { pairing = "" })
         ZoneRow(t("wl_connect"), t("wl_connect_d"), onClick = { connecting = true })
         BodyText(t("wl_note"))
@@ -91,7 +96,50 @@ fun WirelessConnect(adb: Path) {
             host(scope, adb, Wireless.connect(address)) { answer = it }
         }, onDismiss = { connecting = false })
     }
+    val q = qr
+    if (q != null) {
+        QrPairDialog(adb, q, onPaired = {
+            qr = null
+            answer = it
+        }, onDismiss = { qr = null })
+    }
     ResultDialog(answer) { answer = null }
+}
+
+// The QR the phone scans, then a search every two seconds for the pairing
+// service it announces under the QR's name, answered with adb pair.
+@Composable
+private fun QrPairDialog(adb: Path, q: Wireless.QrPairing, onPaired: (String) -> Unit, onDismiss: () -> Unit) {
+    val code = remember(q) { QrCode.encode(q.text) }
+    var status by remember(q) { mutableStateOf<String?>(null) }
+    val pairingText = t("wl_qr_pairing")
+    LaunchedEffect(q) {
+        while (true) {
+            val seen = withContext(Dispatchers.IO) {
+                runCatching { Wireless.parseMdns(Adb.run(adb, Wireless.mdnsArgs(), 15).out) }.getOrDefault(emptyList())
+            }.firstOrNull { it.pairing && it.name == q.name }
+            if (seen != null) {
+                status = pairingText.replace("%s", seen.address)
+                val args = Wireless.pairQr(seen.address, q.password)
+                RunLog.line("[device] adb pair " + seen.address + " <password>")
+                val out = withContext(Dispatchers.IO) { runCatching { Adb.run(adb, args, 60).out.trim() }.getOrElse { it.message ?: "adb" } }
+                onPaired(out.ifEmpty { "ok" })
+                break
+            }
+            delay(2000)
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(t("wl_qr")) },
+        text = {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                QrImage(code)
+                Text(status ?: t("wl_qr_how"), style = MaterialTheme.typography.bodyMedium)
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(t("cancel")) } },
+    )
 }
 
 // One phone: its address on Wi-Fi, switching it from USB to Wi-Fi, and

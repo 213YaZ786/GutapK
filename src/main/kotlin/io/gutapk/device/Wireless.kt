@@ -28,6 +28,29 @@ object Wireless {
         return listOf("pair", address, code)
     }
 
+    // Pairing by QR code: the phone scans WIFI:T:ADB, S:<name>, P:<password>
+    // in the Wi-Fi QR format, then announces a pairing service under that
+    // name, which adb pair answers with the password. Both are made fresh
+    // for each attempt. The format separates its fields with a semicolon,
+    // written by code point so the source keeps its rule.
+    private val SEP = Char(0x3B)
+    private val QR_SECRET = Regex("""[A-Za-z0-9-]{6,32}""")
+    private const val ALPHABET = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+    class QrPairing(val name: String, val password: String) {
+        val text: String get() = "WIFI:T:ADB" + SEP + "S:" + name + SEP + "P:" + password + SEP + SEP
+    }
+
+    fun newQrPairing(random: java.security.SecureRandom = java.security.SecureRandom()): QrPairing {
+        fun word(n: Int) = (1..n).map { ALPHABET[random.nextInt(ALPHABET.length)] }.joinToString("")
+        return QrPairing("gutapk-" + word(6), word(12))
+    }
+
+    fun pairQr(address: String, password: String): List<String> {
+        require(validAddress(address) && QR_SECRET.matches(password)) { "not an address and a pairing password" }
+        return listOf("pair", address, password)
+    }
+
     fun connect(address: String): List<String> {
         require(validAddress(address)) { "not an address: $address" }
         return listOf("connect", address)
