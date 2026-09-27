@@ -67,7 +67,7 @@ fun SignDialog(
     val codeChanged by produceState(0, dir) {
         value = withContext(Dispatchers.IO) {
             val code = SmaliCode.dir(dir)
-            if (SmaliCode.record(code) == null) 0 else runCatching { SmaliCode.changed(code).size }.getOrDefault(0)
+            if (SmaliCode.record(code) == null) 0 else runCatching { SmaliCode.touched(code).size }.getOrDefault(0)
         }
     }
     val output = when {

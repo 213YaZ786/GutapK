@@ -72,7 +72,7 @@ fun CodeZone(root: Path, code: Path, java: Path, apk: Path, onOpen: (Boolean) ->
     val state by produceState<CodeState?>(null, code, view?.state) {
         value = withContext(Dispatchers.IO) {
             val r = SmaliCode.record(code)
-            CodeState(r, if (r == null) 0 else runCatching { SmaliCode.changed(code).size }.getOrDefault(0))
+            CodeState(r, if (r == null) 0 else runCatching { SmaliCode.touched(code).size }.getOrDefault(0))
         }
     }
     val javaRecord by produceState<JavaRecord?>(null, java, view?.state) {

@@ -23,10 +23,12 @@ class SmaliRecord(val classes: Int, val tool: String)
 // The app decoded by apktool into packages/<pkg>/decoded, a plain folder
 // the user reads and edits, in GutapK or in any editor. Rebuild and sign
 // builds from it, so what is on disk is what goes into the APK. A mark
-// file dated at decode time tells which files changed since.
+// file dated at decode time tells which files changed since, and the list
+// of files decoded tells which ones were deleted.
 object SmaliCode {
     private const val DIR = "decoded"
     private const val MARK = ".gutapk-decoded"
+    private const val FILES = ".gutapk-files"
 
     // apktool's own output, never the user's.
     private val SKIPPED = setOf("build", "dist")
@@ -56,6 +58,7 @@ object SmaliCode {
 
             sink.emit(JobEvent.Step("pack", 2, 2))
             val count = smaliFiles(next).size
+            Files.writeString(next.resolve(FILES), userFiles(next).joinToString("\n", postfix = "\n"))
             val p = Properties()
             p.setProperty("classes", count.toString())
             p.setProperty("tool", tool)
@@ -70,21 +73,35 @@ object SmaliCode {
         }
     }
 
-    // Every file the user wrote since the decode, smali, XML or anything
-    // else, as paths inside the folder.
+    // The files that are the user's: everything but apktool's output and
+    // GutapK's own marks.
+    private fun userFiles(code: Path): List<String> = Files.walk(code).use { s ->
+        s.filter { Files.isRegularFile(it) }
+            .map { code.relativize(it).toString().replace('\\', '/') }
+            .filter { it.substringBefore('/') !in SKIPPED && it != MARK && it != FILES }
+            .sorted()
+            .toList()
+    }
+
+    // Every file the user wrote or added since the decode, smali, XML or
+    // anything else, as paths inside the folder.
     fun changed(code: Path): List<String> {
         val mark = code.resolve(MARK)
         if (!Files.isRegularFile(mark)) return emptyList()
         val since = Files.getLastModifiedTime(mark).toMillis()
-        return Files.walk(code).use { s ->
-            s.filter { Files.isRegularFile(it) && it.fileName.toString() != MARK }
-                .map { code.relativize(it).toString().replace('\\', '/') }
-                .filter { it.substringBefore('/') !in SKIPPED }
-                .filter { Files.getLastModifiedTime(code.resolve(it)).toMillis() > since }
-                .sorted()
-                .toList()
-        }
+        return userFiles(code).filter { Files.getLastModifiedTime(code.resolve(it)).toMillis() > since }
     }
+
+    // The decoded files no longer there. A folder decoded before 0.1.106
+    // has no list and reports none.
+    fun removed(code: Path): List<String> {
+        val list = code.resolve(FILES)
+        if (!Files.isRegularFile(list)) return emptyList()
+        return Files.readAllLines(list).filter { it.isNotBlank() && !Files.exists(code.resolve(it)) }
+    }
+
+    // Changed, added and deleted, what a rebuild from the folder carries.
+    fun touched(code: Path): List<String> = changed(code) + removed(code)
 
     // Only the decoded code and the files next to it, never the user's
     // editor copies or apktool's build output.
@@ -94,7 +111,7 @@ object SmaliCode {
             s.forEach { src ->
                 val rel = code.relativize(src).toString().replace('\\', '/')
                 if (rel.isEmpty()) return@forEach
-                if (rel.substringBefore('/') in SKIPPED || rel == MARK) return@forEach
+                if (rel.substringBefore('/') in SKIPPED || rel == MARK || rel == FILES) return@forEach
                 val to = target.resolve(rel)
                 if (Files.isDirectory(src)) Files.createDirectories(to) else Files.copy(src, to, StandardCopyOption.REPLACE_EXISTING)
             }

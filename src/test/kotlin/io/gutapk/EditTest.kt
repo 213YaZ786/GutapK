@@ -620,6 +620,9 @@ class EditTest {
             java.nio.file.Files.writeString(dir.resolve("apktool.yml"), "version: 3.0.3\n")
             java.nio.file.Files.writeString(dir.resolve("build/apk/classes.dex"), "x")
             java.nio.file.Files.writeString(dir.resolve(".gutapk-decoded"), "classes=1\ntool=3.0.3\n")
+            java.nio.file.Files.createDirectories(dir.resolve("res/values"))
+            java.nio.file.Files.writeString(dir.resolve("res/values/strings.xml"), "<resources/>")
+            java.nio.file.Files.writeString(dir.resolve(".gutapk-files"), "apktool.yml\nres/values/strings.xml\n$entry\n")
             val past = java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() - 60_000)
             java.nio.file.Files.walk(dir).use { s -> s.forEach { java.nio.file.Files.setLastModifiedTime(it, past) } }
             java.nio.file.Files.setLastModifiedTime(dir.resolve(".gutapk-decoded"), java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() - 30_000))
@@ -649,6 +652,12 @@ class EditTest {
             assertTrue(java.nio.file.Files.isRegularFile(out.resolve("apktool.yml")))
             assertFalse(java.nio.file.Files.exists(out.resolve("build")))
             assertFalse(java.nio.file.Files.exists(out.resolve(".gutapk-decoded")))
+            assertFalse(java.nio.file.Files.exists(out.resolve(".gutapk-files")))
+
+            // Deleting alone is a change too.
+            java.nio.file.Files.delete(dir.resolve("res/values/strings.xml"))
+            assertEquals(listOf("res/values/strings.xml"), code.removed(dir))
+            assertEquals(listOf(entry, "res/values/strings.xml"), code.touched(dir))
         } finally {
             base.toFile().deleteRecursively()
         }

@@ -152,7 +152,7 @@ fun EditScreen(
     val codeChanged by produceState<List<String>?>(null, packageDir) {
         value = withContext(Dispatchers.IO) {
             val code = SmaliCode.dir(packageDir)
-            if (SmaliCode.record(code) == null) null else runCatching { SmaliCode.changed(code) }.getOrDefault(emptyList())
+            if (SmaliCode.record(code) == null) null else runCatching { SmaliCode.touched(code) }.getOrDefault(emptyList())
         }
     }
     var applySmali by remember { mutableStateOf(true) }

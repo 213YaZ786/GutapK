@@ -159,7 +159,7 @@ object Edit {
             if (SmaliCode.record(code) == null) throw CheckFailed("the decoded folder $code is missing or incomplete, decode the code again")
             if (engine != Engine.APKTOOL) throw CheckFailed("the decoded folder is apktool's, it is rebuilt with apktool")
             SmaliCode.copyForBuild(code, decoded)
-            sink.emit(JobEvent.Line("built from the decoded folder $code, ${SmaliCode.changed(code).size} files changed there"))
+            sink.emit(JobEvent.Line("built from the decoded folder $code, ${SmaliCode.touched(code).size} files changed, added or deleted there"))
         } else {
             runEngine(jar, engine, work, decode, sink, cancelled)
         }
