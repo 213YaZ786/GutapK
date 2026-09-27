@@ -110,7 +110,7 @@ fun SignDialog(
                             // keyring, which may show its unlock dialog.
                             val signing = if (key == KeyChoice.OWN) OwnKey.load() else TestKey.load()
                             if (set != null) {
-                                SetBuild.sign(set.map { it.file }, out, signing, info.minSdk, version, job)
+                                SetBuild.sign(set.map { it.file to it.fileName }, out, signing, info.minSdk, version, job)
                             } else {
                                 ApkSigning.sign(original, out, signing, info.minSdk, version, job)
                             }

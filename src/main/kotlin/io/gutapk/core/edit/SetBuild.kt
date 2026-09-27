@@ -85,19 +85,21 @@ object SetBuild {
         }
 
         sink.emit(JobEvent.Step("sign", 4, 4))
-        return sign(files, out, key, minSdk, appVersion, sink)
+        return sign(kept.map { staged.resolve(it.fileName) to it.fileName }, out, key, minSdk, appVersion, sink)
     }
 
     // Every part signed with the same key into a folder next to out, which
-    // replaces out once all of them verify.
-    fun sign(files: List<Path>, out: Path, key: SigningKey, minSdk: Int?, appVersion: String, sink: JobSink): SignatureInfo {
+    // replaces out once all of them verify. Each file comes with the name it
+    // gets there: the base is original.apk in the package folder and must
+    // come out as base.apk, as it went in.
+    fun sign(files: List<Pair<Path, String>>, out: Path, key: SigningKey, minSdk: Int?, appVersion: String, sink: JobSink): SignatureInfo {
         val next = out.resolveSibling(out.fileName.toString() + ".part")
         Storage.deleteTree(next, out.parent)
         Files.createDirectories(next)
         try {
             var baseCheck: SignatureInfo? = null
-            files.forEach { f ->
-                val check = ApkSigning.sign(f, next.resolve(f.fileName.toString()), key, minSdk, appVersion, sink)
+            files.forEach { (f, name) ->
+                val check = ApkSigning.sign(f, next.resolve(name), key, minSdk, appVersion, sink)
                 if (baseCheck == null) baseCheck = check
             }
             Storage.deleteTree(out, out.parent)
