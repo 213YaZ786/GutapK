@@ -230,6 +230,8 @@ fun OverviewScreen(
     val loaded = (s as? State.Ready)?.data
     val info = loaded?.info
     val choice = keyChoiceOf(signKey)
+    // The Edit screen's answers, kept while this package is open.
+    val draft = remember(dir, info) { info?.let { EditDraft(it) } }
     val running = jobPill(view)
     // Edit first, it is the fuller action, Sign to its right. Edit opens its
     // own screen, Sign a dialog. While a job runs the pill replaces the row.
@@ -244,8 +246,10 @@ fun OverviewScreen(
     val detection = if (root != null && loaded != null) rememberDetection(root, loaded.classes) else null
     val shownMethod = method
     val shownSmali = smali
-    if (editing && info != null && root != null) {
+    val d = draft
+    if (editing && info != null && root != null && d != null) {
         EditScreen(
+            draft = d,
             detection = detection,
             calls = loaded?.calls.orEmpty(),
             root = root,

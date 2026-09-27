@@ -105,11 +105,44 @@ fun startEdit(plan: EditPlan): Job? = JobQueue.start(RENAME_JOB) { job ->
     job.result = result.output.toString()
 }
 
+// Every answer of the Edit screen, kept by the package's overview so that
+// leaving the screen, to decode the code or dump the methods, and coming
+// back finds them as they were. A new package starts a new draft.
+class EditDraft(info: ApkInfo) {
+    var name: String by mutableStateOf(info.label ?: "")
+    var packageId: String by mutableStateOf(info.packageName)
+    var minSdk: Int? by mutableStateOf(info.minSdk)
+    var targetSdk: Int? by mutableStateOf(info.targetSdk)
+    var themed: Boolean by mutableStateOf(false)
+    var iconImage: Path? by mutableStateOf(null)
+    var predictiveBack: Boolean by mutableStateOf(false)
+    var localeConfig: Boolean by mutableStateOf(false)
+    var nativeLibs: Boolean by mutableStateOf(false)
+    var noBackup: Boolean by mutableStateOf(false)
+    var strictNetwork: Boolean by mutableStateOf(false)
+    var fragileData: Boolean by mutableStateOf(false)
+    var memoryTagging: Boolean by mutableStateOf(false)
+    var notDebuggable: Boolean by mutableStateOf(false)
+    var keepAbi: String? by mutableStateOf(null)
+    var keptLanguages: Set<String> by mutableStateOf(info.languages.toSet())
+    var stripDebug: Boolean by mutableStateOf(false)
+    var applyPatches: Boolean by mutableStateOf(true)
+    var applySmali: Boolean by mutableStateOf(true)
+    var iconCheck: IconCheck? by mutableStateOf(null)
+    // Tracker names switched on for silencing. None by default.
+    val silenced = mutableStateMapOf<String, Boolean>()
+
+    // Every permission starts kept. Switching one off marks it for removal,
+    // so the default action leaves the app exactly as it was.
+    val kept = mutableStateMapOf<String, Boolean>().apply { info.permissions.forEach { put(it, true) } }
+}
+
 // A page rather than a dialog, so each tweak gets its own zone and the list
 // can grow. Ask first, do after: every row only records an answer, the disk
 // is touched once the pill action runs, and Back leaves the app untouched.
 @Composable
 fun EditScreen(
+    draft: EditDraft,
     detection: Detection?,
     calls: Set<String>,
     root: Path,
@@ -122,30 +155,30 @@ fun EditScreen(
     onStarted: (Job, EditPlan) -> Unit,
     onBack: () -> Unit,
 ) {
-    var name by remember { mutableStateOf(info.label ?: "") }
-    var packageId by remember { mutableStateOf(info.packageName) }
-    var minSdk by remember { mutableStateOf(info.minSdk) }
-    var targetSdk by remember { mutableStateOf(info.targetSdk) }
-    var themed by remember { mutableStateOf(false) }
-    var iconImage by remember { mutableStateOf<Path?>(null) }
-    var predictiveBack by remember { mutableStateOf(false) }
-    var localeConfig by remember { mutableStateOf(false) }
-    var nativeLibs by remember { mutableStateOf(false) }
-    var noBackup by remember { mutableStateOf(false) }
-    var strictNetwork by remember { mutableStateOf(false) }
-    var fragileData by remember { mutableStateOf(false) }
-    var memoryTagging by remember { mutableStateOf(false) }
-    var notDebuggable by remember { mutableStateOf(false) }
-    var keepAbi by remember { mutableStateOf<String?>(null) }
-    var keptLanguages by remember { mutableStateOf(info.languages.toSet()) }
-    var stripDebug by remember { mutableStateOf(false) }
+    var name by draft::name
+    var packageId by draft::packageId
+    var minSdk by draft::minSdk
+    var targetSdk by draft::targetSdk
+    var themed by draft::themed
+    var iconImage by draft::iconImage
+    var predictiveBack by draft::predictiveBack
+    var localeConfig by draft::localeConfig
+    var nativeLibs by draft::nativeLibs
+    var noBackup by draft::noBackup
+    var strictNetwork by draft::strictNetwork
+    var fragileData by draft::fragileData
+    var memoryTagging by draft::memoryTagging
+    var notDebuggable by draft::notDebuggable
+    var keepAbi by draft::keepAbi
+    var keptLanguages by draft::keptLanguages
+    var stripDebug by draft::stripDebug
     val highestSdk = Sdk.highest(info.minSdk, info.targetSdk)
     // The patches made in the hex view, on by default: making them was the
     // user's request already.
     val patches by produceState(emptyList<BytePatch>(), packageDir) {
         value = withContext(Dispatchers.IO) { Patches.read(packageDir) }
     }
-    var applyPatches by remember { mutableStateOf(true) }
+    var applyPatches by draft::applyPatches
     // The decoded folder, on by default for the same reason as the patches:
     // what the user changed there is what they expect in the app. Its
     // changed files are listed, null when there is no folder.
@@ -155,7 +188,7 @@ fun EditScreen(
             if (SmaliCode.record(code) == null) null else runCatching { SmaliCode.touched(code) }.getOrDefault(emptyList())
         }
     }
-    var applySmali by remember { mutableStateOf(true) }
+    var applySmali by draft::applySmali
     val useSmali = applySmali && !codeChanged.isNullOrEmpty()
     // The folder is used whenever it is on, changed or not: it is the
     // user's copy of the app.
@@ -164,13 +197,10 @@ fun EditScreen(
     // A patch for an ABI the size step removes cannot be applied.
     val lostAbis = patches.map { it.abi }.distinct().filter { keepAbi != null && it != keepAbi }
     val removedLanguages = info.languages.toSet() - keptLanguages
-    // Tracker names switched on for silencing. None by default.
-    val silenced = remember { mutableStateMapOf<String, Boolean>() }
+    val silenced = draft.silenced
     val silencedPrefixes = detection?.found.orEmpty().filter { silenced[it.name] == true }.flatMap { it.prefixes }.toSet()
-    var iconCheck by remember { mutableStateOf<IconCheck?>(null) }
-    // Every permission starts kept. Switching one off marks it for removal,
-    // so the default action leaves the app exactly as it was.
-    val kept = remember { mutableStateMapOf<String, Boolean>().apply { info.permissions.forEach { put(it, true) } } }
+    var iconCheck by draft::iconCheck
+    val kept = draft.kept
     var dialog by remember { mutableStateOf<String?>(null) }
 
     val trimmed = name.trim()
