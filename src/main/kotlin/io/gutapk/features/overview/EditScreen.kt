@@ -2,7 +2,6 @@ package io.gutapk.features.overview
 
 import io.gutapk.core.edit.Sdk
 import io.gutapk.core.edit.SmaliCode
-import io.gutapk.core.edit.SmaliEdit
 import io.gutapk.core.edit.SdkProblem
 import androidx.compose.runtime.produceState
 import kotlinx.coroutines.Dispatchers
@@ -147,15 +146,20 @@ fun EditScreen(
         value = withContext(Dispatchers.IO) { Patches.read(packageDir) }
     }
     var applyPatches by remember { mutableStateOf(true) }
-    // The smali classes edited in the code view, on by default for the same
-    // reason as the patches.
-    val smaliEdits by produceState(emptyList<SmaliEdit>(), packageDir) {
+    // The decoded folder, on by default for the same reason as the patches:
+    // what the user changed there is what they expect in the app. Its
+    // changed files are listed, null when there is no folder.
+    val codeChanged by produceState<List<String>?>(null, packageDir) {
         value = withContext(Dispatchers.IO) {
-            runCatching { Parts.of(packageDir).flatMap { SmaliCode.edits(SmaliCode.dir(packageDir, it.name)) } }.getOrDefault(emptyList())
+            val code = SmaliCode.dir(packageDir)
+            if (SmaliCode.record(code) == null) null else runCatching { SmaliCode.changed(code) }.getOrDefault(emptyList())
         }
     }
     var applySmali by remember { mutableStateOf(true) }
-    val useSmali = applySmali && smaliEdits.isNotEmpty()
+    val useSmali = applySmali && !codeChanged.isNullOrEmpty()
+    // The folder is used whenever it is on, changed or not: it is the
+    // user's copy of the app.
+    val useFolder = applySmali && codeChanged != null
     val usePatches = applyPatches && patches.isNotEmpty()
     // A patch for an ABI the size step removes cannot be applied.
     val lostAbis = patches.map { it.abi }.distinct().filter { keepAbi != null && it != keepAbi }
@@ -180,7 +184,7 @@ fun EditScreen(
         predictiveBack || localeConfig || nativeLibs ||
         noBackup || strictNetwork || fragileData || memoryTagging || notDebuggable ||
         silencedPrefixes.isNotEmpty() || keepAbi != null || removedLanguages.isNotEmpty() || stripDebug || usePatches || useSmali
-    val spec = Tools.byId("apkeditor")
+    val spec = Tools.byId(Engine.APKTOOL.id)
     // Verify hashes the tool, so it runs on IO once per visit, not on every
     // switch and never in the frame.
     val toolReady by produceState(false, root) {
@@ -226,14 +230,14 @@ fun EditScreen(
                         removeLanguages = removedLanguages,
                         stripDebugInfo = stripDebug,
                         bytePatches = if (usePatches) patches else emptyList(),
-                        smaliEditsFrom = if (useSmali) packageDir else null,
+                        codeFrom = if (useFolder) packageDir else null,
                     ),
                     key = key,
                     packageName = info.packageName,
                     versionName = info.versionName,
                     minSdk = info.minSdk,
                     appVersion = version,
-                    engine = Engine.APKEDITOR,
+                    engine = Engine.APKTOOL,
                 )
                 startEdit(plan)?.let { onStarted(it, plan) }
             }) { Text(t("rename_go")) }
@@ -508,11 +512,12 @@ fun EditScreen(
             }
         }
 
-        if (smaliEdits.isNotEmpty()) {
+        val cc = codeChanged
+        if (cc != null) {
             Zone(t("code_title")) {
                 ToggleRow(
-                    t("edit_smali", smaliEdits.size),
-                    smaliEdits.mapNotNull { SmaliCode.classOf(it.entry)?.name?.substringAfterLast('.') }.take(4).joinToString(", "),
+                    t("edit_smali", cc.size),
+                    cc.map { it.substringAfterLast('/') }.take(4).joinToString(", ").ifEmpty { t("edit_smali_none") },
                     available = true,
                     checked = applySmali,
                     onChange = { applySmali = it },

@@ -21,9 +21,8 @@ import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 
 // A split set rebuilt part by part, never merged. Only the parts a tweak
-// reaches are decoded: the base for its manifest, code and resources, a
-// split whose code was edited, and every split for a new package id, since
-// each carries the package name.
+// reaches are decoded: the base for its manifest, code and resources, and
+// every split for a new package id, since each carries the package name.
 // A patched library is written straight into the zip of the part holding
 // it, no decoding needed. Every other part is copied byte for byte. All
 // parts are then signed with one key, which Android requires of a set.
@@ -68,9 +67,8 @@ object SetBuild {
             if (cancelled()) throw CancelledByUser()
             val target = staged.resolve(p.fileName)
             val id = tweaks.packageId
-            val code = tweaks.smaliEditsFrom?.let { SmaliCode.dir(it, p.name) }?.takeIf { SmaliCode.edits(it).isNotEmpty() }
-            if (id != null || code != null) {
-                rebuildSplit(splitJar(), p, id, code, work.resolve("split"), target, sink, cancelled)
+            if (id != null) {
+                rebuildSplit(splitJar(), p, id, work.resolve("split"), target, sink, cancelled)
                 sink.emit(JobEvent.Line("part ${p.name} rebuilt"))
             } else {
                 Files.copy(p.file, target, StandardCopyOption.REPLACE_EXISTING)
@@ -122,30 +120,26 @@ object SetBuild {
     // library, after its build. The ABI choice only reaches the base when
     // it carries libraries of its own.
     internal fun baseTweaks(tweaks: Tweaks, baseHasLibs: Boolean): Tweaks {
-        val smali = tweaks.smaliEditsFrom?.takeIf { SmaliCode.edits(SmaliCode.dir(it)).isNotEmpty() }
-        return tweaks.copy(bytePatches = emptyList(), keepAbi = tweaks.keepAbi?.takeIf { baseHasLibs }, smaliEditsFrom = smali)
+        val code = tweaks.codeFrom?.takeIf { SmaliCode.record(SmaliCode.dir(it)) != null }
+        return tweaks.copy(bytePatches = emptyList(), keepAbi = tweaks.keepAbi?.takeIf { baseHasLibs }, codeFrom = code)
     }
 
     private fun hasLibs(apk: Path): Boolean = ZipFile(apk.toFile()).use { z -> z.entries().asSequence().any { it.name.startsWith("lib/") } }
 
-    // A new package id and the user's smali edits, nothing else reaches a
-    // split. APKEditor alone: apktool needs the base's resources to build a
-    // split, and the edits were made on APKEditor's smali. APKEditor 1.4.9
+    // A new package id is all that reaches a split. APKEditor alone: apktool
+    // needs the base's resources to build a split. APKEditor 1.4.9
     // compresses the libraries whatever its uncompressed list says, checked
     // on fx: libraries stored in the original are stored again after it.
-    private fun rebuildSplit(jar: Path, p: Part, id: String?, code: Path?, work: Path, target: Path, sink: JobSink, cancelled: () -> Boolean) {
+    private fun rebuildSplit(jar: Path, p: Part, id: String, work: Path, target: Path, sink: JobSink, cancelled: () -> Boolean) {
         Storage.deleteTree(work, work.parent)
         Files.createDirectories(work)
         val decoded = work.resolve("decoded")
         Edit.runEngine(jar, Engine.APKEDITOR, work, listOf("d", "-i", p.file.toString(), "-o", decoded.toString(), "-f"), sink, cancelled)
         val manifest = decoded.resolve("AndroidManifest.xml")
         if (!Files.isRegularFile(manifest)) throw CheckFailed("the decoded part ${p.name} has no AndroidManifest.xml")
-        if (code != null) SmaliCode.apply(decoded.resolve("smali"), code, SmaliCode.edits(code)) { sink.emit(JobEvent.Line(it)) }
-        if (id != null) {
-            val renamed = PackageId.rename(Files.readString(manifest), id)
-            Files.writeString(manifest, renamed.text)
-            Edit.renameInFiles(decoded, renamed.map, sink)
-        }
+        val renamed = PackageId.rename(Files.readString(manifest), id)
+        Files.writeString(manifest, renamed.text)
+        Edit.renameInFiles(decoded, renamed.map, sink)
         Edit.runEngine(jar, Engine.APKEDITOR, work, listOf("b", "-i", decoded.toString(), "-o", target.toString(), "-f"), sink, cancelled)
         if (!Files.isRegularFile(target)) throw CheckFailed("apkeditor produced no APK for part ${p.name}")
         if (storedLibs(p.file)) rewrite(target, emptyMap(), true, work.resolve("stored.apk"))

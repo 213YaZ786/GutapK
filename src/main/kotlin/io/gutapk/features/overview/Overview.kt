@@ -38,7 +38,6 @@ import io.gutapk.core.apk.DexClasses
 import io.gutapk.core.edit.PermissionRisks
 import io.gutapk.core.edit.SmaliClass
 import io.gutapk.core.apk.Packages
-import io.gutapk.core.apk.Part
 import io.gutapk.core.apk.Parts
 import io.gutapk.core.apk.SetRecord
 import io.gutapk.core.apk.SignatureInfo
@@ -186,20 +185,14 @@ fun OverviewScreen(
     var smali by remember { mutableStateOf<SmaliClass?>(null) }
     var smaliLine by remember { mutableStateOf<Int?>(null) }
     var codeInText by remember { mutableStateOf(false) }
-    // The part whose code is shown, the base unless the user picks a split.
-    val codeParts by produceState(emptyList<Part>(), dir) {
-        value = withContext(Dispatchers.IO) { runCatching { Parts.withCode(dir) }.getOrDefault(emptyList()) }
-    }
-    var codePartName by remember { mutableStateOf(Parts.BASE) }
-    val codePart = codeParts.firstOrNull { it.name == codePartName } ?: Part(Parts.BASE, original)
-    val codeDir = SmaliCode.dir(dir, codePart.name)
+    val codeDir = SmaliCode.dir(dir)
     // The job this screen started. Another job finishing, a tool update for
     // instance, must not open this screen's report.
     var started by remember { mutableStateOf<Job?>(null) }
     var report by remember { mutableStateOf<SignReport?>(null) }
     var trying by remember { mutableStateOf<Path?>(null) }
-    // The edit behind the running job, and the one a failed APKEditor run
-    // offers to retry with apktool.
+    // The edit behind the running job, and the one a failed apktool run
+    // offers to retry with APKEditor.
     var lastPlan by remember { mutableStateOf<EditPlan?>(null) }
     var retryPlan by remember { mutableStateOf<EditPlan?>(null) }
     val view = currentJobView()
@@ -214,7 +207,7 @@ fun OverviewScreen(
                 }
                 JobState.FAILED -> {
                     started = null
-                    retryPlan = lastPlan?.takeIf { it.engine == Engine.APKEDITOR }
+                    retryPlan = lastPlan?.takeIf { it.engine == Engine.APKTOOL && it.tweaks.codeFrom == null }
                     lastPlan = null
                     report = SignReport.Failed(view.message)
                 }
@@ -304,17 +297,7 @@ fun OverviewScreen(
             },
         ) {
             if (root != null) {
-                CodeZone(
-                    root,
-                    codeDir,
-                    codePart,
-                    codeParts,
-                    onPart = {
-                        codePartName = it.name
-                        codeQuery = ""
-                    },
-                    onOpen = { code = true },
-                )
+                CodeZone(root, codeDir, original, onOpen = { code = true })
             }
         }
     }
@@ -350,7 +333,7 @@ fun OverviewScreen(
         null
     } else {
         {
-            val next = plan.copy(engine = Engine.APKTOOL)
+            val next = plan.copy(engine = Engine.APKEDITOR)
             startEdit(next)?.let {
                 started = it
                 lastPlan = next

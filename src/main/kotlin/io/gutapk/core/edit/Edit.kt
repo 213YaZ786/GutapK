@@ -52,15 +52,15 @@ data class Tweaks(
     // Byte patches to libil2cpp.so, each checked against the bytes it
     // replaces.
     val bytePatches: List<BytePatch> = emptyList(),
-    // The package folder when its smali edits are to be applied, else null.
-    // SmaliCode.dir gives each part's own.
-    val smaliEditsFrom: Path? = null,
+    // The package folder whose decoded folder the rebuild starts from, as
+    // the user left it, instead of a fresh decode. apktool only.
+    val codeFrom: Path? = null,
 )
 
 class EditResult(val output: Path, val signature: SignatureInfo)
 
-// APKEditor first, apktool when the user retries with it. The id is the
-// tool's row in tools.tsv.
+// apktool first, the most used and maintained, APKEditor when the user
+// retries with it. The id is the tool's row in tools.tsv.
 enum class Engine(val id: String) { APKEDITOR("apkeditor"), APKTOOL("apktool") }
 
 // Decode to text, apply the tweaks to the decoded files, rebuild, then sign.
@@ -87,7 +87,7 @@ object Edit {
         appVersion: String,
         sink: JobSink,
         cancelled: () -> Boolean,
-        engine: Engine = Engine.APKEDITOR,
+        engine: Engine = Engine.APKTOOL,
     ): EditResult {
         val spec = Tools.byId(engine.id) ?: throw IOException("${engine.id} is not in the tool table")
         val jar = Resolve.tool(root, spec, sink, cancelled)
@@ -153,7 +153,16 @@ object Edit {
         }
 
         sink.emit(JobEvent.Step("decode", 1, steps))
-        runEngine(jar, engine, work, decode, sink, cancelled)
+        val code = tweaks.codeFrom?.let { SmaliCode.dir(it) }
+        if (code != null) {
+            // A copy: the tweaks below change files the user did not.
+            if (SmaliCode.record(code) == null) throw CheckFailed("the decoded folder $code is missing or incomplete, decode the code again")
+            if (engine != Engine.APKTOOL) throw CheckFailed("the decoded folder is apktool's, it is rebuilt with apktool")
+            SmaliCode.copyForBuild(code, decoded)
+            sink.emit(JobEvent.Line("built from the decoded folder $code, ${SmaliCode.changed(code).size} files changed there"))
+        } else {
+            runEngine(jar, engine, work, decode, sink, cancelled)
+        }
 
         sink.emit(JobEvent.Step("edit", 2, steps))
         apply(decoded, tweaks, engine, sink)
@@ -178,17 +187,6 @@ object Edit {
         if (!Files.isRegularFile(manifest)) throw CheckFailed("decoded APK has no AndroidManifest.xml")
         var text = Files.readString(manifest)
         ManifestShape.problem(text)?.let { throw CheckFailed("$it. GutapK's edits do not handle this form, nothing was changed.") }
-
-        // Before anything else touches the smali, stripping debug lines for
-        // one, so each class is still the text its edit was made on.
-        tweaks.smaliEditsFrom?.let { from ->
-            val code = SmaliCode.dir(from)
-            val edits = SmaliCode.edits(code)
-            if (edits.isNotEmpty()) {
-                if (engine != Engine.APKEDITOR) throw CheckFailed("smali edits are made on APKEditor's smali, apktool writes other text. Rebuild with APKEditor.")
-                SmaliCode.apply(decoded.resolve("smali"), code, edits) { sink.emit(JobEvent.Line(it)) }
-            }
-        }
 
         // First, so the language list written later sees what is kept.
         if (tweaks.keepAbi != null) keepAbi(decoded, tweaks.keepAbi, sink)

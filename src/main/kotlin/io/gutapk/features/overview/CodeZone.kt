@@ -10,7 +10,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import io.gutapk.core.apk.Part
 import io.gutapk.core.edit.SmaliCode
 import io.gutapk.core.edit.SmaliRecord
 import io.gutapk.job.Job
@@ -21,8 +20,6 @@ import io.gutapk.tools.Installer
 import io.gutapk.tools.RunSession
 import io.gutapk.tools.ToolStatus
 import io.gutapk.tools.Tools
-import io.gutapk.ui.ChoiceDialog
-import io.gutapk.ui.Chooser
 import io.gutapk.ui.LookupDialog
 import io.gutapk.ui.Zone
 import io.gutapk.ui.ZoneRow
@@ -34,35 +31,31 @@ import kotlinx.coroutines.withContext
 import java.nio.file.Path
 
 private const val CODE_JOB = "code"
-private const val DECODER = "apkeditor"
+private const val DECODER = "apktool"
 
-private const val EXPORT_JOB = "codeexport"
-
-private fun startExport(code: Path, target: Path): Job? = JobQueue.start(EXPORT_JOB) { job ->
-    SmaliCode.export(code, target, job) { job.cancelRequested }
-    job.result = target.toString()
-}
+private class CodeState(val record: SmaliRecord?, val changed: Int)
 
 private fun startDecode(root: Path, code: Path, apk: Path): Job? = JobQueue.start(CODE_JOB) { job ->
-    val spec = Tools.byId(DECODER) ?: throw CheckFailed("apkeditor is not in the tool table")
-    val status = Installer.status(root, spec) as? ToolStatus.Installed ?: throw CheckFailed("APKEditor is not installed")
-    if (!Installer.verify(root, spec)) throw CheckFailed("APKEditor changed since it was installed, it will not run")
+    val spec = Tools.byId(DECODER) ?: throw CheckFailed("apktool is not in the tool table")
+    val status = Installer.status(root, spec) as? ToolStatus.Installed ?: throw CheckFailed("apktool is not installed")
+    if (!Installer.verify(root, spec)) throw CheckFailed("apktool changed since it was installed, it will not run")
     val work = RunSession.workDir?.resolve("code") ?: throw CheckFailed("no work folder for this run")
     val r = SmaliCode.decode(Installer.entry(root, spec, status.version), status.version, apk, code, work, job) { job.cancelRequested }
     job.result = r.classes.toString()
 }
 
-// The app's code as smali, decoded on request and kept with the package.
-// Missing APKEditor is offered first, never downloaded silently. In a split
-// set each part with code is its own, the base unless another is picked.
+// The app decoded by apktool into a folder kept with the package, read
+// and edited in place, here or in any editor. Rebuild and sign builds from
+// it. Missing apktool is offered first, never downloaded silently.
 @Composable
-fun CodeZone(root: Path, code: Path, part: Part, parts: List<Part>, onPart: (Part) -> Unit, onOpen: () -> Unit) {
+fun CodeZone(root: Path, code: Path, apk: Path, onOpen: () -> Unit) {
     val view = currentJobView()
-    val apk = part.file
-    val record by produceState<SmaliRecord?>(null, code, view?.state) {
-        value = withContext(Dispatchers.IO) { SmaliCode.record(code) }
+    val state by produceState<CodeState?>(null, code, view?.state) {
+        value = withContext(Dispatchers.IO) {
+            val r = SmaliCode.record(code)
+            CodeState(r, if (r == null) 0 else runCatching { SmaliCode.changed(code).size }.getOrDefault(0))
+        }
     }
-    var choosing by remember { mutableStateOf(false) }
     val ready by produceState(false, root, view?.state) {
         val spec = Tools.byId(DECODER)
         value = spec != null && withContext(Dispatchers.IO) {
@@ -73,12 +66,7 @@ fun CodeZone(root: Path, code: Path, part: Part, parts: List<Part>, onPart: (Par
     var afterTool by remember { mutableStateOf(false) }
     var decodeJob by remember { mutableStateOf<Job?>(null) }
     var failure by remember { mutableStateOf<String?>(null) }
-    var exportJob by remember { mutableStateOf<Job?>(null) }
-    var exported by remember { mutableStateOf<String?>(null) }
-    val exportTitle = t("code_export")
-    // code is packages/<pkg>/code, or code/split_<name> for a split.
-    val packageName = (if (part.isBase) code.parent else code.parent?.parent)?.fileName?.toString() ?: "code"
-    val exportName = packageName + (if (part.isBase) "" else "-" + part.name) + "-smali"
+    var confirmAgain by remember { mutableStateOf(false) }
 
     LaunchedEffect(view) {
         val job = JobQueue.current.value
@@ -89,20 +77,6 @@ fun CodeZone(root: Path, code: Path, part: Part, parts: List<Part>, onPart: (Par
                     decodeJob = startDecode(root, code, apk)
                 }
                 JobState.FAILED, JobState.CANCELLED -> afterTool = false
-                else -> {}
-            }
-        }
-        if (exportJob != null && job === exportJob && view != null) {
-            when (view.state) {
-                JobState.DONE -> {
-                    exportJob = null
-                    exported = view.message
-                }
-                JobState.FAILED -> {
-                    exportJob = null
-                    failure = view.message
-                }
-                JobState.CANCELLED -> exportJob = null
                 else -> {}
             }
         }
@@ -122,46 +96,35 @@ fun CodeZone(root: Path, code: Path, part: Part, parts: List<Part>, onPart: (Par
         if (ready) decodeJob = startDecode(root, code, apk) else asking = true
     }
     Zone(t("code_title")) {
-        if (parts.size > 1) ZoneRow(t("code_part"), part.name, onClick = { choosing = true })
-        val r = record
+        val r = state?.record
         if (r != null) {
             ZoneRow(t("code_open"), t("code_open_d", r.classes.toString()), onClick = onOpen)
-            ZoneRow(t("code_export"), t("code_export_d"), onClick = {
-                Chooser.folder(exportTitle, System.getProperty("user.home")) { dir ->
-                    if (dir != null) exportJob = startExport(code, dir.resolve(exportName))
-                }
-            })
-            ZoneRow(t("code_again"), t("code_again_d", r.tool), onClick = start)
+            ZoneRow(t("code_folder"), code.toString(), onClick = { showInFolder(code) })
+            val changed = state?.changed ?: 0
+            if (changed > 0) ZoneRow(t("code_changed"), t("code_changed_d", changed.toString()))
+            ZoneRow(t("code_again"), t("code_again_d", r.tool), onClick = { if (changed > 0) confirmAgain = true else start() })
         } else {
             ZoneRow(t("code_decode"), t("code_decode_d"), onClick = start)
         }
     }
 
-    if (choosing) {
-        ChoiceDialog(
-            title = t("code_part"),
-            options = parts.map { it to it.name },
-            current = part,
-            onPick = {
-                choosing = false
-                onPart(it)
+    if (confirmAgain) {
+        AlertDialog(
+            onDismissRequest = { confirmAgain = false },
+            title = { Text(t("code_again")) },
+            text = { Text(t("code_again_warn", (state?.changed ?: 0).toString())) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmAgain = false
+                    start()
+                }) { Text(t("code_again")) }
             },
-            onDismiss = { choosing = false },
+            dismissButton = { TextButton(onClick = { confirmAgain = false }) { Text(t("cancel")) } },
         )
     }
     val spec = Tools.byId(DECODER)
     if (asking && spec != null) {
         LookupDialog(root = root, spec = spec, onDismiss = { asking = false }, why = t("code_needs"), onStarted = { afterTool = true })
-    }
-    val e = exported
-    if (e != null) {
-        AlertDialog(
-            onDismissRequest = { exported = null },
-            title = { Text(t("code_export")) },
-            text = { Text(t("code_export_done", e)) },
-            confirmButton = { TextButton(onClick = { exported = null }) { Text(t("close")) } },
-            dismissButton = { TextButton(onClick = { showInFolder(Path.of(e)) }) { Text(t("key_show")) } },
-        )
     }
     val f = failure
     if (f != null) {

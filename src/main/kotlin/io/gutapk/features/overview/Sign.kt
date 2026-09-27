@@ -25,6 +25,7 @@ import io.gutapk.core.apk.Parts
 import io.gutapk.core.apk.SignatureInfo
 import io.gutapk.core.apk.Signatures
 import io.gutapk.core.edit.SetBuild
+import io.gutapk.core.edit.SmaliCode
 import io.gutapk.core.sign.ApkSigning
 import io.gutapk.core.sign.KeyChoice
 import io.gutapk.core.sign.OwnKey
@@ -61,6 +62,14 @@ fun SignDialog(
         value = withContext(Dispatchers.IO) { Parts.of(dir) }
     }
     val set = parts?.takeIf { it.size > 1 }
+    // Signing takes the original as it is: changes in the decoded folder
+    // only reach the app through Rebuild and sign, said before, not after.
+    val codeChanged by produceState(0, dir) {
+        value = withContext(Dispatchers.IO) {
+            val code = SmaliCode.dir(dir)
+            if (SmaliCode.record(code) == null) 0 else runCatching { SmaliCode.changed(code).size }.getOrDefault(0)
+        }
+    }
     val output = when {
         choice == null || parts == null -> null
         set != null -> ApkSigning.setOutput(dir, info.packageName, info.versionName, choice)
@@ -81,6 +90,9 @@ fun SignDialog(
                 }
                 if (print != null) {
                     SelectionContainer { Fact(t("signed_signer"), print) }
+                }
+                if (codeChanged > 0) {
+                    Text(t("sign_code_changed", codeChanged.toString()), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
                 }
                 if (choice == KeyChoice.TEST) {
                     Text(t("sign_test_warning"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)

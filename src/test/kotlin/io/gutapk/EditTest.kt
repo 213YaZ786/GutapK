@@ -592,62 +592,65 @@ class EditTest {
     @Test
     fun readsSmaliEntries() {
         val code = io.gutapk.core.edit.SmaliCode
-        val c = code.classOf("classes2/com/x/Main\$1.smali")
+        val c = code.classOf("smali_classes2/com/x/Main\$1.smali")
         assertEquals("com.x.Main\$1", c?.name)
-        assertEquals("classes2", c?.dex)
-        assertEquals(null, code.classOf("classes/readme.txt"))
-        val all = listOfNotNull(code.classOf("classes/com/x/Main.smali"), code.classOf("classes/com/x/net/Api.smali"), c)
+        assertEquals("smali_classes2", c?.dex)
+        assertEquals(null, code.classOf("smali/readme.txt"))
+        assertEquals(null, code.classOf("res/values/strings.smali"))
+        val all = listOfNotNull(code.classOf("smali/com/x/Main.smali"), code.classOf("smali/com/x/net/Api.smali"), c)
         assertEquals(listOf("com.x.net.Api"), code.search(all, "x API", 10).second.map { it.name })
         assertEquals(3, code.search(all, "com", 1).first)
     }
 
-    // An edit is kept with the package and written at rebuild only over
-    // the exact text it was made on.
+    // The decoded folder read and written in place: a save lands in the
+    // file, the change is listed since the decode, a broken class is
+    // refused, and the copy for a build leaves apktool's output and the
+    // mark behind.
     @Test
-    fun smaliEditsKeepAndApply() {
-        val base = java.nio.file.Files.createTempDirectory("gutapk-smali")
+    fun codeFolderIsEditedInPlace() {
+        val base = java.nio.file.Files.createTempDirectory("gutapk-code")
         try {
             val code = io.gutapk.core.edit.SmaliCode
-            val pkg = code.dir(base.resolve("pkg"))
-            java.nio.file.Files.createDirectories(pkg)
-            val entry = "classes/com/x/Main.smali"
+            val dir = code.dir(base.resolve("pkg"))
+            val entry = "smali_classes2/com/x/Main.smali"
             val original = ".class public Lcom/x/Main\n.method a()V\n    const-string v0, \"old\"\n.end method\n"
-            java.util.zip.ZipOutputStream(java.nio.file.Files.newOutputStream(pkg.resolve("smali.zip"))).use { z ->
-                z.putNextEntry(java.util.zip.ZipEntry(entry))
-                z.write(original.toByteArray())
-                z.closeEntry()
-            }
-            java.nio.file.Files.writeString(pkg.resolve("code.properties"), "classes=1\ntool=1.4.9\n")
-            assertEquals(original, code.current(pkg, entry))
+            java.nio.file.Files.createDirectories(dir.resolve("smali_classes2/com/x"))
+            java.nio.file.Files.createDirectories(dir.resolve("build/apk"))
+            java.nio.file.Files.writeString(dir.resolve(entry), original)
+            java.nio.file.Files.writeString(dir.resolve("apktool.yml"), "version: 3.0.3\n")
+            java.nio.file.Files.writeString(dir.resolve("build/apk/classes.dex"), "x")
+            java.nio.file.Files.writeString(dir.resolve(".gutapk-decoded"), "classes=1\ntool=3.0.3\n")
+            val past = java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() - 60_000)
+            java.nio.file.Files.walk(dir).use { s -> s.forEach { java.nio.file.Files.setLastModifiedTime(it, past) } }
+            java.nio.file.Files.setLastModifiedTime(dir.resolve(".gutapk-decoded"), java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() - 30_000))
 
-            val edited = original.replace("old", "new")
-            code.save(pkg, entry, edited)
-            assertEquals(1, code.edits(pkg).size)
-            assertEquals(edited, code.current(pkg, entry))
-            val (count, hits) = code.grep(pkg, "NEW\"", 10) { true }
+            assertEquals(1, code.record(dir)?.classes)
+            assertEquals(listOf("com.x.Main"), code.list(dir).map { it.name })
+            assertEquals(emptyList(), code.changed(dir))
+            assertFalse(code.edited(dir, entry))
+
+            val edited = original.replace("\"old\"", "\"NEW\"")
+            code.save(dir, entry, edited)
+            assertEquals(edited, java.nio.file.Files.readString(dir.resolve(entry)))
+            assertEquals(listOf(entry), code.changed(dir))
+            assertTrue(code.edited(dir, entry))
+            val (count, hits) = code.grep(dir, "NEW\"", 10) { true }
             assertEquals(1, count)
             assertEquals(3, hits.single().line)
-            assertEquals("com.x.Main", hits.single().cls.name)
-            assertEquals(0, code.grep(pkg, "old\"", 10) { true }.first)
 
-            val decoded = base.resolve("decoded")
-            java.nio.file.Files.createDirectories(decoded.resolve("classes/com/x"))
-            java.nio.file.Files.writeString(decoded.resolve(entry), original)
-            code.apply(decoded, pkg, code.edits(pkg)) {}
-            assertEquals(edited, java.nio.file.Files.readString(decoded.resolve(entry)))
-            assertFailsWith<io.gutapk.tools.CheckFailed> { code.apply(decoded, pkg, code.edits(pkg)) {} }
+            assertFailsWith<io.gutapk.tools.CheckFailed> { code.save(dir, entry, ".class public Lcom/x/Main\n.method a()V\n") }
+            assertEquals(edited, java.nio.file.Files.readString(dir.resolve(entry)))
+            assertFailsWith<io.gutapk.tools.CheckFailed> { code.read(dir, "../../etc/passwd.smali") }
+            assertNull(code.classOf("res/values/strings.xml"))
 
-            val sink = object : io.gutapk.job.JobSink { override fun emit(event: io.gutapk.job.JobEvent) {} }
-            val out = base.resolve("export")
-            assertEquals(1, code.export(pkg, out, sink) { false })
+            val out = base.resolve("copy")
+            code.copyForBuild(dir, out)
             assertEquals(edited, java.nio.file.Files.readString(out.resolve(entry)))
-            assertFailsWith<io.gutapk.tools.CheckFailed> { code.export(pkg, out, sink) { false } }
-
-            code.save(pkg, entry, original)
-            assertEquals(emptyList(), code.edits(pkg))
-            assertFailsWith<io.gutapk.tools.CheckFailed> { code.save(pkg, "../../evil.smali", "x") }
+            assertTrue(java.nio.file.Files.isRegularFile(out.resolve("apktool.yml")))
+            assertFalse(java.nio.file.Files.exists(out.resolve("build")))
+            assertFalse(java.nio.file.Files.exists(out.resolve(".gutapk-decoded")))
         } finally {
-            io.gutapk.tools.Storage.deleteTree(base, base.parent)
+            base.toFile().deleteRecursively()
         }
     }
 

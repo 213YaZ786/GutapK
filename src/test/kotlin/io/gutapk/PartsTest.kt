@@ -129,11 +129,11 @@ class PartsTest {
         assertEquals(text.replace("package=\"com.old.app\"", "package=\"com.new.app\""), out.text)
     }
 
+    // The base alone is decoded, into a folder of its own next to parts/.
     @Test
-    fun eachPartKeepsItsOwnCode() {
+    fun theCodeFolderSitsWithThePackage() {
         val d = Path.of("pkg")
-        assertEquals(d.resolve("code"), SmaliCode.dir(d))
-        assertEquals(d.resolve("code").resolve("split_feature"), SmaliCode.dir(d, "feature"))
+        assertEquals(d.resolve("decoded"), SmaliCode.dir(d))
     }
 
     // The patched library stays stored, every other entry keeps its bytes

@@ -1,152 +1,139 @@
 package io.gutapk.core.edit
 
-import io.gutapk.core.apk.Parts
 import io.gutapk.job.JobEvent
 import io.gutapk.job.JobSink
-import io.gutapk.tools.CancelledByUser
 import io.gutapk.tools.CheckFailed
 import io.gutapk.tools.Storage
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.util.Properties
-import java.util.zip.ZipEntry
-import java.util.zip.ZipFile
-import java.util.zip.ZipOutputStream
 
 // One line of the code that holds what was searched, numbered from 1.
 class SmaliHit(val cls: SmaliClass, val line: Int, val text: String)
 
-// One class of the decoded code: the dex it came from, its name with dots,
-// and its entry in the package's smali.zip.
+// One class of the decoded code: its smali folder, its name with dots, and
+// its path inside the decoded folder.
 class SmaliClass(val dex: String, val name: String, val entry: String) {
     val search: String = name.lowercase()
 }
 
 class SmaliRecord(val classes: Int, val tool: String)
 
-// A class the user changed: its entry and the sha256 of the text it was
-// changed from, so a rebuild on other code refuses instead of guessing.
-data class SmaliEdit(val entry: String, val originalSha256: String)
-
-// The app's code as smali, decoded once by APKEditor and kept with the
-// package in a zip: a big game gives some 260 MB of text (fx, 28407
-// classes, 18 s), which compresses well and is read one class at a time.
+// The app decoded by apktool into packages/<pkg>/decoded, a plain folder
+// the user reads and edits, in GutapK or in any editor. Rebuild and sign
+// builds from it, so what is on disk is what goes into the APK. A mark
+// file dated at decode time tells which files changed since.
 object SmaliCode {
-    private const val DIR = "code"
-    private const val ZIP = "smali.zip"
-    private const val INFO = "code.properties"
-    private const val EDITS = "edits"
-    private const val INDEX = "edits.tsv"
+    private const val DIR = "decoded"
+    private const val MARK = ".gutapk-decoded"
 
-    // Each part with code keeps its own: the base in code/, as before sets
-    // were kept apart, a split in code/split_<name>/.
-    fun dir(packageDir: Path, part: String = Parts.BASE): Path =
-        packageDir.resolve(DIR).let { if (part == Parts.BASE) it else it.resolve("split_$part") }
+    // apktool's own output, never the user's.
+    private val SKIPPED = setOf("build", "dist")
 
-    private fun zip(code: Path): Path = code.resolve(ZIP)
+    fun dir(packageDir: Path): Path = packageDir.resolve(DIR)
 
     fun record(code: Path): SmaliRecord? {
-        val info = code.resolve(INFO)
-        if (!Files.isRegularFile(info) || !Files.isRegularFile(zip(code))) return null
+        val mark = code.resolve(MARK)
+        if (!Files.isRegularFile(mark) || !Files.isRegularFile(code.resolve("apktool.yml"))) return null
         val p = Properties()
-        runCatching { Files.newBufferedReader(info).use { p.load(it) } }.getOrElse { return null }
+        runCatching { Files.newBufferedReader(mark).use { p.load(it) } }.getOrElse { return null }
         return SmaliRecord(p.getProperty("classes")?.toIntOrNull() ?: return null, p.getProperty("tool") ?: "?")
     }
 
+    // Decoded aside, then put in place of the old folder, so a failed
+    // decode leaves the user's edits where they were.
     fun decode(jar: Path, tool: String, apk: Path, code: Path, work: Path, sink: JobSink, cancelled: () -> Boolean): SmaliRecord {
-        val out = work.resolve("decoded")
-        Storage.deleteTree(out, work)
+        Storage.deleteTree(work, work.parent)
         Files.createDirectories(work)
+        val next = code.resolveSibling(code.fileName.toString() + ".part")
+        Storage.deleteTree(next, code.parent)
         try {
             sink.emit(JobEvent.Step("decode", 1, 2))
-            Edit.decodeCode(jar, apk, out, work, sink, cancelled)
-            val smali = out.resolve("smali")
-            if (!Files.isDirectory(smali)) throw CheckFailed("APKEditor wrote no smali folder")
+            val framework = work.resolve("framework")
+            Edit.runEngine(jar, Engine.APKTOOL, work, listOf("d", "-f", "-p", framework.toString(), "-o", next.toString(), apk.toString()), sink, cancelled)
+            if (!Files.isRegularFile(next.resolve("apktool.yml"))) throw CheckFailed("apktool wrote no decoded folder")
 
             sink.emit(JobEvent.Step("pack", 2, 2))
-            val target = code
-            Files.createDirectories(target)
-            val part = target.resolve("$ZIP.part")
-            var count = 0
-            ZipOutputStream(Files.newOutputStream(part).buffered()).use { z ->
-                Files.walk(smali).use { s ->
-                    s.filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".smali") }.sorted().forEach { f ->
-                        if (cancelled()) throw CancelledByUser()
-                        z.putNextEntry(ZipEntry(smali.relativize(f).toString().replace('\\', '/')))
-                        Files.copy(f, z)
-                        z.closeEntry()
-                        count++
-                    }
-                }
-            }
-            Files.move(part, zip(code), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+            val count = smaliFiles(next).size
             val p = Properties()
             p.setProperty("classes", count.toString())
             p.setProperty("tool", tool)
-            Files.newBufferedWriter(target.resolve(INFO)).use { p.store(it, null) }
-            sink.emit(JobEvent.Line("$count classes kept in ${zip(code)}"))
+            Files.newBufferedWriter(next.resolve(MARK)).use { p.store(it, null) }
+            Storage.deleteTree(code, code.parent)
+            Files.move(next, code, StandardCopyOption.ATOMIC_MOVE)
+            sink.emit(JobEvent.Line("$count classes decoded into $code"))
             return SmaliRecord(count, tool)
         } finally {
-            Storage.deleteTree(out, work)
-            Files.deleteIfExists(code.resolve("$ZIP.part"))
+            Storage.deleteTree(next, code.parent)
+            Storage.deleteTree(work, work.parent)
         }
     }
 
-    // "classes2/com/x/Y.smali" is class com.x.Y of classes2.dex.
+    // Every file the user wrote since the decode, smali, XML or anything
+    // else, as paths inside the folder.
+    fun changed(code: Path): List<String> {
+        val mark = code.resolve(MARK)
+        if (!Files.isRegularFile(mark)) return emptyList()
+        val since = Files.getLastModifiedTime(mark).toMillis()
+        return Files.walk(code).use { s ->
+            s.filter { Files.isRegularFile(it) && it.fileName.toString() != MARK }
+                .map { code.relativize(it).toString().replace('\\', '/') }
+                .filter { it.substringBefore('/') !in SKIPPED }
+                .filter { Files.getLastModifiedTime(code.resolve(it)).toMillis() > since }
+                .sorted()
+                .toList()
+        }
+    }
+
+    // Only the decoded code and the files next to it, never the user's
+    // editor copies or apktool's build output.
+    internal fun copyForBuild(code: Path, target: Path) {
+        Files.createDirectories(target)
+        Files.walk(code).use { s ->
+            s.forEach { src ->
+                val rel = code.relativize(src).toString().replace('\\', '/')
+                if (rel.isEmpty()) return@forEach
+                if (rel.substringBefore('/') in SKIPPED || rel == MARK) return@forEach
+                val to = target.resolve(rel)
+                if (Files.isDirectory(src)) Files.createDirectories(to) else Files.copy(src, to, StandardCopyOption.REPLACE_EXISTING)
+            }
+        }
+    }
+
+    private fun smaliFiles(code: Path): List<Path> =
+        Files.list(code).use { it.toList() }
+            .filter { Files.isDirectory(it) && it.fileName.toString().startsWith("smali") }
+            .flatMap { d -> Files.walk(d).use { s -> s.filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".smali") }.toList() } }
+
+    // "smali_classes2/com/x/Y.smali" is class com.x.Y of smali_classes2.
     internal fun classOf(entry: String): SmaliClass? {
-        if (!entry.endsWith(".smali") || '/' !in entry) return null
+        if (!entry.endsWith(".smali") || '/' !in entry || !entry.startsWith("smali")) return null
         val dex = entry.substringBefore('/')
         val name = entry.substringAfter('/').removeSuffix(".smali").replace('/', '.')
         return SmaliClass(dex, name, entry)
     }
 
     fun list(code: Path): List<SmaliClass> =
-        ZipFile(zip(code).toFile()).use { z -> z.entries().asSequence().mapNotNull { classOf(it.name) }.toList() }
+        smaliFiles(code).mapNotNull { classOf(code.relativize(it).toString().replace('\\', '/')) }.sortedBy { it.entry }
 
-    fun read(code: Path, entry: String): String =
-        ZipFile(zip(code).toFile()).use { z ->
-            val e = z.getEntry(entry) ?: throw CheckFailed("$entry is not in the decoded code")
-            z.getInputStream(e).use { String(it.readBytes(), Charsets.UTF_8) }
-        }
-
-    private fun sha256(text: String): String =
-        java.security.MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
-
-    // An entry is ours, from the zip, but it is still kept inside the edits
-    // folder whatever it holds.
-    private fun editFile(code: Path, entry: String): Path {
-        val base = code.resolve(EDITS).toAbsolutePath().normalize()
+    // An entry names a class inside the folder, never a path out of it.
+    private fun file(code: Path, entry: String): Path {
+        val base = code.toAbsolutePath().normalize()
         val f = base.resolve(entry).normalize()
-        if (!f.startsWith(base) || f == base || !entry.endsWith(".smali")) throw CheckFailed("not a smali entry: $entry")
+        if (!f.startsWith(base) || f == base || classOf(entry) == null) throw CheckFailed("not a smali class: $entry")
         return f
     }
 
-    fun edits(code: Path): List<SmaliEdit> {
-        val index = code.resolve(INDEX)
-        if (!Files.isRegularFile(index)) return emptyList()
-        return Files.readAllLines(index).mapNotNull { line ->
-            val p = line.split('\t')
-            if (p.size != 2) return@mapNotNull null
-            SmaliEdit(p[0], p[1]).takeIf { runCatching { Files.isRegularFile(editFile(code, it.entry)) }.getOrDefault(false) }
-        }
+    fun read(code: Path, entry: String): String = Files.readString(file(code, entry))
+
+    fun edited(code: Path, entry: String): Boolean {
+        val mark = code.resolve(MARK)
+        return Files.isRegularFile(mark) && Files.getLastModifiedTime(file(code, entry)).toMillis() > Files.getLastModifiedTime(mark).toMillis()
     }
-
-    private fun writeIndex(code: Path, edits: List<SmaliEdit>) {
-        val index = code.resolve(INDEX)
-        val part = index.resolveSibling("$INDEX.part")
-        Files.writeString(part, edits.sortedBy { it.entry }.joinToString("") { it.entry + "\t" + it.originalSha256 + "\n" })
-        Files.move(part, index, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-    }
-
-    fun edited(code: Path, entry: String): String? =
-        editFile(code, entry).takeIf { Files.isRegularFile(it) }?.let { Files.readString(it) }
-
-    // The text shown and edited: the user's version when there is one.
-    fun current(code: Path, entry: String): String = edited(code, entry) ?: read(code, entry)
 
     // The blocks smali opens and closes. A broken pair is the mistake an
-    // edit makes most, and APKEditor would only say so at rebuild.
+    // edit makes most, and apktool would only say so at rebuild.
     // .end local and .end param are left out: the first is a one line debug
     // directive, the second only closes a parameter's annotations.
     private val INLINE_SUB = Regex("""[=,{]\s*\.subannotation\b""")
@@ -154,7 +141,7 @@ object SmaliCode {
     private val BLOCKS = listOf("method", "annotation", "subannotation", "packed-switch", "sparse-switch", "array-data")
 
     // The first structural problem, with its line, or null. Not a compiler:
-    // a wrong register or type still shows only when APKEditor builds.
+    // a wrong register or type still shows only when apktool builds.
     fun problem(text: String): String? {
         val lines = text.lines()
         val first = lines.indexOfFirst { it.isNotBlank() && !it.trimStart().startsWith("#") }
@@ -182,99 +169,33 @@ object SmaliCode {
         return open.lastOrNull()?.let { "the .${it.first} of line ${it.second} has no .end ${it.first}" }
     }
 
-    // Saving the original text back is the same as removing the edit.
+    // Written aside then moved, so a crash never leaves half a class.
     fun save(code: Path, entry: String, text: String) {
         problem(text)?.let { throw CheckFailed("not saved, $it") }
-        val original = read(code, entry)
-        if (text == original) {
-            remove(code, entry)
-            return
-        }
-        val f = editFile(code, entry)
-        Files.createDirectories(f.parent)
+        val f = file(code, entry)
         val part = f.resolveSibling(f.fileName.toString() + ".part")
         Files.writeString(part, text)
         Files.move(part, f, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-        writeIndex(code, edits(code).filter { it.entry != entry } + SmaliEdit(entry, sha256(original)))
-    }
-
-    fun remove(code: Path, entry: String) {
-        Files.deleteIfExists(editFile(code, entry))
-        writeIndex(code, edits(code).filter { it.entry != entry })
-    }
-
-    // At rebuild, into APKEditor's decoded smali folder, which holds the
-    // same text the zip was made from (checked on deskclock, 2698 of 2698
-    // files equal). Every class is checked before any is written, so a
-    // rebuild on other code is refused whole.
-    fun apply(smaliRoot: Path, code: Path, edits: List<SmaliEdit>, log: (String) -> Unit) {
-        val base = smaliRoot.toAbsolutePath().normalize()
-        val checked = edits.map { e ->
-            val target = base.resolve(e.entry).normalize()
-            if (!target.startsWith(base) || !Files.isRegularFile(target)) throw CheckFailed("${e.entry} is not in the decoded code")
-            val found = sha256(Files.readString(target))
-            if (found != e.originalSha256) {
-                throw CheckFailed("${e.entry} is not the code the edit was made on. Decode the code again and redo the edit.")
-            }
-            val text = edited(code, e.entry) ?: throw CheckFailed("the edit of ${e.entry} is missing")
-            target to text
-        }
-        checked.forEach { (target, text) ->
-            Files.writeString(target, text)
-            log("smali edited: ${base.relativize(target)}")
-        }
-    }
-
-    // Every class as a .smali file under target, the user's edits in place
-    // of the original, for their own editor or tools. A copy: changes made
-    // there are not read back. target must not exist yet.
-    fun export(code: Path, target: Path, sink: JobSink, cancelled: () -> Boolean): Int {
-        if (Files.exists(target)) throw CheckFailed("$target already exists, it is not replaced")
-        val base = target.toAbsolutePath().normalize()
-        val edited = edits(code).map { it.entry }.toSet()
-        var count = 0
-        ZipFile(zip(code).toFile()).use { z ->
-            val entries = z.entries().toList().filter { classOf(it.name) != null }
-            entries.forEachIndexed { i, e ->
-                if (cancelled()) throw CancelledByUser()
-                if (i % 500 == 0) sink.emit(JobEvent.Progress(i.toLong(), entries.size.toLong()))
-                val out = base.resolve(e.name).normalize()
-                if (!out.startsWith(base)) throw CheckFailed("unsafe entry ${e.name}")
-                Files.createDirectories(out.parent)
-                if (e.name in edited) {
-                    Files.writeString(out, current(code, e.name))
-                } else {
-                    z.getInputStream(e).use { Files.copy(it, out) }
-                }
-                count++
-            }
-        }
-        sink.emit(JobEvent.Line("$count classes written to $base"))
-        return count
     }
 
     // Past this many lines a search says nothing more, "invoke" for one.
     const val GREP_CAP = 10_000
 
-    // Every line holding the text, case ignored, in every class, the user's
-    // edits read instead of the original. Counted up to GREP_CAP, the first
-    // limit kept. active is checked between classes, a new query stops it.
+    // Every line holding the text, case ignored, in every class as it is on
+    // disk. Counted up to GREP_CAP, the first limit kept. active is checked
+    // between classes, a new query stops it.
     fun grep(code: Path, needle: String, limit: Int, active: () -> Boolean): Pair<Int, List<SmaliHit>> {
         val want = needle.lowercase()
-        val edited = edits(code).map { it.entry }.toSet()
         val hits = ArrayList<SmaliHit>()
         var count = 0
-        ZipFile(zip(code).toFile()).use { z ->
-            for (e in z.entries().asSequence()) {
-                if (!active() || count >= GREP_CAP) break
-                val cls = classOf(e.name) ?: continue
-                val text = if (e.name in edited) current(code, e.name) else z.getInputStream(e).use { String(it.readBytes(), Charsets.UTF_8) }
-                if (!text.lowercase().contains(want)) continue
-                text.lineSequence().forEachIndexed { i, line ->
-                    if (count < GREP_CAP && line.lowercase().contains(want)) {
-                        count++
-                        if (hits.size < limit) hits.add(SmaliHit(cls, i + 1, line.trim()))
-                    }
+        for (cls in list(code)) {
+            if (!active() || count >= GREP_CAP) break
+            val text = runCatching { Files.readString(code.resolve(cls.entry)) }.getOrNull() ?: continue
+            if (!text.lowercase().contains(want)) continue
+            text.lineSequence().forEachIndexed { i, line ->
+                if (count < GREP_CAP && line.lowercase().contains(want)) {
+                    count++
+                    if (hits.size < limit) hits.add(SmaliHit(cls, i + 1, line.trim()))
                 }
             }
         }

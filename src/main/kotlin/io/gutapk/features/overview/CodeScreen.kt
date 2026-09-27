@@ -74,8 +74,8 @@ fun CodeScreen(
         val job = coroutineContext.job
         value = withContext(Dispatchers.IO) { runCatching { SmaliCode.grep(code, query.trim(), SHOWN) { job.isActive } }.getOrNull() }
     }
-    val edits by produceState(emptyList<io.gutapk.core.edit.SmaliEdit>(), code) {
-        value = withContext(Dispatchers.IO) { runCatching { SmaliCode.edits(code) }.getOrDefault(emptyList()) }
+    val edits by produceState(emptyList<SmaliClass>(), code) {
+        value = withContext(Dispatchers.IO) { runCatching { SmaliCode.changed(code).mapNotNull { SmaliCode.classOf(it) } }.getOrDefault(emptyList()) }
     }
     Page(title = t("code_title"), width = 1040.dp, onBack = onBack) {
         val a = all
@@ -120,9 +120,8 @@ fun CodeScreen(
                 BodyText(t("code_hint"))
                 if (edits.isNotEmpty()) {
                     Zone(t("code_edited_list", edits.size.toString())) {
-                        edits.forEach { e ->
-                            val ec = SmaliCode.classOf(e.entry)
-                            if (ec != null) ZoneRow(ec.name.substringAfterLast('.'), ec.name + "  ·  " + ec.dex, onClick = { onClass(ec, null) })
+                        edits.forEach { ec ->
+                            ZoneRow(ec.name.substringAfterLast('.'), ec.name + "  ·  " + ec.dex, onClick = { onClass(ec, null) })
                         }
                     }
                 }
@@ -146,13 +145,13 @@ private sealed interface SmaliText {
 }
 
 // One class, line by line with numbers. Edit turns it into a text field,
-// Save keeps the change with the package, applied by Rebuild and sign.
+// Save writes it into the decoded folder, which Rebuild and sign builds.
 @Composable
 fun SmaliScreen(code: Path, c: SmaliClass, line: Int?, onBack: () -> Unit) {
     var revision by remember { mutableStateOf(0) }
     val state by produceState<SmaliText>(SmaliText.Reading, c.entry, revision) {
         value = withContext(Dispatchers.IO) {
-            runCatching { SmaliText.Ready(SmaliCode.current(code, c.entry), SmaliCode.edited(code, c.entry) != null) }
+            runCatching { SmaliText.Ready(SmaliCode.read(code, c.entry), SmaliCode.edited(code, c.entry)) }
                 .getOrElse { SmaliText.Failed(it.message ?: "?") }
         }
     }
@@ -172,15 +171,6 @@ fun SmaliScreen(code: Path, c: SmaliClass, line: Int?, onBack: () -> Unit) {
                 draft = null
                 revision++
             }
-        }
-    }
-
-    fun revert() {
-        scope.launch {
-            val r = withContext(Dispatchers.IO) { runCatching { SmaliCode.remove(code, c.entry) } }
-            problem = r.exceptionOrNull()?.message
-            draft = null
-            revision++
         }
     }
 
@@ -212,12 +202,7 @@ fun SmaliScreen(code: Path, c: SmaliClass, line: Int?, onBack: () -> Unit) {
             SmaliText.Reading -> BodyText(t("ov_reading"))
             is SmaliText.Failed -> Zone(t("ov_error")) { BodyText(s.message) }
             is SmaliText.Ready -> {
-                if (s.edited) {
-                    Zone(t("code_edited")) {
-                        BodyText(t("code_edited_d"))
-                        if (d == null) ZoneRow(t("code_revert"), t("code_revert_d"), onClick = { revert() })
-                    }
-                }
+                if (s.edited) BodyText(t("code_edited"))
                 if (d != null) {
                     Zone(t("code_editing")) {
                         OutlinedTextField(
