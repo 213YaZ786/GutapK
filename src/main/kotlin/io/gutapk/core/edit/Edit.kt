@@ -34,15 +34,18 @@ data class Tweaks(
     // A new package id, checked by PackageId, to install beside the original.
     val packageId: String? = null,
     // Modernisation, each only offered when the app does not have it yet.
-    val predictiveBack: Boolean = false,
-    val localeConfig: Boolean = false,
-    val nativeLibsFromApk: Boolean = false,
+    // Each app flag is the state asked for, null to leave it as it is.
+    val predictiveBack: Boolean? = null,
+    val localeConfig: Boolean? = null,
+    val nativeLibsFromApk: Boolean? = null,
     // Security.
-    val noBackup: Boolean = false,
-    val strictNetwork: Boolean = false,
-    val fragileUserData: Boolean = false,
-    val memoryTagging: Boolean = false,
-    val notDebuggable: Boolean = false,
+    val backup: Boolean? = null,
+    // true adds GutapK's strict config, false removes the app's own.
+    val networkConfig: Boolean? = null,
+    val cleartextTraffic: Boolean? = null,
+    val fragileUserData: Boolean? = null,
+    val memoryTagging: Boolean? = null,
+    val debuggable: Boolean? = null,
     // Class prefixes of the trackers to silence, from Exodus Privacy's list.
     val trackerPrefixes: Set<String> = emptySet(),
     // Size: one ABI kept, languages removed, smali debug lines dropped.
@@ -235,37 +238,39 @@ object Edit {
             text = removePermissions(text, tweaks.removePermissions, sink)
         }
 
-        if (tweaks.predictiveBack) {
-            text = Modern.setAppAttr(text, "android:enableOnBackInvokedCallback", "true")
-            sink.emit(JobEvent.Line("predictive back enabled"))
+        fun flag(value: Boolean?, attr: String, on: String = "true", off: String = "false") {
+            if (value == null) return
+            text = Modern.setAppAttr(text, attr, if (value) on else off)
+            sink.emit(JobEvent.Line("$attr set to ${if (value) on else off}"))
         }
-        if (tweaks.localeConfig) {
-            text = addLocaleConfig(decoded, text, engine, sink)
+        flag(tweaks.predictiveBack, "android:enableOnBackInvokedCallback")
+        when (tweaks.localeConfig) {
+            true -> text = addLocaleConfig(decoded, text, engine, sink)
+            false -> {
+                text = Modern.removeAppAttr(text, "android:localeConfig")
+                sink.emit(JobEvent.Line("android:localeConfig removed"))
+            }
+            null -> {}
         }
-        if (tweaks.nativeLibsFromApk) {
-            text = Modern.setAppAttr(text, "android:extractNativeLibs", "false")
-            storeNativeLibs(decoded, engine, sink)
+        // Read from the APK means extractNativeLibs false and the libraries
+        // stored, not compressed.
+        flag(tweaks.nativeLibsFromApk, "android:extractNativeLibs", on = "false", off = "true")
+        if (tweaks.nativeLibsFromApk == true) storeNativeLibs(decoded, engine, sink)
+        flag(tweaks.backup, "android:allowBackup")
+        flag(tweaks.fragileUserData, "android:hasFragileUserData")
+        flag(tweaks.memoryTagging, "android:memtagMode", on = "async", off = "off")
+        flag(tweaks.debuggable, "android:debuggable")
+        when (tweaks.networkConfig) {
+            true -> text = strictNetwork(decoded, text, engine, sink)
+            false -> {
+                text = Modern.removeAppAttr(text, "android:networkSecurityConfig")
+                sink.emit(JobEvent.Line("android:networkSecurityConfig removed, usesCleartextTraffic decides again"))
+            }
+            null -> {}
         }
-
-        if (tweaks.noBackup) {
-            text = Modern.setAppAttr(text, "android:allowBackup", "false")
-            sink.emit(JobEvent.Line("backup off"))
-        }
-        if (tweaks.fragileUserData) {
-            text = Modern.setAppAttr(text, "android:hasFragileUserData", "true")
-            sink.emit(JobEvent.Line("uninstall asks whether to keep the data"))
-        }
-        if (tweaks.memoryTagging) {
-            text = Modern.setAppAttr(text, "android:memtagMode", "async")
-            sink.emit(JobEvent.Line("memory tagging async"))
-        }
-        if (tweaks.notDebuggable) {
-            text = Modern.setAppAttr(text, "android:debuggable", "false")
-            sink.emit(JobEvent.Line("debuggable off"))
-        }
-        if (tweaks.strictNetwork) {
-            text = strictNetwork(decoded, text, engine, sink)
-        }
+        // After the network config, which sets it false: the user's own
+        // choice for the attribute wins.
+        flag(tweaks.cleartextTraffic, "android:usesCleartextTraffic")
         if (tweaks.trackerPrefixes.isNotEmpty()) {
             val (disabled, count) = Neutralise.disableComponents(text, tweaks.trackerPrefixes)
             text = disabled

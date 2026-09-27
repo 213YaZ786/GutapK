@@ -52,6 +52,10 @@ data class ApkInfo(
     val nativeLibs: Int,
     val engines: List<String>,
     val entries: Int,
+    // An own network security config, and whether plain http is allowed:
+    // Android's default is yes below target 28, no from 28.
+    val networkConfig: Boolean = false,
+    val cleartextTraffic: Boolean = true,
 )
 
 object Attr {
@@ -71,6 +75,8 @@ object Attr {
     const val DEBUGGABLE = 0x0101000f
     const val FRAGILE_USER_DATA = 0x0101059a
     const val MEMTAG_MODE = 0x01010624
+    const val USES_CLEARTEXT = 0x010104ec
+    const val NETWORK_CONFIG = 0x01010527
 }
 
 object ApkReader {
@@ -128,6 +134,9 @@ object ApkReader {
             fragileUserData = flag(app, Attr.FRAGILE_USER_DATA, "hasFragileUserData") ?: false,
             // async is 1, sync 2, off 0, default -1.
             memoryTagging = app?.attr(Attr.MEMTAG_MODE, "memtagMode")?.data?.let { it == 1 || it == 2 } ?: false,
+            networkConfig = app?.attr(Attr.NETWORK_CONFIG, "networkSecurityConfig") != null,
+            cleartextTraffic = flag(app, Attr.USES_CLEARTEXT, "usesCleartextTraffic")
+                ?: ((sdk?.attr(Attr.TARGET_SDK, "targetSdkVersion")?.let { int(it) } ?: 0) < 28),
             split = root.attrs.firstOrNull { it.name == "split" }?.raw,
             permissions = manifest.filter { it.depth == 2 && it.name == "uses-permission" }
                 .mapNotNull { it.attr(Attr.NAME, "name")?.raw }

@@ -731,4 +731,14 @@ class EditTest {
         }
     }
 
+
+    // Off for a flag held by a resource or a config is the attribute gone,
+    // the rest of the application tag untouched.
+    @Test
+    fun removesAnApplicationAttribute() {
+        val m = "<manifest>\n  <application android:label=\"A\" android:localeConfig=\"@xml/locales\" android:allowBackup=\"true\">\n  </application>\n</manifest>"
+        assertEquals(m.replace(" android:localeConfig=\"@xml/locales\"", ""), io.gutapk.core.edit.Modern.removeAppAttr(m, "android:localeConfig"))
+        assertEquals(m, io.gutapk.core.edit.Modern.removeAppAttr(m, "android:networkSecurityConfig"))
+    }
+
 }

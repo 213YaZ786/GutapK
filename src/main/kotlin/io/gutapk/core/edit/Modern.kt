@@ -18,6 +18,13 @@ object Modern {
         return manifest.replaceRange(tag.range, changed)
     }
 
+    // The attribute gone from the application tag, Android's default then.
+    fun removeAppAttr(manifest: String, name: String): String {
+        val tag = Regex("""<application\b[^>]*>""").find(manifest) ?: return manifest
+        val changed = tag.value.replace(Regex("""\s+${Regex.escape(name)}="[^"]*""""), "")
+        return manifest.replaceRange(tag.range, changed)
+    }
+
     // A values folder name to the BCP 47 tag Android lists: values-fr is fr,
     // values-pt-rBR is pt-BR, values-b+sr+Latn is sr-Latn. Folders without a
     // language, values-night, values-v31 or values-hdr, give null.

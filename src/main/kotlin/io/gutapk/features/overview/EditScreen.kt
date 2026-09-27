@@ -115,14 +115,17 @@ class EditDraft(info: ApkInfo) {
     var targetSdk: Int? by mutableStateOf(info.targetSdk)
     var themed: Boolean by mutableStateOf(false)
     var iconImage: Path? by mutableStateOf(null)
-    var predictiveBack: Boolean by mutableStateOf(false)
-    var localeConfig: Boolean by mutableStateOf(false)
-    var nativeLibs: Boolean by mutableStateOf(false)
-    var noBackup: Boolean by mutableStateOf(false)
-    var strictNetwork: Boolean by mutableStateOf(false)
-    var fragileData: Boolean by mutableStateOf(false)
-    var memoryTagging: Boolean by mutableStateOf(false)
-    var notDebuggable: Boolean by mutableStateOf(false)
+    // App flags start where the app has them. A flag switched away from
+    // that is a change, switched back it is none.
+    var predictiveBack: Boolean by mutableStateOf(info.predictiveBack)
+    var localeConfig: Boolean by mutableStateOf(info.hasLocaleConfig)
+    var nativeLibs: Boolean by mutableStateOf(info.nativeLibsFromApk)
+    var backup: Boolean by mutableStateOf(info.allowsBackup)
+    var networkConfig: Boolean by mutableStateOf(info.networkConfig)
+    var cleartext: Boolean by mutableStateOf(info.cleartextTraffic)
+    var fragileData: Boolean by mutableStateOf(info.fragileUserData)
+    var memoryTagging: Boolean by mutableStateOf(info.memoryTagging)
+    var debuggable: Boolean by mutableStateOf(info.debuggable)
     var keepAbi: String? by mutableStateOf(null)
     var keptLanguages: Set<String> by mutableStateOf(info.languages.toSet())
     var stripDebug: Boolean by mutableStateOf(false)
@@ -164,11 +167,12 @@ fun EditScreen(
     var predictiveBack by draft::predictiveBack
     var localeConfig by draft::localeConfig
     var nativeLibs by draft::nativeLibs
-    var noBackup by draft::noBackup
-    var strictNetwork by draft::strictNetwork
+    var backup by draft::backup
+    var networkConfig by draft::networkConfig
+    var cleartext by draft::cleartext
     var fragileData by draft::fragileData
     var memoryTagging by draft::memoryTagging
-    var notDebuggable by draft::notDebuggable
+    var debuggable by draft::debuggable
     var keepAbi by draft::keepAbi
     var keptLanguages by draft::keptLanguages
     var stripDebug by draft::stripDebug
@@ -209,10 +213,13 @@ fun EditScreen(
     val packageChanged = packageId != info.packageName && PackageId.check(packageId) == null
     val minChanged = minSdk != null && minSdk != info.minSdk
     val targetChanged = targetSdk != null && targetSdk != info.targetSdk
+    val flagsChanged = predictiveBack != info.predictiveBack || localeConfig != info.hasLocaleConfig ||
+        nativeLibs != info.nativeLibsFromApk || backup != info.allowsBackup || networkConfig != info.networkConfig ||
+        cleartext != info.cleartextTraffic || fragileData != info.fragileUserData || memoryTagging != info.memoryTagging ||
+        debuggable != info.debuggable
     val iconOk = iconImage != null && iconCheck?.refusal == null
     val anyChange = nameChanged || minChanged || targetChanged || toRemove.isNotEmpty() || themed || iconOk || packageChanged ||
-        predictiveBack || localeConfig || nativeLibs ||
-        noBackup || strictNetwork || fragileData || memoryTagging || notDebuggable ||
+        flagsChanged ||
         silencedPrefixes.isNotEmpty() || keepAbi != null || removedLanguages.isNotEmpty() || stripDebug || usePatches || useSmali
     val spec = Tools.byId(Engine.APKTOOL.id)
     // Verify hashes the tool, so it runs on IO once per visit, not on every
@@ -247,14 +254,15 @@ fun EditScreen(
                         themedIcon = themed,
                         iconImage = if (iconOk) iconImage else null,
                         packageId = if (packageChanged) packageId else null,
-                        predictiveBack = predictiveBack,
-                        localeConfig = localeConfig,
-                        nativeLibsFromApk = nativeLibs,
-                        noBackup = noBackup,
-                        strictNetwork = strictNetwork,
-                        fragileUserData = fragileData,
-                        memoryTagging = memoryTagging,
-                        notDebuggable = notDebuggable,
+                        predictiveBack = predictiveBack.takeIf { it != info.predictiveBack },
+                        localeConfig = localeConfig.takeIf { it != info.hasLocaleConfig },
+                        nativeLibsFromApk = nativeLibs.takeIf { it != info.nativeLibsFromApk },
+                        backup = backup.takeIf { it != info.allowsBackup },
+                        networkConfig = networkConfig.takeIf { it != info.networkConfig },
+                        cleartextTraffic = cleartext.takeIf { it != info.cleartextTraffic },
+                        fragileUserData = fragileData.takeIf { it != info.fragileUserData },
+                        memoryTagging = memoryTagging.takeIf { it != info.memoryTagging },
+                        debuggable = debuggable.takeIf { it != info.debuggable },
                         trackerPrefixes = silencedPrefixes,
                         keepAbi = keepAbi,
                         removeLanguages = removedLanguages,
@@ -383,76 +391,25 @@ fun EditScreen(
             )
         }
 
-        // Each switch is offered only while the app lacks what it adds, an
-        // app that already has it says so instead.
+        // Each switch starts where the app has it. Moving it is the change,
+        // the line says what the app has now.
         Zone(t("edit_zone_modern")) {
-            ToggleRow(
-                t("edit_back"),
-                t(if (info.predictiveBack) "edit_back_done" else "edit_back_d"),
-                available = !info.predictiveBack,
-                checked = predictiveBack,
-                onChange = { predictiveBack = it },
-            )
-            ToggleRow(
-                t("edit_locales"),
-                t(if (info.hasLocaleConfig) "edit_locales_done" else "edit_locales_d"),
-                available = !info.hasLocaleConfig,
-                checked = localeConfig,
-                onChange = { localeConfig = it },
-            )
-            ToggleRow(
-                t("edit_libs"),
-                t(
-                    when {
-                        info.nativeLibs == 0 -> "edit_libs_none"
-                        info.nativeLibsFromApk -> "edit_libs_done"
-                        else -> "edit_libs_d"
-                    },
-                ),
-                available = info.nativeLibs > 0 && !info.nativeLibsFromApk,
-                checked = nativeLibs,
-                onChange = { nativeLibs = it },
-            )
+            FlagRow(t("edit_back"), t("edit_back_d"), info.predictiveBack, predictiveBack) { predictiveBack = it }
+            FlagRow(t("edit_locales"), t("edit_locales_d"), info.hasLocaleConfig, localeConfig) { localeConfig = it }
+            if (info.nativeLibs == 0) {
+                ToggleRow(t("edit_libs"), t("edit_libs_none"), available = false, checked = false, onChange = {})
+            } else {
+                FlagRow(t("edit_libs"), t("edit_libs_d"), info.nativeLibsFromApk, nativeLibs) { nativeLibs = it }
+            }
         }
 
         Zone(t("edit_zone_security")) {
-            ToggleRow(
-                t("edit_nobackup"),
-                t(if (info.allowsBackup) "edit_nobackup_d" else "edit_nobackup_done"),
-                available = info.allowsBackup,
-                checked = noBackup,
-                onChange = { noBackup = it },
-            )
-            // Always offered: whether the app's own network config allows
-            // plain http is only known once it is decoded.
-            ToggleRow(
-                t("edit_net"),
-                t("edit_net_d"),
-                available = true,
-                checked = strictNetwork,
-                onChange = { strictNetwork = it },
-            )
-            ToggleRow(
-                t("edit_fragile"),
-                t(if (info.fragileUserData) "edit_fragile_done" else "edit_fragile_d"),
-                available = !info.fragileUserData,
-                checked = fragileData,
-                onChange = { fragileData = it },
-            )
-            ToggleRow(
-                t("edit_memtag"),
-                t(if (info.memoryTagging) "edit_memtag_done" else "edit_memtag_d"),
-                available = !info.memoryTagging,
-                checked = memoryTagging,
-                onChange = { memoryTagging = it },
-            )
-            ToggleRow(
-                t("edit_debug"),
-                t(if (info.debuggable) "edit_debug_d" else "edit_debug_done"),
-                available = info.debuggable,
-                checked = notDebuggable,
-                onChange = { notDebuggable = it },
-            )
+            FlagRow(t("edit_backup"), t("edit_backup_d"), info.allowsBackup, backup) { backup = it }
+            FlagRow(t("edit_net"), t("edit_net_d"), info.networkConfig, networkConfig) { networkConfig = it }
+            FlagRow(t("edit_cleartext"), t("edit_cleartext_d"), info.cleartextTraffic, cleartext) { cleartext = it }
+            FlagRow(t("edit_fragile"), t("edit_fragile_d"), info.fragileUserData, fragileData) { fragileData = it }
+            FlagRow(t("edit_memtag"), t("edit_memtag_d"), info.memoryTagging, memoryTagging) { memoryTagging = it }
+            FlagRow(t("edit_debug"), t("edit_debug_d"), info.debuggable, debuggable) { debuggable = it }
         }
 
         Zone(t("ov_trackers")) {
@@ -470,8 +427,10 @@ fun EditScreen(
                             append(if (parts > 0) t("edit_trk_parts", parts) else t("edit_trk_no_parts"))
                             if ("Advertisement" in tr.categories) append(" ").append(t("edit_trk_ads"))
                         }
+                        // On means blocked, said in the title so it is not
+                        // read as the tracker being on.
                         ToggleRow(
-                            tr.name,
+                            t("edit_trk_block", tr.name),
                             detail,
                             available = true,
                             checked = silenced[tr.name] == true,
@@ -484,7 +443,7 @@ fun EditScreen(
             // looking at trackers expects it.
             if (AD_ID in info.permissions) {
                 ToggleRow(
-                    t("edit_adid"),
+                    t("edit_adid_block"),
                     t("edit_adid_d"),
                     available = true,
                     checked = kept[AD_ID] == false,
@@ -703,6 +662,14 @@ private fun LanguagesDialog(all: List<String>, kept: Set<String>, onDone: (Set<S
 }
 
 // A setting that is either offered with its switch, or stated as it is.
+// A flag of the app: the switch shows the state asked for, the line what
+// the app has now and whether this changes it.
+@Composable
+private fun FlagRow(title: String, detail: String, now: Boolean, checked: Boolean, onChange: (Boolean) -> Unit) {
+    val state = t(if (now) "edit_now_on" else "edit_now_off") + if (checked != now) "  ·  " + t(if (checked) "edit_will_on" else "edit_will_off") else ""
+    ToggleRow(title, state + "\n" + detail, available = true, checked = checked, onChange = onChange)
+}
+
 @Composable
 private fun ToggleRow(title: String, detail: String, available: Boolean, checked: Boolean, onChange: (Boolean) -> Unit) {
     val toggle: () -> Unit = { onChange(!checked) }

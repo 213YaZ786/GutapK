@@ -77,7 +77,7 @@ object SetBuild {
 
         // On the staged files, so a patch lands in the rebuilt base too.
         val files = kept.map { staged.resolve(it.fileName) }
-        writeLibs(files, tweaks.bytePatches, tweaks.nativeLibsFromApk, work.resolve("libs"), sink)
+        writeLibs(files, tweaks.bytePatches, tweaks.nativeLibsFromApk == true, work.resolve("libs"), sink)
         kept.filter { !it.isBase }.forEach { p ->
             if (Files.mismatch(p.file, staged.resolve(p.fileName)) == -1L) sink.emit(JobEvent.Line("part ${p.name} copied as it came"))
         }
