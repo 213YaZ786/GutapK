@@ -189,6 +189,12 @@ class AdbTest {
             listOf("-s", "X1", "install-multiple", "-r", "-d", "/w/base.apk", "/w/split_config.arm64_v8a.apk"),
             DeviceInstall.args("X1", listOf(base, abi), true),
         )
+        // --user goes before the files, a user id, all or current only.
+        assertEquals(listOf("-s", "X1", "install", "-r", "--user", "10", "/w/base.apk"), DeviceInstall.args("X1", listOf(base), false, "10"))
+        assertEquals(listOf("-s", "X1", "install-multiple", "-r", "--user", "all", "/w/base.apk", "/w/split_config.arm64_v8a.apk"), DeviceInstall.args("X1", listOf(base, abi), false, "all"))
+        kotlin.test.assertTrue(DeviceInstall.validUser("current"))
+        kotlin.test.assertFalse(DeviceInstall.validUser("0 && reboot"))
+        kotlin.test.assertFailsWith<IllegalArgumentException> { DeviceInstall.args("X1", listOf(base), false, "-1") }
     }
 
     @Test

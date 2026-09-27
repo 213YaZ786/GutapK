@@ -13,13 +13,19 @@ class InstallRefused(val code: String, val output: String) : IOException("instal
 object DeviceInstall {
     // One APK is install, several are install-multiple: the base and its
     // splits go in one session, as the Play Store does. -r keeps the app's
-    // data when it is already there.
-    fun args(serial: String, files: List<Path>, downgrade: Boolean): List<String> = buildList {
+    // data when it is already there. user is pm's --user value, a user id,
+    // all or current, checked, and left out when null: Android decides.
+    fun args(serial: String, files: List<Path>, downgrade: Boolean, user: String? = null): List<String> = buildList {
         add("-s")
         add(serial)
         add(if (files.size == 1) "install" else "install-multiple")
         add("-r")
         if (downgrade) add("-d")
+        if (user != null) {
+            require(validUser(user)) { "not a user: $user" }
+            add("--user")
+            add(user)
+        }
         files.forEach { add(it.toString()) }
     }
 
@@ -32,8 +38,10 @@ object DeviceInstall {
         return set.parts.map { it.file }
     }
 
-    fun install(adb: Path, serial: String, files: List<Path>, downgrade: Boolean, sink: JobSink, cancelled: () -> Boolean): String {
-        val args = args(serial, files, downgrade)
+    fun validUser(user: String): Boolean = user == "all" || user == "current" || Regex("[0-9]{1,6}").matches(user)
+
+    fun install(adb: Path, serial: String, files: List<Path>, downgrade: Boolean, sink: JobSink, cancelled: () -> Boolean, user: String? = null): String {
+        val args = args(serial, files, downgrade, user)
         sink.emit(JobEvent.Step("install", 1, 1))
         sink.emit(JobEvent.Line("adb " + args.joinToString(" ")))
         val r = Adb.run(adb, args, 1800, cancelled)

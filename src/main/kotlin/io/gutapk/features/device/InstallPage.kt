@@ -25,6 +25,8 @@ import io.gutapk.core.apk.Parts
 import io.gutapk.core.apk.SplitSet
 import io.gutapk.device.AdbDevice
 import io.gutapk.device.DeviceInstall
+import io.gutapk.device.DeviceReader
+import io.gutapk.device.User
 import io.gutapk.job.Job
 import io.gutapk.job.JobQueue
 import io.gutapk.job.JobState
@@ -32,6 +34,7 @@ import io.gutapk.tools.CheckFailed
 import io.gutapk.tools.RunSession
 import io.gutapk.tools.Storage
 import io.gutapk.ui.BodyText
+import io.gutapk.ui.ChoiceDialog
 import io.gutapk.ui.Chooser
 import io.gutapk.ui.LocalLang
 import io.gutapk.ui.Page
@@ -80,12 +83,12 @@ private fun gutapkInstallables(root: Path): Pair<List<Installable>, List<Install
     return rebuilt to originals
 }
 
-private fun startInstall(adb: Path, serial: String, item: Installable, downgrade: Boolean): Job? = JobQueue.start(INSTALL_JOB) { job ->
+private fun startInstall(adb: Path, serial: String, item: Installable, downgrade: Boolean, user: String?): Job? = JobQueue.start(INSTALL_JOB) { job ->
     val work = RunSession.workDir?.resolve("install") ?: throw CheckFailed("no work folder for this run")
     Storage.deleteTree(work, work.parent)
     try {
         val files = DeviceInstall.prepare(item.files, work, job) { job.cancelRequested }
-        job.result = DeviceInstall.install(adb, serial, files, downgrade, job) { job.cancelRequested }
+        job.result = DeviceInstall.install(adb, serial, files, downgrade, job, { job.cancelRequested }, user)
     } finally {
         Storage.deleteTree(work, work.parent)
     }
@@ -98,6 +101,12 @@ fun InstallPage(root: Path?, adb: Path, d: AdbDevice, onBack: () -> Unit) {
         value = if (root == null) (emptyList<Installable>() to emptyList()) else withContext(Dispatchers.IO) { gutapkInstallables(root) }
     }
     var picked by remember { mutableStateOf<Installable?>(null) }
+    // pm's --user value, null to leave it out as before.
+    var user by remember { mutableStateOf<String?>(null) }
+    var choosingUser by remember { mutableStateOf(false) }
+    val users by produceState(emptyList<User>(), d.serial) {
+        value = withContext(Dispatchers.IO) { runCatching { DeviceReader.users(adb, d.serial) }.getOrDefault(emptyList()) }
+    }
     var installJob by remember { mutableStateOf<Job?>(null) }
     var outcome by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
     val view = currentJobView()
@@ -129,6 +138,11 @@ fun InstallPage(root: Path?, adb: Path, d: AdbDevice, onBack: () -> Unit) {
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
         )
+        if (users.size > 1) {
+            Zone(t("in_user_zone")) {
+                ZoneRow(t("ap_user"), installUserName(user, users), onClick = { choosingUser = true })
+            }
+        }
         Zone(t("in_file")) {
             ZoneRow(
                 t("in_choose"),
@@ -167,11 +181,25 @@ fun InstallPage(root: Path?, adb: Path, d: AdbDevice, onBack: () -> Unit) {
         ConfirmInstall(
             serial = d.serial,
             item = p,
+            user = user,
+            userName = installUserName(user, users),
             onInstall = { downgrade ->
-                installJob = startInstall(adb, d.serial, p, downgrade)
+                installJob = startInstall(adb, d.serial, p, downgrade, user)
                 picked = null
             },
             onDismiss = { picked = null },
+        )
+    }
+    if (choosingUser) {
+        ChoiceDialog(
+            title = t("ap_user"),
+            options = listOf<String?>(null, "all", "current").map { it to installUserName(it, users) } + users.map { u -> u.id.toString() to installUserName(u.id.toString(), users) },
+            current = user,
+            onPick = {
+                user = it
+                choosingUser = false
+            },
+            onDismiss = { choosingUser = false },
         )
     }
     val o = outcome
@@ -199,7 +227,7 @@ fun InstallPage(root: Path?, adb: Path, d: AdbDevice, onBack: () -> Unit) {
 
 
 @Composable
-private fun ConfirmInstall(serial: String, item: Installable, onInstall: (Boolean) -> Unit, onDismiss: () -> Unit) {
+private fun ConfirmInstall(serial: String, item: Installable, user: String?, userName: String, onInstall: (Boolean) -> Unit, onDismiss: () -> Unit) {
     var downgrade by remember { mutableStateOf(false) }
     val archive = item.files.any { SplitSet.extension(it) in SplitSet.CONTAINERS }
     AlertDialog(
@@ -208,6 +236,7 @@ private fun ConfirmInstall(serial: String, item: Installable, onInstall: (Boolea
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(item.title)
+                Text(t("in_for", userName), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 ZoneRow(
                     t("in_downgrade"),
                     t("in_downgrade_d"),
@@ -218,9 +247,9 @@ private fun ConfirmInstall(serial: String, item: Installable, onInstall: (Boolea
                 SelectionContainer {
                     Text(
                         if (archive) {
-                            "adb -s $serial install-multiple -r" + (if (downgrade) " -d" else "") + " " + t("in_inside", item.title)
+                            "adb -s $serial install-multiple -r" + (if (downgrade) " -d" else "") + (if (user != null) " --user $user" else "") + " " + t("in_inside", item.title)
                         } else {
-                            "adb " + DeviceInstall.args(serial, item.files, downgrade).joinToString(" ")
+                            "adb " + DeviceInstall.args(serial, item.files, downgrade, user).joinToString(" ")
                         },
                         fontFamily = FontFamily.Monospace,
                     )
@@ -230,4 +259,15 @@ private fun ConfirmInstall(serial: String, item: Installable, onInstall: (Boolea
         confirmButton = { TextButton(onClick = { onInstall(downgrade) }) { Text(t("in_go")) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text(t("cancel")) } },
     )
+}
+
+// The user a --user value names, in words.
+@Composable
+private fun installUserName(user: String?, users: List<User>): String = when (user) {
+    null -> t("in_user_default")
+    "all" -> t("in_user_all")
+    "current" -> t("in_user_current")
+    else -> users.firstOrNull { it.id.toString() == user }?.let { u ->
+        if (u.workProfile) t("ap_work", u.name, u.id) else t("ap_user_d", u.name, u.id)
+    } ?: t("dev_user_id", user.toIntOrNull() ?: 0)
 }
