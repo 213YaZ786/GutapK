@@ -22,7 +22,7 @@ import java.util.zip.ZipOutputStream
 
 // A split set rebuilt part by part, never merged. Only the parts a tweak
 // reaches are decoded: the base for its manifest, code and resources, and
-// every split for a new package id, since each carries the package name.
+// every split for a new package id or version code, which each carries.
 // A patched library is written straight into the zip of the part holding
 // it, no decoding needed. Every other part is copied byte for byte. All
 // parts are then signed with one key, which Android requires of a set.
@@ -67,8 +67,8 @@ object SetBuild {
             if (cancelled()) throw CancelledByUser()
             val target = staged.resolve(p.fileName)
             val id = tweaks.packageId
-            if (id != null) {
-                rebuildSplit(splitJar(), p, id, work.resolve("split"), target, sink, cancelled)
+            if (id != null || tweaks.versionCode != null) {
+                rebuildSplit(splitJar(), p, id, tweaks.versionCode, work.resolve("split"), target, sink, cancelled)
                 sink.emit(JobEvent.Line("part ${p.name} rebuilt"))
             } else {
                 Files.copy(p.file, target, StandardCopyOption.REPLACE_EXISTING)
@@ -126,20 +126,25 @@ object SetBuild {
 
     private fun hasLibs(apk: Path): Boolean = ZipFile(apk.toFile()).use { z -> z.entries().asSequence().any { it.name.startsWith("lib/") } }
 
-    // A new package id is all that reaches a split. APKEditor alone: apktool
-    // needs the base's resources to build a split. APKEditor 1.4.9
+    // A new package id and a new version code are all that reach a split:
+    // Android installs a set only when every part carries the base's
+    // package and code. APKEditor alone: apktool needs the base's resources
+    // to build a split. APKEditor 1.4.9
     // compresses the libraries whatever its uncompressed list says, checked
     // on fx: libraries stored in the original are stored again after it.
-    private fun rebuildSplit(jar: Path, p: Part, id: String, work: Path, target: Path, sink: JobSink, cancelled: () -> Boolean) {
+    private fun rebuildSplit(jar: Path, p: Part, id: String?, versionCode: Long?, work: Path, target: Path, sink: JobSink, cancelled: () -> Boolean) {
         Storage.deleteTree(work, work.parent)
         Files.createDirectories(work)
         val decoded = work.resolve("decoded")
         Edit.runEngine(jar, Engine.APKEDITOR, work, listOf("d", "-i", p.file.toString(), "-o", decoded.toString(), "-f"), sink, cancelled)
         val manifest = decoded.resolve("AndroidManifest.xml")
         if (!Files.isRegularFile(manifest)) throw CheckFailed("the decoded part ${p.name} has no AndroidManifest.xml")
-        val renamed = PackageId.rename(Files.readString(manifest), id)
-        Files.writeString(manifest, renamed.text)
-        Edit.renameInFiles(decoded, renamed.map, sink)
+        if (id != null) {
+            val renamed = PackageId.rename(Files.readString(manifest), id)
+            Files.writeString(manifest, renamed.text)
+            Edit.renameInFiles(decoded, renamed.map, sink)
+        }
+        if (versionCode != null) Files.writeString(manifest, Modern.setManifestAttr(Files.readString(manifest), "android:versionCode", versionCode.toString()))
         Edit.runEngine(jar, Engine.APKEDITOR, work, listOf("b", "-i", decoded.toString(), "-o", target.toString(), "-f"), sink, cancelled)
         if (!Files.isRegularFile(target)) throw CheckFailed("apkeditor produced no APK for part ${p.name}")
         if (storedLibs(p.file)) rewrite(target, emptyMap(), true, work.resolve("stored.apk"))

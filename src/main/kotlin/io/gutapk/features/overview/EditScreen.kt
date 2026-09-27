@@ -111,6 +111,8 @@ fun startEdit(plan: EditPlan): Job? = JobQueue.start(RENAME_JOB) { job ->
 class EditDraft(info: ApkInfo) {
     var name: String by mutableStateOf(info.label ?: "")
     var packageId: String by mutableStateOf(info.packageName)
+    var versionName: String by mutableStateOf(info.versionName ?: "")
+    var versionCode: Long? by mutableStateOf(info.versionCode)
     var minSdk: Int? by mutableStateOf(info.minSdk)
     var targetSdk: Int? by mutableStateOf(info.targetSdk)
     var themed: Boolean by mutableStateOf(false)
@@ -160,6 +162,8 @@ fun EditScreen(
 ) {
     var name by draft::name
     var packageId by draft::packageId
+    var versionName by draft::versionName
+    var versionCode by draft::versionCode
     var minSdk by draft::minSdk
     var targetSdk by draft::targetSdk
     var themed by draft::themed
@@ -213,13 +217,15 @@ fun EditScreen(
     val packageChanged = packageId != info.packageName && PackageId.check(packageId) == null
     val minChanged = minSdk != null && minSdk != info.minSdk
     val targetChanged = targetSdk != null && targetSdk != info.targetSdk
+    val versionNameChanged = versionName.trim().isNotEmpty() && versionName.trim() != (info.versionName ?: "")
+    val versionCodeChanged = versionCode != null && versionCode != info.versionCode
     val flagsChanged = predictiveBack != info.predictiveBack || localeConfig != info.hasLocaleConfig ||
         nativeLibs != info.nativeLibsFromApk || backup != info.allowsBackup || networkConfig != info.networkConfig ||
         cleartext != info.cleartextTraffic || fragileData != info.fragileUserData || memoryTagging != info.memoryTagging ||
         debuggable != info.debuggable
     val iconOk = iconImage != null && iconCheck?.refusal == null
     val anyChange = nameChanged || minChanged || targetChanged || toRemove.isNotEmpty() || themed || iconOk || packageChanged ||
-        flagsChanged ||
+        flagsChanged || versionNameChanged || versionCodeChanged ||
         silencedPrefixes.isNotEmpty() || keepAbi != null || removedLanguages.isNotEmpty() || stripDebug || usePatches || useSmali
     val spec = Tools.byId(Engine.APKTOOL.id)
     // Verify hashes the tool, so it runs on IO once per visit, not on every
@@ -254,6 +260,8 @@ fun EditScreen(
                         themedIcon = themed,
                         iconImage = if (iconOk) iconImage else null,
                         packageId = if (packageChanged) packageId else null,
+                        versionName = versionName.trim().takeIf { versionNameChanged },
+                        versionCode = versionCode.takeIf { versionCodeChanged },
                         predictiveBack = predictiveBack.takeIf { it != info.predictiveBack },
                         localeConfig = localeConfig.takeIf { it != info.hasLocaleConfig },
                         nativeLibsFromApk = nativeLibs.takeIf { it != info.nativeLibsFromApk },
@@ -322,6 +330,25 @@ fun EditScreen(
                 trailing = if (packageChanged) changed else null,
             )
             if (packageChanged) BodyText(t("edit_package_note"))
+        }
+
+        Zone(t("edit_zone_version")) {
+            ZoneRow(
+                t("edit_vname"),
+                versionName.trim().ifEmpty { info.versionName ?: "?" },
+                onClick = { dialog = "vname" },
+                trailing = if (versionNameChanged) changed else null,
+            )
+            ZoneRow(
+                t("edit_vcode"),
+                versionCode?.toString() ?: "?",
+                onClick = { dialog = "vcode" },
+                trailing = if (versionCodeChanged) changed else null,
+            )
+            val vc = versionCode
+            val was = info.versionCode
+            if (versionCodeChanged && vc != null && was != null && vc < was) BodyText(t("edit_vcode_lower"))
+            if (versionCodeChanged) BodyText(t("edit_vcode_note"))
         }
 
         Zone(t("edit_zone_sdk")) {
@@ -580,6 +607,29 @@ fun EditScreen(
             },
             onDone = {
                 packageId = it.ifEmpty { info.packageName }
+                dialog = null
+            },
+            onDismiss = { dialog = null },
+        )
+        "vname" -> ValueDialog(
+            title = t("edit_vname"),
+            initial = versionName,
+            digits = false,
+            problem = { v -> if (v.length > 100 || !Edit.yamlPlain(v)) t("edit_vname_bad") else null },
+            onDone = {
+                versionName = it.ifEmpty { info.versionName ?: "" }
+                dialog = null
+            },
+            onDismiss = { dialog = null },
+        )
+        "vcode" -> ValueDialog(
+            title = t("edit_vcode"),
+            initial = versionCode?.toString() ?: "",
+            digits = true,
+            // versionCode is a 32 bit number, 0 is not a version.
+            problem = { v -> if ((v.toLongOrNull() ?: 0) !in 1..Int.MAX_VALUE.toLong()) t("edit_vcode_bad") else null },
+            onDone = {
+                versionCode = it.toLongOrNull() ?: info.versionCode
                 dialog = null
             },
             onDismiss = { dialog = null },

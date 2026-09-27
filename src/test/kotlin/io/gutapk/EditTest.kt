@@ -741,4 +741,24 @@ class EditTest {
         assertEquals(m, io.gutapk.core.edit.Modern.removeAppAttr(m, "android:networkSecurityConfig"))
     }
 
+
+    // apktool keeps the version in apktool.yml, APKEditor in the manifest.
+    @Test
+    fun setsTheVersion() {
+        val yml = "version: 3.0.3\nversionInfo:\n  versionCode: 171130\n  versionName: 1.35.0\nresourcesInfo:\n  x: 1\n"
+        val e = io.gutapk.core.edit.Edit
+        assertEquals(yml.replace("171130", "171131"), e.yamlVersion(yml, "versionCode", "171131"))
+        assertEquals(yml.replace("versionName: 1.35.0", "versionName: Bob's 2"), e.yamlVersion(yml, "versionName", "Bob's 2"))
+        assertTrue(e.yamlPlain("1.36.2-mod"))
+        assertTrue(e.yamlPlain("Bob's 2 beta"))
+        assertFalse(e.yamlPlain("#2"))
+        assertFalse(e.yamlPlain("a: b"))
+        assertFalse(e.yamlPlain("'x"))
+        assertFalse(e.yamlPlain("x #y"))
+        assertEquals("version: 3.0.3\nversionInfo:\n  versionCode: 5\n", e.yamlVersion("version: 3.0.3\n", "versionCode", "5"))
+        val m = "<manifest xmlns:android=\"x\" android:versionCode=\"7\" package=\"a.b\">\n  <application/>\n</manifest>"
+        assertEquals(m.replace("\"7\"", "\"8\""), io.gutapk.core.edit.Modern.setManifestAttr(m, "android:versionCode", "8"))
+        assertEquals(m.replace("<manifest ", "<manifest android:versionName=\"2.0\" "), io.gutapk.core.edit.Modern.setManifestAttr(m, "android:versionName", "2.0"))
+    }
+
 }

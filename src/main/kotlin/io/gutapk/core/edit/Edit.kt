@@ -24,6 +24,10 @@ data class Tweaks(
     val label: String? = null,
     val minSdk: Int? = null,
     val targetSdk: Int? = null,
+    // The version shown to users and the number Android compares on
+    // update. A split set gets the same code in every part.
+    val versionName: String? = null,
+    val versionCode: Long? = null,
     // Permissions to remove, by their full name. Only removal, since 0.1.20:
     // adding a permission an app was not built to ask for grants nothing.
     val removePermissions: Set<String> = emptySet(),
@@ -232,6 +236,26 @@ object Edit {
             } else {
                 text = setSdk(text, tweaks.minSdk, tweaks.targetSdk, sink)
             }
+        }
+
+        // apktool keeps the version in apktool.yml and gives it to aapt2 at
+        // build, its manifest has none. APKEditor keeps it in the manifest.
+        if (tweaks.versionName != null || tweaks.versionCode != null) {
+            if (engine == Engine.APKTOOL) {
+                val yml = decoded.resolve("apktool.yml")
+                if (!Files.isRegularFile(yml)) throw CheckFailed("the decoded APK has no apktool.yml")
+                var y = Files.readString(yml)
+                tweaks.versionCode?.let { y = yamlVersion(y, "versionCode", it.toString()) }
+                tweaks.versionName?.let {
+                    if (!yamlPlain(it)) throw CheckFailed("the version name \"$it\" needs quotes in apktool.yml, which apktool reads wrong. Nothing was changed.")
+                    y = yamlVersion(y, "versionName", it)
+                }
+                Files.writeString(yml, y)
+            } else {
+                tweaks.versionCode?.let { text = Modern.setManifestAttr(text, "android:versionCode", it.toString()) }
+                tweaks.versionName?.let { text = Modern.setManifestAttr(text, "android:versionName", Label.escape(it, aapt = false)) }
+            }
+            sink.emit(JobEvent.Line("version: name ${tweaks.versionName ?: "kept"}, code ${tweaks.versionCode ?: "kept"}"))
         }
 
         if (tweaks.removePermissions.isNotEmpty()) {
@@ -546,6 +570,25 @@ object Edit {
 
     // One sdkInfo key of apktool.yml set, added under sdkInfo when missing,
     // the section added when there is none.
+    // A key of apktool.yml's versionInfo, added with the section when
+    // missing.
+    internal fun yamlVersion(text: String, key: String, value: String): String {
+        val line = Regex("""(?m)^([ \t]+$key:).*$""")
+        val found = line.find(text)
+        if (found != null) return text.replaceRange(found.range, found.groupValues[1] + " " + value)
+        val section = Regex("""(?m)^versionInfo:[ \t]*$""").find(text)
+            ?: return text.trimEnd('\n') + "\nversionInfo:\n  $key: $value\n"
+        return text.substring(0, section.range.last + 1) + "\n  $key: $value" + text.substring(section.range.last + 1)
+    }
+
+    // A value YAML reads as written, unquoted, the way apktool writes it.
+    // apktool 3.0.3 misreads quoted values, checked on fx: a single quoted
+    // one keeps its doubled quote, a double quoted one stops at ": ". So a
+    // version name that would need quotes is refused before any change.
+    fun yamlPlain(s: String): Boolean =
+        s.isNotEmpty() && s.first() !in "-?:,[]{}#&*!|>'\"%@` " && s.last() != ' ' &&
+            ": " !in s && " #" !in s && !s.endsWith(":") && s.none { it.isISOControl() }
+
     internal fun yamlSdk(text: String, key: String, value: Int?): String {
         if (value == null) return text
         val line = Regex("""(?m)^([ \t]+$key:).*$""")

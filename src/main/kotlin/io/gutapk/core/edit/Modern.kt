@@ -18,6 +18,18 @@ object Modern {
         return manifest.replaceRange(tag.range, changed)
     }
 
+    // An attribute of the opening manifest tag, set or added.
+    fun setManifestAttr(manifest: String, name: String, value: String): String {
+        val tag = Regex("""<manifest\b[^>]*>""").find(manifest) ?: return manifest
+        val present = Regex("""\b${Regex.escape(name)}="[^"]*"""")
+        val changed = if (present.containsMatchIn(tag.value)) {
+            present.replace(tag.value, "$name=\"$value\"")
+        } else {
+            tag.value.replaceFirst("<manifest", "<manifest $name=\"$value\"")
+        }
+        return manifest.replaceRange(tag.range, changed)
+    }
+
     // The attribute gone from the application tag, Android's default then.
     fun removeAppAttr(manifest: String, name: String): String {
         val tag = Regex("""<application\b[^>]*>""").find(manifest) ?: return manifest
