@@ -33,6 +33,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import io.gutapk.core.edit.CodeSource
 import io.gutapk.core.edit.SmaliClass
 import io.gutapk.core.edit.SmaliCode
 import io.gutapk.ui.BodyText
@@ -51,7 +52,7 @@ private const val MIN_GREP = 3
 // the caller, so Back from a class finds the same list.
 @Composable
 fun CodeScreen(
-    code: Path,
+    code: CodeSource,
     query: String,
     inCode: Boolean,
     onQuery: (String) -> Unit,
@@ -60,7 +61,7 @@ fun CodeScreen(
     onBack: () -> Unit,
 ) {
     val all by produceState<List<SmaliClass>?>(null, code) {
-        value = withContext(Dispatchers.IO) { runCatching { SmaliCode.list(code) }.getOrDefault(emptyList()) }
+        value = withContext(Dispatchers.IO) { runCatching { code.list() }.getOrDefault(emptyList()) }
     }
     val found by produceState<Pair<Int, List<SmaliClass>>?>(null, all, query) {
         val a = all ?: return@produceState
@@ -72,12 +73,12 @@ fun CodeScreen(
         value = null
         if (!inCode || query.trim().length < MIN_GREP) return@produceState
         val job = coroutineContext.job
-        value = withContext(Dispatchers.IO) { runCatching { SmaliCode.grep(code, query.trim(), SHOWN) { job.isActive } }.getOrNull() }
+        value = withContext(Dispatchers.IO) { runCatching { code.grep(query.trim(), SHOWN) { job.isActive } }.getOrNull() }
     }
     val edits by produceState(emptyList<SmaliClass>(), code) {
-        value = withContext(Dispatchers.IO) { runCatching { SmaliCode.changed(code).mapNotNull { SmaliCode.classOf(it) } }.getOrDefault(emptyList()) }
+        value = withContext(Dispatchers.IO) { runCatching { code.changed() }.getOrDefault(emptyList()) }
     }
-    Page(title = t("code_title"), width = 1040.dp, onBack = onBack) {
+    Page(title = t(if (code.editable) "code_title" else "java_title"), width = 1040.dp, onBack = onBack) {
         val a = all
         if (a != null) {
             Text(
@@ -147,11 +148,11 @@ private sealed interface SmaliText {
 // One class, line by line with numbers. Edit turns it into a text field,
 // Save writes it into the decoded folder, which Rebuild and sign builds.
 @Composable
-fun SmaliScreen(code: Path, c: SmaliClass, line: Int?, onBack: () -> Unit) {
+fun SmaliScreen(code: CodeSource, c: SmaliClass, line: Int?, onBack: () -> Unit) {
     var revision by remember { mutableStateOf(0) }
     val state by produceState<SmaliText>(SmaliText.Reading, c.entry, revision) {
         value = withContext(Dispatchers.IO) {
-            runCatching { SmaliText.Ready(SmaliCode.read(code, c.entry), SmaliCode.edited(code, c.entry)) }
+            runCatching { SmaliText.Ready(code.read(c.entry), code.edited(c.entry)) }
                 .getOrElse { SmaliText.Failed(it.message ?: "?") }
         }
     }
@@ -165,7 +166,7 @@ fun SmaliScreen(code: Path, c: SmaliClass, line: Int?, onBack: () -> Unit) {
 
     fun save(text: String) {
         scope.launch {
-            val r = withContext(Dispatchers.IO) { runCatching { SmaliCode.save(code, c.entry, text) } }
+            val r = withContext(Dispatchers.IO) { runCatching { code.save(c.entry, text) } }
             problem = r.exceptionOrNull()?.message
             if (r.isSuccess) {
                 draft = null
@@ -175,7 +176,7 @@ fun SmaliScreen(code: Path, c: SmaliClass, line: Int?, onBack: () -> Unit) {
     }
 
     val actions: (@Composable () -> Unit)? = when {
-        ready == null -> null
+        ready == null || !code.editable -> null
         d != null -> {
             {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

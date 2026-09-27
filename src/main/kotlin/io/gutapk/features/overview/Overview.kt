@@ -46,7 +46,11 @@ import io.gutapk.core.apk.UnityInfo
 import io.gutapk.core.apk.UnityReader
 import io.gutapk.core.il2cpp.MethodEntry
 import io.gutapk.core.edit.Engine
+import io.gutapk.core.edit.CodeSource
+import io.gutapk.core.edit.JavaCode
+import io.gutapk.core.edit.JavaSource
 import io.gutapk.core.edit.SmaliCode
+import io.gutapk.core.edit.SmaliSource
 import io.gutapk.core.sign.KeyChoice
 import io.gutapk.core.sign.keyChoiceOf
 import io.gutapk.job.Job
@@ -186,6 +190,9 @@ fun OverviewScreen(
     var smaliLine by remember { mutableStateOf<Int?>(null) }
     var codeInText by remember { mutableStateOf(false) }
     val codeDir = SmaliCode.dir(dir)
+    // Which code the browser shows, the smali or jadx's Java.
+    var javaView by remember { mutableStateOf(false) }
+    val codeSource: CodeSource = if (javaView) JavaSource(JavaCode.dir(dir)) else SmaliSource(codeDir)
     // The job this screen started. Another job finishing, a tool update for
     // instance, must not open this screen's report.
     var started by remember { mutableStateOf<Job?>(null) }
@@ -256,10 +263,10 @@ fun OverviewScreen(
             onBack = { editing = false },
         )
     } else if (code && shownSmali != null) {
-        SmaliScreen(codeDir, shownSmali, smaliLine, onBack = { smali = null })
+        SmaliScreen(codeSource, shownSmali, smaliLine, onBack = { smali = null })
     } else if (code) {
         CodeScreen(
-            codeDir,
+            codeSource,
             codeQuery,
             codeInText,
             onQuery = { codeQuery = it },
@@ -297,7 +304,20 @@ fun OverviewScreen(
             },
         ) {
             if (root != null) {
-                CodeZone(root, codeDir, original, onOpen = { code = true })
+                CodeZone(
+                    root,
+                    codeDir,
+                    JavaCode.dir(dir),
+                    original,
+                    onOpen = { java ->
+                        if (java != javaView) {
+                            codeQuery = ""
+                            smali = null
+                        }
+                        javaView = java
+                        code = true
+                    },
+                )
             }
         }
     }

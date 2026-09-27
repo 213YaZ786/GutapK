@@ -697,4 +697,29 @@ class EditTest {
         """.trimIndent()
         assertEquals(null, code.problem(nested))
     }
+
+    // jadx's output read as classes, read only, searched line by line,
+    // and nothing outside sources/ taken for a class.
+    @Test
+    fun javaFolderIsReadOnly() {
+        val base = java.nio.file.Files.createTempDirectory("gutapk-java")
+        try {
+            val jc = io.gutapk.core.edit.JavaCode
+            val dir = jc.dir(base.resolve("pkg"))
+            java.nio.file.Files.createDirectories(dir.resolve("sources/com/x"))
+            java.nio.file.Files.writeString(dir.resolve("sources/com/x/Shop.java"), "package com.x\n\npublic class Shop {\n    int price() { return 500 }\n}\n")
+            java.nio.file.Files.writeString(dir.resolve(".gutapk-java"), "classes=1\ntool=1.5.6\nerrors=0\n")
+            assertEquals(1, jc.record(dir)?.classes)
+            val src = io.gutapk.core.edit.JavaSource(dir)
+            assertFalse(src.editable)
+            assertEquals(listOf("com.x.Shop"), src.list().map { it.name })
+            assertEquals(4, src.grep("return 500", 10) { true }.second.single().line)
+            assertFailsWith<io.gutapk.tools.CheckFailed> { src.save("sources/com/x/Shop.java", "x") }
+            assertFailsWith<io.gutapk.tools.CheckFailed> { src.read("../secret.java") }
+            assertNull(jc.classOf("resources/AndroidManifest.xml"))
+        } finally {
+            base.toFile().deleteRecursively()
+        }
+    }
+
 }
