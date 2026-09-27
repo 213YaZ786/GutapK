@@ -24,8 +24,12 @@ import io.gutapk.core.apk.Part
 import io.gutapk.core.apk.Parts
 import io.gutapk.core.apk.SignatureInfo
 import io.gutapk.core.apk.Signatures
+import io.gutapk.core.edit.Edit
 import io.gutapk.core.edit.SetBuild
 import io.gutapk.core.edit.SmaliCode
+import io.gutapk.core.edit.Tweaks
+import io.gutapk.core.il2cpp.BytePatch
+import io.gutapk.core.il2cpp.Patches
 import io.gutapk.core.sign.ApkSigning
 import io.gutapk.core.sign.KeyChoice
 import io.gutapk.core.sign.OwnKey
@@ -49,6 +53,7 @@ const val SIGN_JOB = "sign"
 // schemes, where the file lands, and what it means for installing.
 @Composable
 fun SignDialog(
+    root: Path?,
     dir: Path,
     original: Path,
     info: ApkInfo,
@@ -62,14 +67,20 @@ fun SignDialog(
         value = withContext(Dispatchers.IO) { Parts.of(dir) }
     }
     val set = parts?.takeIf { it.size > 1 }
-    // Signing takes the original as it is: changes in the decoded folder
-    // only reach the app through Rebuild and sign, said before, not after.
+    // What the user changed in the Code and Unity zones goes into the
+    // signed app: the decoded folder when it holds changes, the hex
+    // patches when there are some. Without either the original is signed
+    // as it is.
     val codeChanged by produceState(0, dir) {
         value = withContext(Dispatchers.IO) {
             val code = SmaliCode.dir(dir)
             if (SmaliCode.record(code) == null) 0 else runCatching { SmaliCode.touched(code).size }.getOrDefault(0)
         }
     }
+    val patches by produceState(emptyList<BytePatch>(), dir) {
+        value = withContext(Dispatchers.IO) { runCatching { Patches.read(dir) }.getOrDefault(emptyList()) }
+    }
+    val rebuild = root != null && (codeChanged > 0 || patches.isNotEmpty())
     val output = when {
         choice == null || parts == null -> null
         set != null -> ApkSigning.setOutput(dir, info.packageName, info.versionName, choice)
@@ -91,8 +102,14 @@ fun SignDialog(
                 if (print != null) {
                     SelectionContainer { Fact(t("signed_signer"), print) }
                 }
-                if (codeChanged > 0) {
-                    Text(t("sign_code_changed", codeChanged.toString()), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                if (rebuild) {
+                    Fact(
+                        t("sign_includes"),
+                        listOfNotNull(
+                            if (codeChanged > 0) t("sign_inc_code", codeChanged.toString()) else null,
+                            if (patches.isNotEmpty()) t("sign_inc_patches", patches.size.toString()) else null,
+                        ).joinToString("\n"),
+                    )
                 }
                 if (choice == KeyChoice.TEST) {
                     Text(t("sign_test_warning"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
@@ -117,16 +134,40 @@ fun SignDialog(
                     val out = output
                     val key = choice
                     if (out != null && key != null) {
-                        val job = JobQueue.start(SIGN_JOB) { job ->
-                            // Loaded inside the job: the own key asks the
-                            // keyring, which may show its unlock dialog.
-                            val signing = if (key == KeyChoice.OWN) OwnKey.load() else TestKey.load()
-                            if (set != null) {
-                                SetBuild.sign(set.map { it.file to it.fileName }, out, signing, info.minSdk, version, job)
-                            } else {
-                                ApkSigning.sign(original, out, signing, info.minSdk, version, job)
+                        val r = root
+                        val withPatches = patches
+                        val withCode = codeChanged > 0
+                        val job = if (rebuild && r != null) {
+                            JobQueue.start(SIGN_JOB) { job ->
+                                val signing = if (key == KeyChoice.OWN) OwnKey.load() else TestKey.load()
+                                val result = Edit.run(
+                                    root = r,
+                                    packageDir = dir,
+                                    input = original,
+                                    tweaks = Tweaks(codeFrom = if (withCode) dir else null, bytePatches = withPatches),
+                                    key = signing,
+                                    keyName = key.name,
+                                    packageName = info.packageName,
+                                    version = info.versionName,
+                                    minSdk = info.minSdk,
+                                    appVersion = version,
+                                    sink = job,
+                                    cancelled = { job.cancelRequested },
+                                )
+                                job.result = result.output.toString()
                             }
-                            job.result = out.toString()
+                        } else {
+                            JobQueue.start(SIGN_JOB) { job ->
+                                // Loaded inside the job: the own key asks the
+                                // keyring, which may show its unlock dialog.
+                                val signing = if (key == KeyChoice.OWN) OwnKey.load() else TestKey.load()
+                                if (set != null) {
+                                    SetBuild.sign(set.map { it.file to it.fileName }, out, signing, info.minSdk, version, job)
+                                } else {
+                                    ApkSigning.sign(original, out, signing, info.minSdk, version, job)
+                                }
+                                job.result = out.toString()
+                            }
                         }
                         if (job != null) onStarted(job)
                     }

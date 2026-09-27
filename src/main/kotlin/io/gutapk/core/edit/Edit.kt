@@ -113,7 +113,15 @@ object Edit {
                 return EditResult(out, signature)
             }
             val rebuilt = work.resolve("rebuilt.apk")
-            rebuild(jar, engine, input, tweaks, work, rebuilt, 4, sink, cancelled)
+            if (tweaks == Tweaks(bytePatches = tweaks.bytePatches)) {
+                // Patches alone go straight into the library, as in a set:
+                // the rest of the APK keeps its bytes.
+                sink.emit(JobEvent.Step("build", 3, 4))
+                Files.copy(input, rebuilt)
+                SetBuild.writeLibs(listOf(rebuilt), tweaks.bytePatches, false, work.resolve("libs"), sink)
+            } else {
+                rebuild(jar, engine, input, tweaks, work, rebuilt, 4, sink, cancelled)
+            }
             sink.emit(JobEvent.Step("sign", 4, 4))
             val out = ApkSigning.output(packageDir, tweaks.packageId ?: packageName, version, choice)
             val signature = ApkSigning.sign(rebuilt, out, key, signMin, appVersion, sink)

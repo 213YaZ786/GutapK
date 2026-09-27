@@ -325,6 +325,7 @@ fun OverviewScreen(
     if (info != null && !editing && !methods && !code) {
         when (dialog) {
             "sign" -> SignDialog(
+                root = root,
                 dir = dir,
                 original = original,
                 info = info,
