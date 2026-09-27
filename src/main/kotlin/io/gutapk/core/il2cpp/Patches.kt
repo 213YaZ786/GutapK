@@ -32,10 +32,13 @@ object Arm64Presets {
     const val ABI = "arm64-v8a"
     private const val RET = "C0 03 5F D6"
 
+    // true, false, -1 and the high value load x0, the form the user's
+    // references use. The int limits load w0: they are 32 bit values.
     val all = listOf(
-        Preset("false", "00 00 80 52 $RET"),
-        Preset("true", "20 00 80 52 $RET"),
-        Preset("minus_one", "00 00 80 12 $RET"),
+        Preset("false", "00 00 80 D2 $RET"),
+        Preset("true", "20 00 80 D2 $RET"),
+        Preset("high", "00 E0 AF D2 $RET"),
+        Preset("minus_one", "00 00 80 92 $RET"),
         Preset("int_max", "00 00 B0 12 $RET"),
         Preset("int_min", "00 00 B0 52 $RET"),
         Preset("float_zero", "E0 03 27 1E $RET"),

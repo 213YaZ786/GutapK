@@ -332,7 +332,15 @@ class Il2CppTest {
             assertEquals(p.bytes, Hex.format(bytes))
             if (p.id != "nop") assertEquals("C0 03 5F D6", p.bytes.takeLast(11), p.id)
         }
-        assertEquals("20 00 80 52 C0 03 5F D6", byId["true"])
+        assertEquals("20 00 80 D2 C0 03 5F D6", byId["true"])
+        assertEquals("00 00 80 D2 C0 03 5F D6", byId["false"])
+        assertEquals("00 E0 AF D2 C0 03 5F D6", byId["high"])
+        assertEquals("00 00 80 92 C0 03 5F D6", byId["minus_one"])
+        // The same bytes the value builder writes for a long, which objdump
+        // read back as mov x0 then ret.
+        listOf("true" to "1", "false" to "0", "high" to "0x7F000000", "minus_one" to "-1").forEach { (id, v) ->
+            assertEquals(byId[id], io.gutapk.core.il2cpp.Hex.format(assertNotNull(io.gutapk.core.il2cpp.Arm64Return.build(io.gutapk.core.il2cpp.ReturnKind.LONG, v)).bytes), id)
+        }
         assertEquals("00 00 B0 12 C0 03 5F D6", byId["int_max"])
         assertEquals("00 10 2E 1E C0 03 5F D6", byId["float_one"])
         assertEquals("1F 20 03 D5", byId["nop"])
