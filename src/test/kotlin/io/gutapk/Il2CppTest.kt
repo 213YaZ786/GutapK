@@ -338,10 +338,11 @@ class Il2CppTest {
         assertEquals("00 00 80 92 C0 03 5F D6", byId["minus_one"])
         // The same bytes the value builder writes for a long, which objdump
         // read back as mov x0 then ret.
-        listOf("true" to "1", "false" to "0", "high" to "0x7F000000", "minus_one" to "-1").forEach { (id, v) ->
-            assertEquals(byId[id], io.gutapk.core.il2cpp.Hex.format(assertNotNull(io.gutapk.core.il2cpp.Arm64Return.build(io.gutapk.core.il2cpp.ReturnKind.LONG, v)).bytes), id)
+        listOf("true" to "1", "false" to "0", "high" to "0x7F000000", "minus_one" to "-1", "int_max" to "2147483647", "int_min" to "-2147483648").forEach { (id, v) ->
+            assertEquals(byId[id], io.gutapk.core.il2cpp.Hex.format(assertNotNull(io.gutapk.core.il2cpp.Arm64Return.build(io.gutapk.core.il2cpp.ReturnKind.INT, v)).bytes), id)
         }
-        assertEquals("00 00 B0 12 C0 03 5F D6", byId["int_max"])
+        assertEquals("E0 7B 40 B2 C0 03 5F D6", byId["int_max"])
+        assertEquals("E0 83 61 B2 C0 03 5F D6", byId["int_min"])
         assertEquals("00 10 2E 1E C0 03 5F D6", byId["float_one"])
         assertEquals("1F 20 03 D5", byId["nop"])
 
