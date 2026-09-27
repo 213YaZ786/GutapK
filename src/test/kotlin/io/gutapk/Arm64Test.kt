@@ -162,4 +162,46 @@ class Arm64Test {
         assertEquals("udf\t#0", Arm64.decode(0, 0))
         assertEquals("nop", Arm64.decode(byteArrayOf(0x1f, 0x20, 0x03, 0xd5.toByte()), 0, 0))
     }
+
+    // Each sequence read back by binutils 2.47 objdump as the value typed,
+    // the user's own examples among them (mov x0 for a long).
+    @Test
+    fun returnsTheValueTyped() {
+        val cases = listOf(
+            Triple(io.gutapk.core.il2cpp.ReturnKind.BOOL, "true", "20 00 80 52 C0 03 5F D6"),
+            Triple(io.gutapk.core.il2cpp.ReturnKind.BOOL, "false", "00 00 80 52 C0 03 5F D6"),
+            Triple(io.gutapk.core.il2cpp.ReturnKind.INT, "500", "80 3E 80 52 C0 03 5F D6"),
+            Triple(io.gutapk.core.il2cpp.ReturnKind.INT, "-1", "00 00 80 12 C0 03 5F D6"),
+            Triple(io.gutapk.core.il2cpp.ReturnKind.INT, "2147483647", "00 00 B0 12 C0 03 5F D6"),
+            Triple(io.gutapk.core.il2cpp.ReturnKind.INT, "-2147483648", "00 00 B0 52 C0 03 5F D6"),
+            Triple(io.gutapk.core.il2cpp.ReturnKind.INT, "0x7F000000", "00 E0 AF 52 C0 03 5F D6"),
+            Triple(io.gutapk.core.il2cpp.ReturnKind.INT, "99999", "E0 D3 90 52 20 00 A0 72 C0 03 5F D6"),
+            Triple(io.gutapk.core.il2cpp.ReturnKind.INT, "-500", "60 3E 80 12 C0 03 5F D6"),
+            Triple(io.gutapk.core.il2cpp.ReturnKind.INT, "0xFFFF0000", "E0 FF BF 52 C0 03 5F D6"),
+            Triple(io.gutapk.core.il2cpp.ReturnKind.LONG, "1", "20 00 80 D2 C0 03 5F D6"),
+            Triple(io.gutapk.core.il2cpp.ReturnKind.LONG, "0", "00 00 80 D2 C0 03 5F D6"),
+            Triple(io.gutapk.core.il2cpp.ReturnKind.LONG, "0x7F000000", "00 E0 AF D2 C0 03 5F D6"),
+            Triple(io.gutapk.core.il2cpp.ReturnKind.LONG, "5000000000", "00 40 9E D2 A0 40 A5 F2 20 00 C0 F2 C0 03 5F D6"),
+            Triple(io.gutapk.core.il2cpp.ReturnKind.LONG, "-1", "00 00 80 92 C0 03 5F D6"),
+            Triple(io.gutapk.core.il2cpp.ReturnKind.LONG, "9223372036854775807", "00 00 F0 92 C0 03 5F D6"),
+            Triple(io.gutapk.core.il2cpp.ReturnKind.LONG, "-5000000000", "E0 3F 9E 92 40 BF BA F2 C0 FF DF F2 C0 03 5F D6"),
+            Triple(io.gutapk.core.il2cpp.ReturnKind.FLOAT, "1.5", "00 F8 A7 52 00 00 27 1E C0 03 5F D6"),
+            Triple(io.gutapk.core.il2cpp.ReturnKind.FLOAT, "-100.25", "00 00 90 52 00 59 B8 72 00 00 27 1E C0 03 5F D6"),
+            Triple(io.gutapk.core.il2cpp.ReturnKind.FLOAT, "999999", "00 7E 84 52 80 2E A9 72 00 00 27 1E C0 03 5F D6"),
+            Triple(io.gutapk.core.il2cpp.ReturnKind.DOUBLE, "1.5", "00 FF E7 D2 00 00 67 9E C0 03 5F D6"),
+            Triple(io.gutapk.core.il2cpp.ReturnKind.DOUBLE, "123456.789", "20 D9 8E D2 C0 F7 B3 F2 80 81 C4 F2 C0 1F E8 F2 00 00 67 9E C0 03 5F D6"),
+        )
+        cases.forEach { (kind, text, hex) ->
+            val built = kotlin.test.assertNotNull(io.gutapk.core.il2cpp.Arm64Return.build(kind, text), "$kind $text")
+            assertEquals(hex, io.gutapk.core.il2cpp.Hex.format(built.bytes), "$kind $text")
+        }
+        assertEquals("0x1F4", io.gutapk.core.il2cpp.Arm64Return.build(io.gutapk.core.il2cpp.ReturnKind.INT, "500")?.hex)
+        kotlin.test.assertNull(io.gutapk.core.il2cpp.Arm64Return.build(io.gutapk.core.il2cpp.ReturnKind.INT, "4294967296"))
+        kotlin.test.assertNull(io.gutapk.core.il2cpp.Arm64Return.build(io.gutapk.core.il2cpp.ReturnKind.INT, "-2147483649"))
+        kotlin.test.assertNull(io.gutapk.core.il2cpp.Arm64Return.build(io.gutapk.core.il2cpp.ReturnKind.BOOL, "yes"))
+        kotlin.test.assertNull(io.gutapk.core.il2cpp.Arm64Return.build(io.gutapk.core.il2cpp.ReturnKind.FLOAT, "abc"))
+        assertEquals("fmov\ts0, w0", Arm64.decode(0x1E270000, 0))
+        assertEquals("fmov\td0, x0", Arm64.decode(0x9E670000.toInt(), 0))
+    }
+
 }

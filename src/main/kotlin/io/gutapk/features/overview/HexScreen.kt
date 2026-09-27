@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SuggestionChip
@@ -31,12 +32,15 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import io.gutapk.core.il2cpp.Arm64
 import io.gutapk.core.il2cpp.Arm64Presets
+import io.gutapk.core.il2cpp.Arm64Return
 import io.gutapk.core.il2cpp.BytePatch
+import io.gutapk.core.il2cpp.Hex
 import io.gutapk.core.il2cpp.LibBytes
 import io.gutapk.core.il2cpp.MethodEntry
 import io.gutapk.core.il2cpp.MethodIndex
 import io.gutapk.core.il2cpp.PatchProblem
 import io.gutapk.core.il2cpp.Patches
+import io.gutapk.core.il2cpp.ReturnKind
 import io.gutapk.ui.BodyText
 import io.gutapk.ui.Page
 import io.gutapk.ui.Zone
@@ -250,6 +254,8 @@ private fun CodeRows(d: HexData, start: Long) {
 private fun PatchDialog(method: MethodEntry, data: HexData, onSave: (BytePatch) -> Unit, onDismiss: () -> Unit) {
     var offset by remember { mutableStateOf(method.offset.toString(16).uppercase()) }
     var bytes by remember { mutableStateOf("") }
+    var kind by remember { mutableStateOf(ReturnKind.INT) }
+    var valueText by remember { mutableStateOf("") }
     val at = offset.trim().removePrefix("0x").removePrefix("0X").toLongOrNull(16)
     val label = listOf(method.type, method.member).joinToString(" ")
     val result: Pair<BytePatch?, PatchProblem?> = if (at == null) {
@@ -303,6 +309,7 @@ private fun PatchDialog(method: MethodEntry, data: HexData, onSave: (BytePatch) 
                     if (Arm64Presets.all.any { it.size > room }) {
                         BodyText(t("hex_presets_room", room.toString()))
                     }
+                    ValueBuilder(kind, valueText, room, onKind = { kind = it }, onValue = { valueText = it }, onUse = { bytes = it })
                 }
                 if (patch != null) {
                     Text(t("hex_replaces", patch.old), fontFamily = FontFamily.Monospace)
@@ -314,4 +321,45 @@ private fun PatchDialog(method: MethodEntry, data: HexData, onSave: (BytePatch) 
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text(t("cancel")) } },
     )
+}
+
+// A value typed as a number, turned into the instructions that return it,
+// shown as objdump would read them. Use fills the bytes field, the user
+// still sees what they replace and saves.
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ValueBuilder(kind: ReturnKind, text: String, room: Long, onKind: (ReturnKind) -> Unit, onValue: (String) -> Unit, onUse: (String) -> Unit) {
+    val built = if (text.isBlank()) null else Arm64Return.build(kind, text)
+    val fits = built != null && built.bytes.size <= room
+    Text(t("hex_value"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        ReturnKind.entries.forEach { k ->
+            FilterChip(selected = k == kind, onClick = { onKind(k) }, label = { Text(t("hex_kind_" + k.name.lowercase())) })
+        }
+    }
+    OutlinedTextField(
+        value = text,
+        onValueChange = onValue,
+        label = { Text(t("hex_value_field")) },
+        singleLine = true,
+        isError = text.isNotBlank() && (built == null || !fits),
+        supportingText = {
+            Text(
+                when {
+                    text.isBlank() -> t("hex_value_help_" + kind.name.lowercase())
+                    built == null -> t("hex_value_bad")
+                    !fits -> t("hex_value_room", built.bytes.size.toString(), room.toString())
+                    else -> t("hex_value_is", built.value, built.hex, built.bytes.size.toString())
+                },
+            )
+        },
+        modifier = Modifier.fillMaxWidth(),
+    )
+    if (built != null) {
+        val code = built.words.joinToString("\n") { Arm64.decode(it, 0).replace('\t', ' ') }
+        Text(code + "\n" + Hex.format(built.bytes), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodyMedium)
+        val hex = Hex.format(built.bytes)
+        TextButton(onClick = { onUse(hex) }, enabled = fits) { Text(t("hex_value_use")) }
+    }
+    BodyText(t("hex_value_note"))
 }
