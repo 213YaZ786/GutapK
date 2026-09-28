@@ -15,6 +15,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -25,22 +26,23 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import io.gutapk.device.Access
 import io.gutapk.device.Adb
 import io.gutapk.device.AdbDevice
 import io.gutapk.device.AppActions
 import io.gutapk.device.DeviceFiles
+import io.gutapk.device.DeviceReader
+import io.gutapk.device.Direction
 import io.gutapk.device.EntryKind
 import io.gutapk.device.RemoteEntry
-import io.gutapk.job.Job
-import io.gutapk.job.JobQueue
+import io.gutapk.device.Transfer
+import io.gutapk.device.User
 import io.gutapk.job.JobState
 import io.gutapk.tools.RunLog
 import io.gutapk.ui.BodyText
-import io.gutapk.ui.Chooser
+import io.gutapk.ui.ChoiceDialog
 import io.gutapk.ui.GIcons
-import io.gutapk.ui.LocalLang
 import io.gutapk.ui.Page
-import io.gutapk.ui.Strings
 import io.gutapk.ui.Zone
 import io.gutapk.ui.ZoneRow
 import io.gutapk.ui.currentJobView
@@ -66,13 +68,21 @@ private class Change(val title: String, val command: String, val destructive: Bo
 
 @Composable
 fun FilesPage(adb: Path, d: AdbDevice, onBack: () -> Unit) {
-    val lang = LocalLang.current
-    var dir by remember { mutableStateOf(DeviceFiles.HOME) }
+    var user by remember { mutableStateOf(0) }
+    var dir by remember { mutableStateOf(Transfer.userHome(0)) }
     var revision by remember { mutableStateOf(0) }
-    val state by produceState<DirState>(DirState.Reading, dir, revision) {
+    val users by produceState(emptyList<User>(), d.serial) {
+        value = withContext(Dispatchers.IO) { runCatching { DeviceReader.users(adb, d.serial) }.getOrDefault(emptyList()) }
+    }
+    val access by produceState<Access?>(null, user) {
+        value = null
+        value = withContext(Dispatchers.IO) { runCatching { Transfer.access(adb, d.serial, user) }.getOrDefault(Access.MEDIA) }
+    }
+    val state by produceState<DirState>(DirState.Reading, dir, revision, access) {
         value = DirState.Reading
+        val a = access ?: return@produceState
         value = withContext(Dispatchers.IO) {
-            val read = runCatching { DeviceFiles.list(adb, d.serial, dir) }
+            val read = runCatching { Transfer.list(adb, d.serial, user, a, dir) }
             val list = read.getOrNull()
             if (list != null) DirState.Ready(list) else DirState.Failed(read.exceptionOrNull()?.message ?: "adb")
         }
@@ -82,28 +92,15 @@ fun FilesPage(adb: Path, d: AdbDevice, onBack: () -> Unit) {
     var naming by remember { mutableStateOf<String?>(null) }
     var renaming by remember { mutableStateOf<Chosen?>(null) }
     var answer by remember { mutableStateOf<String?>(null) }
-    var transfer by remember { mutableStateOf<Job?>(null) }
+    var choosingUser by remember { mutableStateOf(false) }
+    var draft by remember { mutableStateOf<TransferDraft?>(null) }
     val scope = rememberCoroutineScope()
     val view = currentJobView()
 
-    LaunchedEffect(view) {
-        val job = JobQueue.current.value
-        if (transfer != null && job === transfer && view != null) {
-            when (view.state) {
-                JobState.DONE -> {
-                    transfer = null
-                    revision++
-                }
-                JobState.FAILED -> {
-                    transfer = null
-                    answer = view.message
-                }
-                JobState.CANCELLED -> {
-                    transfer = null
-                }
-                else -> {}
-            }
-        }
+    // The listing shows what a finished transfer brought.
+    val transferState = Transfers.job.collectAsState().value?.view?.collectAsState()?.value?.state
+    LaunchedEffect(transferState) {
+        if (transferState == JobState.DONE) revision++
     }
 
     fun send(command: String) {
@@ -120,11 +117,16 @@ fun FilesPage(adb: Path, d: AdbDevice, onBack: () -> Unit) {
     }
 
     fun pullTo(remote: List<String>) {
-        Chooser.folder(Strings.get(lang, "fi_pull_to"), System.getProperty("user.home")) { local ->
-            if (local != null) {
-                transfer = JobQueue.start("pull") { job -> DeviceFiles.pull(adb, d.serial, remote, local, job) { job.cancelRequested } }
-            }
-        }
+        draft = TransferDraft(Direction.TO_COMPUTER, user, phoneItems = remote, phoneFolder = dir)
+    }
+
+    val dr = draft
+    if (dr != null) {
+        TransferPage(adb, d, users, dr, onBack = {
+            draft = null
+            revision++
+        })
+        return
     }
 
     // Read here: t is composable, the click handlers below are not.
@@ -132,17 +134,13 @@ fun FilesPage(adb: Path, d: AdbDevice, onBack: () -> Unit) {
     val newTitle = t("fi_new")
     val renameTitle = t("fi_rename")
     val running = jobPill(view)
+    // Renaming, deleting and new folders are shell commands, which another
+    // user's storage refuses.
+    val shell = access == Access.SHELL
     val actions: @Composable () -> Unit = {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            FilledTonalButton(onClick = {
-                Chooser.anyFiles(Strings.get(lang, "fi_push")) { files ->
-                    if (files.isNotEmpty()) {
-                        val target = dir
-                        transfer = JobQueue.start("push") { job -> DeviceFiles.push(adb, d.serial, files, target, job) { job.cancelRequested } }
-                    }
-                }
-            }) { Text(t("fi_push")) }
-            FilledTonalButton(onClick = { naming = "" }) { Text(t("fi_new")) }
+            FilledTonalButton(onClick = { draft = TransferDraft(Direction.TO_PHONE, user, phoneFolder = dir) }) { Text(t("tr_title")) }
+            if (shell) FilledTonalButton(onClick = { naming = "" }) { Text(t("fi_new")) }
         }
     }
 
@@ -154,11 +152,15 @@ fun FilesPage(adb: Path, d: AdbDevice, onBack: () -> Unit) {
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
         )
+        TransferZone()
         Zone(t("fi_here")) {
+            ZoneRow(t("ap_user"), userName(user, users), onClick = { choosingUser = true })
+            if (access == Access.MEDIA) BodyText(t("tr_media"))
             SelectionContainer { Column { ZoneRow(t("fi_path"), dir) } }
             if (dir != "/") ZoneRow(t("fi_up"), DeviceFiles.parent(dir), onClick = { dir = DeviceFiles.parent(dir) })
             ZoneRow(t("fi_pull_here"), t("fi_pull_here_d"), onClick = { pullTo(listOf(dir)) })
-            if (dir != DeviceFiles.HOME) ZoneRow(t("fi_home"), DeviceFiles.HOME, onClick = { dir = DeviceFiles.HOME })
+            val home = Transfer.userHome(user)
+            if (dir != home) ZoneRow(t("fi_home"), home, onClick = { dir = home })
         }
         when (val s = state) {
             DirState.Reading -> BodyText(t("ov_reading"))
@@ -192,6 +194,21 @@ fun FilesPage(adb: Path, d: AdbDevice, onBack: () -> Unit) {
         }
     }
 
+    if (choosingUser) {
+        ChoiceDialog(
+            title = t("ap_user"),
+            options = (users.map { it.id } + user).distinct().map { it to userName(it, users) },
+            current = user,
+            onPick = {
+                if (it != user) {
+                    user = it
+                    dir = Transfer.userHome(it)
+                }
+                choosingUser = false
+            },
+            onDismiss = { choosingUser = false },
+        )
+    }
     val c = chosen
     if (c != null) {
         AlertDialog(
@@ -204,14 +221,16 @@ fun FilesPage(adb: Path, d: AdbDevice, onBack: () -> Unit) {
                         chosen = null
                         pullTo(listOf(c.path))
                     }) { Text(t("fi_pull")) }
-                    TextButton(onClick = {
-                        chosen = null
-                        renaming = c
-                    }) { Text(t("fi_rename")) }
-                    TextButton(onClick = {
-                        chosen = null
-                        change = Change(deleteTitle, DeviceFiles.deleteCommand(c.path), destructive = true)
-                    }) { Text(t("fi_delete"), color = MaterialTheme.colorScheme.error) }
+                    if (shell) {
+                        TextButton(onClick = {
+                            chosen = null
+                            renaming = c
+                        }) { Text(t("fi_rename")) }
+                        TextButton(onClick = {
+                            chosen = null
+                            change = Change(deleteTitle, DeviceFiles.deleteCommand(c.path), destructive = true)
+                        }) { Text(t("fi_delete"), color = MaterialTheme.colorScheme.error) }
+                    }
                 }
             },
             dismissButton = { TextButton(onClick = { chosen = null }) { Text(t("close")) } },

@@ -5,10 +5,13 @@ import io.gutapk.tools.Installer
 import io.gutapk.tools.ToolStatus
 import io.gutapk.tools.Tools
 import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 
 enum class DeviceState { READY, UNAUTHORIZED, OFFLINE, NO_PERMISSION, OTHER }
 
@@ -39,6 +42,48 @@ object Adb {
                 reader.join(2000)
                 AdbResult(process.exitValue(), out.toString())
             }
+        }
+    }
+
+    // A file's bytes out of adb's stdout, counted as they pass so a
+    // transfer shows where it is. adb's own messages stay on stderr, apart
+    // from the data.
+    fun streamOut(adb: Path, args: List<String>, into: OutputStream, onBytes: (Long) -> Unit, cancelled: () -> Boolean): AdbResult {
+        val process = ProcessBuilder(listOf(adb.toString()) + args).start()
+        val err = StringBuffer()
+        val errReader = thread(isDaemon = true) { process.errorStream.bufferedReader().forEachLine { err.append(it).append('\n') } }
+        return CancelWatch.guard(process, cancelled) {
+            process.outputStream.close()
+            process.inputStream.use { input -> copy(input, into, onBytes) }
+            val code = process.waitFor()
+            errReader.join(2000)
+            AdbResult(code, err.toString())
+        }
+    }
+
+    // The other way: a file's bytes into adb's stdin. Closing stdin is the
+    // end of the file for the command on the phone.
+    fun streamIn(adb: Path, args: List<String>, from: InputStream, onBytes: (Long) -> Unit, cancelled: () -> Boolean): AdbResult {
+        val process = ProcessBuilder(listOf(adb.toString()) + args).redirectErrorStream(true).start()
+        val out = StringBuffer()
+        val reader = thread(isDaemon = true) { process.inputStream.bufferedReader().forEachLine { out.append(it).append('\n') } }
+        return CancelWatch.guard(process, cancelled) {
+            process.outputStream.use { o -> copy(from, o, onBytes) }
+            val code = process.waitFor()
+            reader.join(2000)
+            AdbResult(code, out.toString())
+        }
+    }
+
+    private fun copy(input: InputStream, output: OutputStream, onBytes: (Long) -> Unit) {
+        val buffer = ByteArray(1 shl 16)
+        var total = 0L
+        while (true) {
+            val n = input.read(buffer)
+            if (n < 0) break
+            output.write(buffer, 0, n)
+            total += n
+            onBytes(total)
         }
     }
 
