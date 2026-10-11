@@ -1,13 +1,13 @@
 [versions]
-kotlin = "2.4.20"
-compose = "1.12.0"
+kotlin = "2.4.21"
+compose = "1.12.1"
 # Google's signing and verification library, Apache-2.0, meant for use off
 # device. Published on google(), not on Maven Central. Its version follows
 # the Android Gradle plugin.
 apksig = "8.7.3"
 # D-Bus for the system keyring, MIT. The native transport uses the JDK's own
 # unix sockets, no native library.
-dbus-java = "5.2.1"
+dbus-java = "5.2.2"
 # Material You colour generation from one seed, MIT. The utilities module
 # only, pure Kotlin: the Compose module would pull material3 up to an alpha.
 materialkolor = "5.0.1"
