@@ -10,7 +10,7 @@ apksig = "8.7.3"
 dbus-java = "5.2.2"
 # Material You colour generation from one seed, MIT. The utilities module
 # only, pure Kotlin: the Compose module would pull material3 up to an alpha.
-materialkolor = "5.0.1"
+materialkolor = "6.0.0"
 
 [libraries]
 apksig = { module = "com.android.tools.build:apksig", version.ref = "apksig" }
