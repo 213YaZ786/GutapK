@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "io.gutapk"
-version = "0.1.111"
+version = "0.1.113"
 
 kotlin {
     jvmToolchain(21)
@@ -44,8 +44,9 @@ compose.desktop {
             packageVersion = project.version.toString()
             // jdk.security.auth gives dbus-java the user id for the bus
             // handshake, jdk.net its socket options. Without them the
-            // keyring fails at runtime with NoClassDefFoundError.
-            modules("java.instrument", "jdk.unsupported", "jdk.security.auth", "jdk.net")
+            // keyring fails at runtime with NoClassDefFoundError. java.net.http
+            // carries the HttpClient the server admin talks to.
+            modules("java.instrument", "jdk.unsupported", "jdk.security.auth", "jdk.net", "java.net.http")
         }
     }
 }

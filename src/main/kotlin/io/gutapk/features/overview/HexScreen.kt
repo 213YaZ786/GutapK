@@ -118,7 +118,7 @@ fun HexScreen(packageDir: Path, apk: Path, method: MethodEntry, onBack: () -> Un
             is HexState.Failed -> Zone(t("ov_error")) { BodyText(s.message) }
             is HexState.Ready -> {
                 val d = s.data
-                val mine = d.patches.filter { it.abi == d.abi && it.offset < method.offset + d.original.size && method.offset < it.end }
+                val mine = d.patches.filter { it.entry == null && it.abi == d.abi && it.offset < method.offset + d.original.size && method.offset < it.end }
                 Zone(t("hex_zone", d.abi)) {
                     ZoneRow(t("hex_where"), listOf(offsetText(method.offset), t("me_length", method.length.toString())).joinToString("  ·  "))
                     HexRows(d, method.offset)

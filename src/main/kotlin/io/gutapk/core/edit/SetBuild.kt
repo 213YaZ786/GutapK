@@ -5,6 +5,7 @@ import io.gutapk.core.apk.SignatureInfo
 import io.gutapk.core.il2cpp.BytePatch
 import io.gutapk.core.il2cpp.LibBytes
 import io.gutapk.core.il2cpp.Patches
+import io.gutapk.core.offline.DexHeader
 import io.gutapk.core.sign.ApkSigning
 import io.gutapk.core.sign.SigningKey
 import io.gutapk.job.JobEvent
@@ -55,6 +56,10 @@ object SetBuild {
         val forBase = baseTweaks(tweaks, hasLibs(base.file))
 
         if (forBase != Tweaks()) {
+            // The base is decoded and built again, its dex with it.
+            tweaks.bytePatches.firstOrNull { DexHeader.isDex(it.name) }?.let {
+                throw CheckFailed("patch at 0x${it.offset.toString(16)} is for ${it.name}, which a rebuild writes again from smali. Apply it without the other changes.")
+            }
             Edit.rebuild(jar, engine, base.file, forBase, work.resolve("base"), staged.resolve(base.fileName), 4, sink, cancelled)
             sink.emit(JobEvent.Line("part base rebuilt"))
         } else {
@@ -155,29 +160,33 @@ object SetBuild {
         z.entries().asSequence().any { it.name.startsWith("lib/") && it.name.endsWith(".so") && it.method == ZipEntry.STORED }
     }
 
-    // Each patch goes into the part holding its library. Every patch is
-    // placed before any part is written, so one for a missing ABI stops
-    // the build whole.
+    // Each patch goes into the part holding its file, a library of any name
+    // or a classes*.dex. Every patch is placed before any part is written,
+    // so one for a missing file stops the build whole.
     internal fun writeLibs(files: List<Path>, patches: List<BytePatch>, storeLibs: Boolean, work: Path, sink: JobSink) {
         val byFile = files.associateWith { f ->
-            ZipFile(f.toFile()).use { z -> patches.filter { z.getEntry(LibBytes.entry(it.abi)) != null } }
+            ZipFile(f.toFile()).use { z -> patches.filter { z.getEntry(it.name) != null } }
         }
         val placed = byFile.values.flatten().toSet()
         patches.firstOrNull { it !in placed }?.let {
-            throw CheckFailed("patch at 0x${it.offset.toString(16)} is for ${it.abi}, which no part of the set being rebuilt holds")
+            throw CheckFailed("patch at 0x${it.offset.toString(16)} is for ${it.name}, which no part of the set being rebuilt holds")
         }
         files.forEach { f ->
             val mine = byFile.getValue(f)
             if (mine.isEmpty() && !(storeLibs && hasLibs(f))) return@forEach
             Storage.deleteTree(work, work.parent)
             Files.createDirectories(work)
-            val libs = mine.map { it.abi }.distinct().associateWith { abi ->
-                val lib = work.resolve("$abi.so")
-                ZipFile(f.toFile()).use { z -> z.getInputStream(z.getEntry(LibBytes.entry(abi))).use { Files.copy(it, lib) } }
-                lib
+            // Keyed by entry name: two libraries of one ABI each get a copy.
+            val libs = mine.map { it.name }.distinct().withIndex().associate { (i, name) ->
+                val lib = work.resolve("$i.bin")
+                ZipFile(f.toFile()).use { z -> z.getInputStream(z.getEntry(name)).use { Files.copy(it, lib) } }
+                name to lib
             }
-            if (mine.isNotEmpty()) Patches.apply({ libs[it] }, mine) { sink.emit(JobEvent.Line(it)) }
-            rewrite(f, libs.mapKeys { LibBytes.entry(it.key) }, storeLibs, work.resolve("rewritten.apk"))
+            // apply asks by ABI for a libil2cpp.so patch, by entry for the rest.
+            if (mine.isNotEmpty()) Patches.apply({ libs[it] ?: libs[LibBytes.entry(it)] }, mine) { sink.emit(JobEvent.Line(it)) }
+            // ART refuses a dex whose checksum or signature no longer fits.
+            libs.filterKeys { DexHeader.isDex(it) }.values.forEach { DexHeader.update(it) }
+            rewrite(f, libs, storeLibs, work.resolve("rewritten.apk"))
             Storage.deleteTree(work, work.parent)
         }
     }

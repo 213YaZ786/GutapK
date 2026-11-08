@@ -53,12 +53,28 @@ object Arm64Presets {
         if (offset == null || offset < start || offset >= start + length) 0 else start + length - offset
 }
 
-// One change to libil2cpp.so of one ABI. old is what the untouched APK has
-// there, so a patch that no longer fits its library is refused at rebuild
-// instead of corrupting it. Hex strings keep equality simple.
-data class BytePatch(val abi: String, val offset: Long, val old: String, val new: String, val label: String) {
+// One change to one file of the APK, libil2cpp.so of one ABI unless entry
+// names another: the full zip entry, a lib/<abi>/<name>.so or a classes*.dex.
+// old is what the untouched APK has there, so a patch that no longer fits
+// its file is refused at rebuild instead of corrupting it. Hex strings keep
+// equality simple.
+data class BytePatch(
+    val abi: String,
+    val offset: Long,
+    val old: String,
+    val new: String,
+    val label: String,
+    val entry: String? = null,
+) {
     val size: Int get() = new.split(' ').count { it.isNotEmpty() }
     val end: Long get() = offset + size
+
+    // The zip entry this patch lands in.
+    val name: String get() = LibBytes.entry(this)
+
+    // What Patches.apply asks for: the ABI of a libil2cpp.so patch, as
+    // before, the entry name for any other file.
+    val key: String get() = entry ?: abi
 }
 
 // Why an imported patch was not taken.
@@ -96,15 +112,18 @@ object Patches {
     fun parse(lines: List<String>): List<BytePatch> =
         lines.filterNot { it.startsWith("#") }.mapNotNull { line ->
             val p = line.split('\t')
-            if (p.size != 5) return@mapNotNull null
+            if (p.size != 5 && p.size != 6) return@mapNotNull null
             val offset = p[1].toLongOrNull(16) ?: return@mapNotNull null
             if (Hex.parse(p[2]) == null || Hex.parse(p[3]) == null) return@mapNotNull null
-            BytePatch(p[0], offset, p[2], p[3], p[4])
+            BytePatch(p[0], offset, p[2], p[3], p[4], p.getOrNull(5)?.takeIf { it.isNotEmpty() })
         }.sortedBy { it.offset }
 
     private fun rows(patches: List<BytePatch>): String =
         patches.sortedBy { it.offset }.joinToString("") { p ->
-            listOf(p.abi, p.offset.toString(16), p.old, p.new, p.label.replace('\t', ' ').replace('\n', ' ')).joinToString("\t") + "\n"
+            // The entry is a sixth column only when set, so a file without
+            // one stays what older versions wrote and read.
+            listOf(p.abi, p.offset.toString(16), p.old, p.new, p.label.replace('\t', ' ').replace('\n', ' '))
+                .plus(listOfNotNull(p.entry)).joinToString("\t") + "\n"
         }
 
     // The same rows under a note naming the library they were made on, so
@@ -112,7 +131,7 @@ object Patches {
     fun export(target: Path, packageName: String, libSha256: String?, patches: List<BytePatch>) {
         if (Files.exists(target)) throw IOException("$target already exists, it is not replaced")
         val head = "# GutapK patches for $packageName, libil2cpp.so sha256 ${libSha256 ?: "unknown"}\n" +
-            "# abi, offset hex, old bytes, new bytes, label\n"
+            "# abi, offset hex, old bytes, new bytes, label, entry when not libil2cpp.so\n"
         val part = target.resolveSibling(target.fileName.toString() + ".part")
         try {
             Files.writeString(part, head + rows(patches))
@@ -129,17 +148,17 @@ object Patches {
         val added = mutableListOf<BytePatch>()
         val refused = mutableListOf<Pair<BytePatch, ImportRefusal>>()
         incoming.sortedBy { it.offset }.forEach { p ->
-            val data = lib(p.abi)
+            val data = lib(p.key)
             val old = Hex.parse(p.old)
             val taken = existing + added
             val reason = when {
                 old == null || Hex.parse(p.new)?.size != old.size -> ImportRefusal.Malformed
                 data == null -> ImportRefusal.AbiMissing
                 p.offset < 0 || p.offset + old.size > data.size -> ImportRefusal.PastTheEnd
-                taken.any { it.abi == p.abi && it.offset == p.offset && it.new == p.new && it.old == p.old } -> ImportRefusal.AlreadyThere
+                taken.any { it.name == p.name && it.offset == p.offset && it.new == p.new && it.old == p.old } -> ImportRefusal.AlreadyThere
                 else -> {
                     val found = data.copyOfRange(p.offset.toInt(), p.offset.toInt() + old.size)
-                    val other = taken.firstOrNull { it.abi == p.abi && it.offset < p.end && p.offset < it.end }
+                    val other = taken.firstOrNull { it.name == p.name && it.offset < p.end && p.offset < it.end }
                     when {
                         !found.contentEquals(old) -> ImportRefusal.Mismatch(Hex.format(found))
                         other != null -> ImportRefusal.Overlaps(other)
@@ -178,7 +197,7 @@ object Patches {
         val old = original.copyOfRange(at, at + bytes.size)
         if (old.contentEquals(bytes)) return null to PatchProblem.Unchanged
         val patch = BytePatch(abi, offset, Hex.format(old), Hex.format(bytes), label)
-        existing.firstOrNull { it.abi == abi && it.offset < patch.end && patch.offset < it.end }?.let {
+        existing.firstOrNull { it.name == patch.name && it.offset < patch.end && patch.offset < it.end }?.let {
             return null to PatchProblem.Overlaps(it)
         }
         return patch to null
@@ -186,20 +205,21 @@ object Patches {
 
     // Every patch checks the bytes it replaces first, all before any is
     // written, so a library from another build is refused whole instead of
-    // left half patched. libs gives the decoded library of each ABI.
+    // left half patched. libs gives the decoded file of a patch from its
+    // key: the ABI for libil2cpp.so, the entry name for any other file.
     fun apply(libs: (String) -> Path?, patches: List<BytePatch>, log: (String) -> Unit) {
         val checked = patches.map { p ->
-            val lib = libs(p.abi) ?: throw IOException("patch at 0x${p.offset.toString(16)} is for ${p.abi}, which is not in the APK being rebuilt")
+            val lib = libs(p.key) ?: throw IOException("patch at 0x${p.offset.toString(16)} is for ${p.name}, which is not in the APK being rebuilt")
             val old = Hex.parse(p.old) ?: throw IOException("patch at 0x${p.offset.toString(16)} is unreadable")
             val new = Hex.parse(p.new) ?: throw IOException("patch at 0x${p.offset.toString(16)} is unreadable")
             if (old.size != new.size) throw IOException("patch at 0x${p.offset.toString(16)} changes the length")
             RandomAccessFile(lib.toFile(), "r").use { f ->
-                if (p.offset + old.size > f.length()) throw IOException("patch at 0x${p.offset.toString(16)} is past the end of ${p.abi}/libil2cpp.so")
+                if (p.offset + old.size > f.length()) throw IOException("patch at 0x${p.offset.toString(16)} is past the end of ${p.name}")
                 val found = ByteArray(old.size)
                 f.seek(p.offset)
                 f.readFully(found)
                 if (!found.contentEquals(old)) {
-                    throw IOException("patch at 0x${p.offset.toString(16)} expects ${p.old} but ${p.abi}/libil2cpp.so has ${Hex.format(found)}. The library is not the one the patch was made on.")
+                    throw IOException("patch at 0x${p.offset.toString(16)} expects ${p.old} but ${p.name} has ${Hex.format(found)}. The file is not the one the patch was made on.")
                 }
             }
             Triple(lib, p, new)
@@ -209,7 +229,7 @@ object Patches {
                 f.seek(p.offset)
                 f.write(new)
             }
-            log("patched ${p.abi} at 0x${p.offset.toString(16)}: ${p.old} to ${p.new} (${p.label})")
+            log("patched ${if (p.entry == null) p.abi else p.name} at 0x${p.offset.toString(16)}: ${p.old} to ${p.new} (${p.label})")
         }
     }
 
@@ -218,7 +238,7 @@ object Patches {
     fun overlay(original: ByteArray, start: Long, abi: String, patches: List<BytePatch>): Pair<ByteArray, BooleanArray> {
         val shown = original.copyOf()
         val changed = BooleanArray(original.size)
-        patches.filter { it.abi == abi }.forEach { p ->
+        patches.filter { it.name == LibBytes.entry(abi) }.forEach { p ->
             val bytes = Hex.parse(p.new) ?: return@forEach
             bytes.forEachIndexed { i, b ->
                 val at = p.offset - start + i
@@ -235,7 +255,10 @@ object Patches {
 // Reads a window of libil2cpp.so straight from the APK. Stored libraries
 // skip at once, compressed ones are inflated up to the window.
 object LibBytes {
-    fun entry(abi: String): String = "lib/$abi/libil2cpp.so"
+    // entry names another file than the ABI's libil2cpp.so.
+    fun entry(abi: String, entry: String? = null): String = entry ?: "lib/$abi/libil2cpp.so"
+
+    fun entry(patch: BytePatch): String = entry(patch.abi, patch.entry)
 
     // apk is a package's original.apk. In a split set the library sits in
     // the ABI split next to it, read from there.

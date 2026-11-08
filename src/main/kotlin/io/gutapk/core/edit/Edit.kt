@@ -4,6 +4,7 @@ import io.gutapk.core.apk.Parts
 import io.gutapk.core.apk.SignatureInfo
 import io.gutapk.core.il2cpp.BytePatch
 import io.gutapk.core.il2cpp.Patches
+import io.gutapk.core.offline.DexHeader
 import io.gutapk.core.sign.ApkSigning
 import io.gutapk.core.sign.SigningKey
 import io.gutapk.job.CancelWatch
@@ -151,6 +152,12 @@ object Edit {
         sink: JobSink,
         cancelled: () -> Boolean,
     ) {
+        // Both engines decode classes*.dex to smali and build it again, even
+        // with no code tweak, so the bytes a dex patch was made on are gone
+        // after a rebuild. Alone, a patch keeps them: it is refused here.
+        tweaks.bytePatches.firstOrNull { DexHeader.isDex(it.name) }?.let {
+            throw CheckFailed("patch at 0x${it.offset.toString(16)} is for ${it.name}, which a rebuild writes again from smali. Apply it without the other changes.")
+        }
         val decoded = work.resolve("decoded")
         Storage.deleteTree(decoded, work)
         // apktool's framework and the aapt2 it extracts stay in the work
@@ -186,6 +193,10 @@ object Edit {
         runEngine(jar, engine, work, build, sink, cancelled)
         if (!Files.isRegularFile(rebuilt)) throw CheckFailed("${engine.id} produced no APK")
         Storage.deleteTree(decoded, work)
+        // Assets and raw resources are copied as they are, so their patches
+        // land on the rebuilt APK. Libraries took theirs in the decoded folder.
+        val later = tweaks.bytePatches.filter { it.entry != null && !(it.entry.startsWith("lib/") && it.entry.endsWith(".so")) }
+        if (later.isNotEmpty()) SetBuild.writeLibs(listOf(rebuilt), later, false, work.resolve("libs"), sink)
     }
 
     // The APKEditor output path already carries the key name, so the edit
@@ -209,8 +220,9 @@ object Edit {
         if (tweaks.stripDebugInfo) stripDebugInfo(decoded, sink)
         // After the ABI step, so a patch for a removed ABI is refused by
         // name instead of written into a library about to go.
-        if (tweaks.bytePatches.isNotEmpty()) {
-            Patches.apply({ abi -> nativeLib(decoded, abi) }, tweaks.bytePatches) { sink.emit(JobEvent.Line(it)) }
+        val inLibs = tweaks.bytePatches.filter { it.entry == null || (it.entry.startsWith("lib/") && it.entry.endsWith(".so")) }
+        if (inLibs.isNotEmpty()) {
+            Patches.apply({ key -> nativeLib(decoded, key) }, inLibs) { sink.emit(JobEvent.Line(it)) }
         }
 
         val label = tweaks.label?.takeIf { it.isNotBlank() }
@@ -402,9 +414,11 @@ object Edit {
         sink.emit(JobEvent.Line("native libraries stored and read from the APK"))
     }
 
-    private fun nativeLib(decoded: Path, abi: String): Path? =
+    // key is what Patches.apply asks with: an ABI for its libil2cpp.so, or
+    // the entry name lib/<abi>/<name>.so of any other library.
+    private fun nativeLib(decoded: Path, key: String): Path? =
         listOf(decoded.resolve("root").resolve("lib"), decoded.resolve("lib"))
-            .map { it.resolve(abi).resolve("libil2cpp.so") }
+            .map { if (key.startsWith("lib/")) it.resolve(key.removePrefix("lib/")) else it.resolve(key).resolve("libil2cpp.so") }
             .firstOrNull { Files.isRegularFile(it) }
 
     // Native libraries sit in root/lib for APKEditor and lib for apktool.
