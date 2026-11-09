@@ -368,7 +368,10 @@ while IFS=$'\t' read -r id source index pkg entry execdir licence licenceurl wha
             ;;
         *.tar.gz)
             # The app drops the top folder, so the entry is one level down.
-            if ! tar -tzf "$file" | cut -d/ -f2- | grep -qx "$entry"; then
+            # grep reads the whole listing: with -q it stops at the first match,
+            # cut then dies of SIGPIPE and pipefail reports a found entry as
+            # missing, as .NET 10.0.14 did with dotnet near the top.
+            if ! tar -tzf "$file" | cut -d/ -f2- | grep -x "$entry" > /dev/null; then
                 echo "::error::$id $version archive has no $entry"
                 fail=1
             fi
