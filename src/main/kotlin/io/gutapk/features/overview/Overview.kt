@@ -256,14 +256,8 @@ fun OverviewScreen(
             val godot = root != null && info?.engines?.contains(ApkReader.GODOT) == true
             val scanned = root != null && endpoints?.isNotEmpty() == true
             if (scanned) FilledTonalButton(onClick = { dialog = "offline" }) { Text(t("offline_action")) }
-            if (godot) {
-                FilledTonalButton(onClick = { dialog = "local" }) { Text(t("local_action")) }
-            } else if (scanned) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    FilledTonalButton(enabled = false, onClick = {}) { Text(t("local_action")) }
-                    Text(t("local_godot_only"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
+            // A Godot game's server is read in its scripts, any other's in its dex.
+            if (root != null) FilledTonalButton(onClick = { dialog = "local" }) { Text(t("local_action")) }
             if (scanned) FilledTonalButton(onClick = { dialog = "admin" }) { Text(t("admin_action")) }
             if (godot) FilledTonalButton(onClick = { dialog = "godot" }) { Text(t("godot_action")) }
         }
@@ -389,6 +383,7 @@ fun OverviewScreen(
                 dir = dir,
                 original = original,
                 info = info,
+                godot = info.engines.contains(ApkReader.GODOT),
                 version = version,
                 onDismiss = { dialog = null },
             )

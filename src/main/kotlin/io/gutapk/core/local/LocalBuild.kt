@@ -22,7 +22,8 @@ import java.util.zip.ZipFile
 // A game that hosts its own matches on the phone it plays on: GutapK's dex
 // added, its provider and the engine's GodotService declared in the manifest,
 // and the arguments that make the game its own server written for the second
-// engine. Written straight into the APK and signed, as Edit.run writes
+// engine; for a game that hosts from its own menu, no engine, its own link to
+// a server written for a friend's Play. Written straight into the APK and signed, as Edit.run writes
 // patches alone. A set is refused: its manifest and code sit in the base.
 // https://github.com/213YaZ786/GutapK/blob/10ee6c76cf7177086b07b3a34b0fe962b5b414a3/src/main/kotlin/io/gutapk/core/edit/Edit.kt#run
 // not ported: the decode and rebuild with apktool or APKEditor, the rename and the set (Edit's other tweaks, Local needs none)
@@ -31,14 +32,18 @@ object LocalBuild {
 
     fun run(
         input: Path,
-        // What GutapK read from the game: the arguments that start its server,
-        // the port its client connects to on 127.0.0.1, whether it speaks UDP.
+        // What GutapK read from the game: the arguments that start its server
+        // in a second engine (none for a game that hosts from its own menu),
+        // the port its client connects to on 127.0.0.1, whether it speaks UDP,
+        // and its own link to a server, the one a friend's Play opens.
         args: List<String>,
         localPort: Int,
         udp: Boolean,
+        server: String?,
         // By script entry, the literals the server binds to, given 127.0.0.1.
         binds: Map<String, Map<Int, Any>>,
-        zstd: Decompressor,
+        // Reads the scripts the binds are in, none for a game without binds.
+        zstd: Decompressor?,
         dex: ByteArray,
         work: Path,
         out: Path,
@@ -49,7 +54,6 @@ object LocalBuild {
     ): SignatureInfo {
         val part = SplitSet.part(input, "")
         if (!SplitSet.standalone(part)) throw CheckFailed("${input.fileName} is part of a split set. Local takes one APK for now: import the game as a single APK.")
-        if (args.isEmpty()) throw CheckFailed("no argument makes the game its own server")
         if (localPort !in 1..65535) throw CheckFailed("the game's port $localPort is not a port")
         if (dex.size < 0x70 || String(dex, 0, 4, Charsets.ISO_8859_1) != "dex\n") throw CheckFailed("GutapK's code is not a dex file")
         val packageName = part.packageName
@@ -67,17 +71,18 @@ object LocalBuild {
                 val original = zip.getInputStream(zip.getEntry(MANIFEST) ?: throw CheckFailed("$MANIFEST is not in ${input.fileName}")).use { it.readAllBytes() }
                 // Play opens the game where its launcher does.
                 val activity = Inject.mainActivity(original) ?: throw CheckFailed("${input.fileName} has no screen a launcher opens")
-                replaced[MANIFEST] = Files.write(work.resolve("manifest.bin"), Inject.localManifest(original, packageName))
+                replaced[MANIFEST] = Files.write(work.resolve("manifest.bin"), Inject.localManifest(original, packageName, args.isNotEmpty()))
                 val name = Inject.nextDexName(names)
                 added[name] = Files.write(work.resolve("local.dex"), dex)
-                val config = Inject.localConfig(args, localPort, udp, activity)
+                val config = Inject.localConfig(args, localPort, udp, activity, server)
                 added[Inject.LOCAL_CONFIG] = Files.write(work.resolve("local.properties"), config.toByteArray())
-                sink.emit(JobEvent.Line("Local added as $name: ${if (udp) "UDP" else "TCP"} on port $localPort, the server engine started with ${args.joinToString(" ")}, Play opens $activity"))
+                val engine = if (args.isEmpty()) "the game hosts from its own menu" else "the server engine started with ${args.joinToString(" ")}"
+                sink.emit(JobEvent.Line("Local added as $name: ${if (udp) "UDP" else "TCP"} on port $localPort, $engine, Play opens $activity${server?.let { ", a friend's with $it" } ?: ""}"))
                 // The server listens on 127.0.0.1 alone: friends come through the relay.
                 var pack = zip.getEntry(GodotBuild.PACK)?.let { e -> zip.getInputStream(e).use { it.readAllBytes() } }
                 binds.filterValues { it.isNotEmpty() }.entries.forEachIndexed { i, (script, values) ->
                     val entry = zip.getEntry(script) ?: throw CheckFailed("$script is not in ${input.fileName}")
-                    val buffer = GodotValues.set_script_values(zip.getInputStream(entry).use { it.readAllBytes() }, values, zstd)
+                    val buffer = GodotValues.set_script_values(zip.getInputStream(entry).use { it.readAllBytes() }, values, zstd ?: throw CheckFailed("no zstd reader for $script"))
                     replaced[script] = Files.write(work.resolve("script$i.gdc"), buffer)
                     pack = pack?.let { PackedSourcePCK.set_file(it, script.removePrefix("assets/"), buffer) }
                     sink.emit(JobEvent.Line("$script: ${values.size} bind addresses turned to 127.0.0.1"))

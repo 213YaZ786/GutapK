@@ -9,7 +9,7 @@ package io.gutapk.local;
  * https://github.com/xingty/shadowsocks-java/blob/main/src/main/java/org/wiyi/ss/core/config/SSConfigFactory.java#L24-L52
  *
  * Not ported: SERVER, SERVER_PORT, LOCAL_ADDRESS, PASSWORD, METHOD, TIMEOUT, UDP_PORT, FAST_OPEN, DEFAULT_METHOD, DEFAULT_TIMEOUT (the host's address, port and key come from the invitation, the cipher is one, the datagrams share the stream's port)
- * Not ported: server, serverPort, localAddress, password, timeout, method, fastOpen, udpPort and their getters and setters (same)
+ * Not ported: serverPort, localAddress, password, timeout, method, fastOpen, udpPort and their getters and setters (same)
  * Not ported: loadFromPath, loadFromCommandLine, SSJSONObject, getString, getInt, getBoolean, hasOption, getOptionValue (a properties file in the game's assets)
  *
  * Copyright 2020 xingty, Apache License 2.0.
@@ -28,10 +28,14 @@ public class Config {
     public static final String UDP = "udp";
     public static final String ACTIVITY = "activity";
     public static final String ENGINE_ARG = "engine.arg.";
+    /** The game's own link to a server, the friend's Play opens it; none for a game without one. */
+    public static final String JOIN = "join";
 
     private int localPort;
     private boolean udp;
     private String activity;
+    /** The server as the game's own link gives it, mindustry://127.0.0.1:6567 say. */
+    private String server;
     private List<String> args = new ArrayList<String>();
 
     public int getLocalPort() {
@@ -56,6 +60,16 @@ public class Config {
 
     public void setActivity(String activity) {
         this.activity = activity;
+    }
+
+    // https://github.com/xingty/shadowsocks-java/blob/main/src/main/java/org/wiyi/ss/core/SSConfig.java#getServer
+    public String getServer() {
+        return server;
+    }
+
+    // https://github.com/xingty/shadowsocks-java/blob/main/src/main/java/org/wiyi/ss/core/SSConfig.java#setServer
+    public void setServer(String server) {
+        this.server = server;
     }
 
     public List<String> getArgs() {
@@ -87,6 +101,8 @@ public class Config {
         config.setLocalPort(Integer.parseInt(localPort.trim()));
         config.setUdp(enableUDP);
         config.setActivity(activity);
+        String server = obj.getProperty(JOIN);
+        config.setServer(server == null || server.isEmpty() ? null : server);
         config.setArgs(args);
 
         return config;
@@ -98,6 +114,7 @@ public class Config {
                 "localPort=" + localPort +
                 ", udp=" + udp +
                 ", activity='" + activity + '\'' +
+                ", server='" + server + '\'' +
                 ", args=" + args +
                 '}';
     }

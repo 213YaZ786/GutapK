@@ -39,6 +39,8 @@ object Inject {
     const val LOCAL_CONFIG = "assets/gutapk/local.properties"
     const val GODOT_SERVICE = "org.godotengine.godot.service.GodotService"
     const val SERVER_PROCESS = ":gutapk_server"
+    // The schemes of the web and the system, not a game's own link.
+    private val SYSTEM_SCHEMES = setOf("http", "https", "content", "file", "android-app", LOCAL_SCHEME)
     // The element and intent names of bundletool's AndroidManifest.
     // https://github.com/google/bundletool/blob/master/src/main/java/com/android/tools/build/bundletool/model/AndroidManifest.java#L76-L103
     // https://github.com/google/bundletool/blob/master/src/main/java/com/android/tools/build/bundletool/model/AndroidManifest.java#L281-L282
@@ -170,10 +172,11 @@ object Inject {
     // its own, the Local screen from a launcher entry of its own and from a
     // friend's invitation, gutapk://<package>/join, the internet permission
     // and a minSdkVersion of 21 at least. A second run changes nothing more.
-    fun localManifest(bytes: ByteArray, packageName: String): ByteArray {
+    fun localManifest(bytes: ByteArray, packageName: String, engine: Boolean): ByteArray {
         val axml = read(bytes)
         val manifestElement = axml.firsts.firstOrNull { it.name == "manifest" } ?: throw ApkFormatError("no manifest element")
-        addService(manifestElement, GODOT_SERVICE, false, SERVER_PROCESS)
+        // A game hosting from its own menu runs no second engine.
+        if (engine) addService(manifestElement, GODOT_SERVICE, false, SERVER_PROCESS)
         addActivity(
             manifestElement, LOCAL_ACTIVITY, true, LOCAL_LABEL,
             listOf(
@@ -263,6 +266,26 @@ object Inject {
             '.' !in name -> "$packageName.$name"
             else -> name
         }
+    }
+
+    // The schemes an activity or alias opens from a VIEW link, the web's,
+    // the system's and Local's own left out: a game's own link, such as
+    // mindustry://host:port, which a friend's Local opens once its relay runs.
+    // hasMainActivity's walk, the VIEW action asked instead of MAIN, the
+    // schemes of the filters' data elements collected.
+    // https://github.com/google/bundletool/blob/master/src/main/java/com/android/tools/build/bundletool/model/AndroidManifest.java#L981-L1022
+    // not ported: hasMainTvActivity, isHeadless, getActivities, getActivityAliases (one walk, as mainActivity's)
+    // not ported: hasMainActivity (its walk is this one, a scheme returned in place of whether there is one)
+    fun viewSchemes(bytes: ByteArray): List<String> {
+        val manifestElement = read(bytes).firsts.firstOrNull { it.name == "manifest" } ?: return emptyList()
+        val app = manifestElement.children.firstOrNull { it.name == APPLICATION_ELEMENT_NAME } ?: return emptyList()
+        return app.children.filter { it.name == ACTIVITY_ELEMENT_NAME || it.name == ACTIVITY_ALIAS_ELEMENT_NAME }
+            .flatMap { activity -> activity.children.filter { it.name == INTENT_FILTER_ELEMENT_NAME } }
+            .filter { intent -> hasChildWithNameAttribute(intent, ACTION_ELEMENT_NAME, VIEW_ACTION_NAME) }
+            .flatMap { intent -> intent.children.filter { it.name == DATA_ELEMENT_NAME } }
+            .mapNotNull { element -> getAndroidAttribute(element, SCHEME_RESOURCE_ID)?.value as? String }
+            .filter { it !in SYSTEM_SCHEMES }
+            .distinct()
     }
 
     private fun hasChildWithNameAttribute(element: Axml.Node, childElementName: String, nameAttributeValue: String): Boolean =
@@ -393,11 +416,12 @@ object Inject {
     // engine.arg.0 first, escaped by Properties.store itself.
     // https://github.com/openjdk/jdk/blob/jdk-21%2B35/src/java.base/share/classes/java/util/Properties.java#store
     // not ported: store0, saveConvert, writeComments (Properties.store is called, it does them)
-    fun localConfig(args: List<String>, localPort: Int, udp: Boolean, activity: String): String {
+    fun localConfig(args: List<String>, localPort: Int, udp: Boolean, activity: String, server: String?): String {
         val properties = Properties()
         properties.setProperty("local_port", localPort.toString())
         properties.setProperty("udp", udp.toString())
         properties.setProperty("activity", activity)
+        server?.let { properties.setProperty("join", it) }
         args.forEachIndexed { i, arg -> properties.setProperty("engine.arg.$i", arg) }
         val writer = StringWriter()
         properties.store(writer, null)

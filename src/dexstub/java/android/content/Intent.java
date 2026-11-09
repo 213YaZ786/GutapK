@@ -11,6 +11,7 @@ import android.net.Uri;
 
 public class Intent {
     public static final int FLAG_ACTIVITY_NEW_TASK = 0x10000000;
+    public static final String ACTION_VIEW = "android.intent.action.VIEW";
 
     public Intent() {
         throw new RuntimeException("stub");
@@ -25,6 +26,16 @@ public class Intent {
     }
 
     public Uri getData() {
+        throw new RuntimeException("stub");
+    }
+
+    // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/content/Intent.java#setAction
+    public Intent setAction(String action) {
+        throw new RuntimeException("stub");
+    }
+
+    // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/content/Intent.java#setData
+    public Intent setData(Uri data) {
         throw new RuntimeException("stub");
     }
 }

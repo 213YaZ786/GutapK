@@ -15,4 +15,9 @@ public abstract class Uri {
     public abstract String getPath();
 
     public abstract String getEncodedQuery();
+
+    // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/net/Uri.java#parse
+    public static Uri parse(String uriString) {
+        throw new RuntimeException("stub");
+    }
 }

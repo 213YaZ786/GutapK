@@ -3,10 +3,11 @@ package io.gutapk.local;
 /*
  * The Local screen GutapK adds to a game. From its launcher entry, Host starts
  * the relay, the page of the invitation and, with the game's next screen, its
- * server in a second engine, and shows the QR code friends scan; Play opens
- * the game. From a friend's invitation (gutapk://<package>/join?...) the relay
- * to the host starts and the game opens, talking to its own address as
- * always. The servers are static: they outlive the screen, the game's process
+ * server in a second engine (none for a game that hosts from its own menu),
+ * and shows the QR code friends scan; Play opens the game. From a friend's
+ * invitation (gutapk://<package>/join?...) the relay to the host starts and
+ * the game opens, talking to its own address as always, through its own link
+ * to a server when it has one. The servers are static: they outlive the screen, the game's process
  * keeps them. Built as ShareViaHttp's activities share a file, its link shown
  * as text and as a QR code, with ZXing's bitmap of the code and the views of
  * ApiDemos made in code:
@@ -167,11 +168,8 @@ public class LocalActivity extends Activity {
 
     /** The relay, the page and the server engine; the network on a thread of its own. */
     protected void initHttpServer() {
-        if (config.getArgs().isEmpty()) {
-            message = fr() ? "Ce jeu ne sait pas héberger." : "This game cannot host.";
-            setLinkMessageToView();
-            return;
-        }
+        // No arguments: the game hosts from its own menu, no second engine.
+        final boolean ownMenu = config.getArgs().isEmpty();
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         message = fr() ? "Démarrage…" : "Starting…";
         setLinkMessageToView();
@@ -192,6 +190,9 @@ public class LocalActivity extends Activity {
                     httpServer.start(TIMEOUT);
                     preferredServerUrl = Invite.link(listOfServerUris.get(0), httpServer.getListeningPort(), tunnel.getListeningPort(), key);
                     msg = fr() ? "Vos amis scannent ce code avec l'appareil photo, sur le même Wi-Fi ou votre point d'accès. Puis Jouer." : "Friends scan this code with their camera, on the same Wi-Fi or your hotspot. Then Play.";
+                    if (ownMenu) {
+                        msg = msg + (fr() ? " Hébergez la partie depuis le menu du jeu." : " Host the match from the game's menu.");
+                    }
                 } catch (IOException e) {
                     Log.e(TAG, "Local cannot host", e);
                     stopServer();
@@ -201,7 +202,7 @@ public class LocalActivity extends Activity {
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        if (httpServer != null && engine == null) {
+                        if (httpServer != null && engine == null && !ownMenu) {
                             // The server engine starts with the game's next screen.
                             engine = new RemoteGodot(getApplicationContext(), config.getArgs().toArray(new String[0]));
                             ((Application) getApplicationContext()).registerActivityLifecycleCallbacks(engine);
@@ -256,9 +257,18 @@ public class LocalActivity extends Activity {
         }).start();
     }
 
-    /** The game's own screen, which GutapK read from its manifest. */
+    /**
+     * The game's own screen, which GutapK read from its manifest. A friend's,
+     * for a game with a link of its own to a server, with that link: the game
+     * connects to its own address, the relay's, as its handleIntent reads it.
+     * https://github.com/Anuken/Mindustry/blob/master/android/src/mindustry/android/AndroidLauncher.java#handleIntent
+     */
     protected void play() {
         Intent intent = new Intent();
+        if (tunnel != null && httpServer == null && config.getServer() != null) {
+            intent.setAction(Intent.ACTION_VIEW);
+            intent.setData(Uri.parse(config.getServer()));
+        }
         intent.setComponent(new ComponentName(this, config.getActivity()));
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         startActivity(intent);

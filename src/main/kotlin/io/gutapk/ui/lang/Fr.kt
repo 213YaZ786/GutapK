@@ -527,7 +527,6 @@ Ceci est un résumé en langage courant, pas un avis juridique.""",
     // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/ui/lang/Fr.kt#FR
     // Les textes du dialogue Local, écrits comme ceux du hors ligne.
     // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/ui/lang/Fr.kt#FR
-    "local_godot_only" to "Local lit les jeux Godot pour l'instant",
     "local_title" to "Jouer ensemble à proximité",
     "local_d" to "Des amis proches jouent ensemble sans internet. Le téléphone de l'hôte fait tourner le serveur du jeu en arrière-plan, les amis rejoignent en scannant un QR code, et tout ce qui passe entre les téléphones est chiffré. Voici ce que GutapK a lu dans le jeu : vérifiez-le, puis installez le jeu sur chaque téléphone.",
     "local_none" to "Aucun serveur trouvé dans les scripts du jeu. Local demande un jeu capable d'héberger ses propres parties.",
@@ -546,6 +545,17 @@ Ceci est un résumé en langage courant, pas un avis juridique.""",
     "local_phones" to "Installer sur",
     "local_wifi" to "Tous les téléphones rejoignent le même Wi-Fi ou le point d'accès de l'hôte.",
     "local_done_d" to "Le jeu est installé avec Local. Sur le téléphone de l'hôte, ouvrez Local, appuyez sur Héberger une partie, puis Jouer. Les amis scannent le QR code avec leur appareil photo ; celui qui n'a pas le jeu le télécharge depuis la page de l'hôte.",
+    // Les textes du dialogue Local pour un jeu dont le code héberge depuis son menu.
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/ui/lang/Fr.kt#FR
+    "local_java_needs_libs" to "GutapK lit le code d'un jeu Java avec dexlib2, une bibliothèque Java qu'il télécharge dans sa version la plus récente, comme ses autres outils.",
+    "local_java_none" to "Aucun serveur trouvé dans le code du jeu : aucun port qu'il ouvre aux autres. Local demande un jeu capable d'héberger ses propres parties.",
+    "local_java_ports" to "Ports qu'ouvre le serveur du jeu",
+    "local_java_ports_d" to "Trouvés dans le code du jeu, l'appel qui ouvre le port en premier. Cochez celui de ses parties.",
+    "local_own_menu" to "Le jeu héberge depuis son propre menu : sur le téléphone de l'hôte, appuyez sur Héberger une partie dans Local, puis lancez la partie dans le jeu.",
+    "local_join" to "Le lien du jeu vers un serveur",
+    "local_join_d" to "Le Jouer d'un ami ouvre le jeu avec ce lien, qui atteint l'hôte par le relais. Vide : l'ami rejoint depuis le menu du jeu, à 127.0.0.1.",
+    "local_lan" to "Le serveur du jeu écoute sur tous les réseaux : quelqu'un sur le même Wi-Fi pourrait aussi l'atteindre directement, sans chiffrement.",
+    "local_done_own_d" to "Le jeu est installé avec Local. Sur le téléphone de l'hôte, ouvrez Local, appuyez sur Héberger une partie, puis Jouer et hébergez la partie depuis le menu du jeu. Les amis scannent le QR code avec leur appareil photo ; celui qui n'a pas le jeu le télécharge depuis la page de l'hôte.",
     "offline_title" to "Jouer hors ligne sur le téléphone",
     "offline_servers" to "Serveurs du jeu à rediriger vers le téléphone",
     "offline_found" to "Trouvé %s fois dans le jeu",

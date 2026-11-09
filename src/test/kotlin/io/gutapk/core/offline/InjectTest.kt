@@ -77,6 +77,7 @@ class InjectTest {
         root: List<A> = emptyList(),
         // The activity's name, given a MAIN LAUNCHER filter when it is set.
         launcher: String? = null,
+        schemes: List<String> = emptyList(),
     ): ByteArray {
         val w = AxmlWriter()
         w.ns("android", android, 1)
@@ -108,6 +109,17 @@ class InjectTest {
                 child.attr(android, "name", 0x01010003, NodeVisitor.TYPE_STRING, name)
                 child.end()
             }
+            filter.end()
+        }
+        // VIEW filters, one a scheme each.
+        for (scheme in schemes) {
+            val filter = activity.child(null, "intent-filter")!!
+            val action = filter.child(null, "action")!!
+            action.attr(android, "name", 0x01010003, NodeVisitor.TYPE_STRING, "android.intent.action.VIEW")
+            action.end()
+            val data = filter.child(null, "data")!!
+            data.attr(android, "scheme", 0x01010027, NodeVisitor.TYPE_STRING, scheme)
+            data.end()
             filter.end()
         }
         activity.end()
@@ -520,8 +532,8 @@ class InjectTest {
     // its own process, the config the screen reads, the same dex.
     // https://github.com/google/bundletool/blob/master/src/main/java/com/android/tools/build/bundletool/model/AndroidManifest.java#L981-L1022
     // not ported: hasMainTvActivity, isHeadless, hasMainActivity, getActivities, getActivityAliases (mainActivity is checked through the build)
-    private fun local(d: Path, apk: Path, out: Path = d.resolve("out/local.apk"), args: List<String> = listOf("--", "--server")) =
-        io.gutapk.core.local.LocalBuild.run(apk, args, 2755, false, emptyMap(), io.gutapk.core.godot.Zstd(), serverDex, d.resolve("work"), out, TestKey.load(), 16, "test", quiet)
+    private fun local(d: Path, apk: Path, out: Path = d.resolve("out/local.apk"), args: List<String> = listOf("--", "--server"), server: String? = null) =
+        io.gutapk.core.local.LocalBuild.run(apk, args, 2755, false, server, emptyMap(), io.gutapk.core.godot.Zstd(), serverDex, d.resolve("work"), out, TestKey.load(), 16, "test", quiet)
 
     @Test
     fun theLocalBuildCarriesLocal() = withDir { d ->
@@ -551,12 +563,32 @@ class InjectTest {
         assertEquals("com.example.game.Main", config.activity)
         assertEquals(listOf("--", "--server"), config.args)
 
+        assertNull(config.server)
+
         // Once is enough, an offline game is the original's to start from,
-        // a game no launcher opens or no argument starts is refused.
+        // a game no launcher opens is refused.
         assertFailsWith<CheckFailed> { local(d, out, d.resolve("out/again.apk")) }
         assertFailsWith<CheckFailed> { local(d, build(d, fakeApk(d, manifest(launcher = ".Main"))).let { d.resolve("out/offline.apk") }, d.resolve("out/both.apk")) }
         assertFailsWith<CheckFailed> { local(d, fakeApk(d), d.resolve("out/none.apk")) }
-        assertFailsWith<CheckFailed> { local(d, fakeApk(d, manifest(launcher = ".Main")), d.resolve("out/no-args.apk"), emptyList()) }
+    }
+
+    // A game that hosts from its own menu: no second engine, its own link
+    // to a server read from its manifest and carried for a friend's Play.
+    // https://github.com/google/bundletool/blob/master/src/main/java/com/android/tools/build/bundletool/model/AndroidManifest.java#L981-L1022
+    // not ported: hasMainTvActivity, isHeadless, hasMainActivity, getActivities, getActivityAliases (viewSchemes is checked on its result)
+    @Test
+    fun aGameHostingFromItsMenuRunsNoEngine() = withDir { d ->
+        val original = manifest(launcher = ".Main", schemes = listOf("https", "mygame", "content", "mygame"))
+        assertEquals(listOf("mygame"), Inject.viewSchemes(original))
+        assertEquals(emptyList(), Inject.viewSchemes(manifest(launcher = ".Main")))
+
+        val out = d.resolve("out/own-menu.apk")
+        assertTrue(local(d, fakeApk(d, original), out, emptyList(), "mygame://127.0.0.1:2755").verified)
+        val application = root(entry(out, "AndroidManifest.xml")).firstChild("application")!!
+        assertTrue(application.children.none { it.name == "service" })
+        val config = io.gutapk.local.Config.build(entry(out, Inject.LOCAL_CONFIG).inputStream())
+        assertEquals(emptyList(), config.args)
+        assertEquals("mygame://127.0.0.1:2755", config.server)
     }
 
     @Test

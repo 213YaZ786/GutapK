@@ -14,6 +14,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -30,10 +31,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import io.gutapk.core.apk.ApkInfo
+import io.gutapk.core.apk.ApkReader
 import io.gutapk.core.godot.Decompressor
 import io.gutapk.core.godot.GodotBind
 import io.gutapk.core.godot.GodotLocal
+import io.gutapk.core.local.JavaServer
+import io.gutapk.core.local.JavaServerScan
 import io.gutapk.core.local.LocalBuild
+import io.gutapk.core.offline.Inject
 import io.gutapk.core.sign.ApkSigning
 import io.gutapk.core.sign.KeyChoice
 import io.gutapk.core.sign.TestKey
@@ -60,14 +65,23 @@ const val LOCAL_JOB = "local"
 private sealed interface Scan {
     data object Looking : Scan
     data class NeedsLibs(val specs: List<ToolSpec>) : Scan
-    data class Ready(val zstd: Decompressor, val local: GodotLocal) : Scan
+    // A Godot game's scripts read, or another game's code: the ports it
+    // binds to and its own link schemes.
+    data class Ready(val zstd: Decompressor?, val local: GodotLocal?, val servers: List<JavaServer> = emptyList(), val schemes: List<String> = emptyList()) : Scan
     data class Failed(val message: String) : Scan
 }
 
-// The scripts are read with aircompressor, offered when missing, then
-// searched for the game's server.
+// A Godot game's scripts are read with aircompressor, any other game's code
+// with dexlib2, each offered when missing, then searched for the game's server.
 // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#probe
-private fun scan(root: Path, original: Path): Scan {
+private fun scan(root: Path, original: Path, godot: Boolean): Scan {
+    if (!godot) {
+        val missing = Libraries.missing(root, Libraries.DEXLIB2)
+        if (missing.isNotEmpty()) return Scan.NeedsLibs(missing)
+        val servers = Libraries.load(root, Libraries.DEXLIB2, "io.gutapk.core.local.DexServers", JavaServerScan::class.java).scan(original.toFile())
+        val manifest = ApkReader.iconBytes(original, "AndroidManifest.xml")
+        return Scan.Ready(null, null, servers, manifest?.let { Inject.viewSchemes(it) }.orEmpty())
+    }
     val missing = Libraries.missing(root, Libraries.AIRCOMPRESSOR)
     if (missing.isNotEmpty()) return Scan.NeedsLibs(missing)
     val zstd = Libraries.load(root, Libraries.AIRCOMPRESSOR, "io.gutapk.core.godot.Zstd", Decompressor::class.java)
@@ -99,6 +113,7 @@ fun LocalDialog(
     dir: Path,
     original: Path,
     info: ApkInfo,
+    godot: Boolean,
     version: String,
     onDismiss: () -> Unit,
 ) {
@@ -109,7 +124,7 @@ fun LocalDialog(
     }
     val scripts by produceState<Scan>(Scan.Looking, attempt) {
         value = Scan.Looking
-        value = withContext(Dispatchers.IO) { runCatching { scan(root, original) }.getOrElse { Scan.Failed(it.message ?: it.javaClass.simpleName) } }
+        value = withContext(Dispatchers.IO) { runCatching { scan(root, original, godot) }.getOrElse { Scan.Failed(it.message ?: it.javaClass.simpleName) } }
     }
     // The user's answers, GutapK's reading until one is changed.
     var chosen by remember { mutableStateOf<Set<String>?>(null) }
@@ -121,6 +136,8 @@ fun LocalDialog(
     var signed by remember { mutableStateOf<Path?>(null) }
     var failure by remember { mutableStateOf<String?>(null) }
     var libsStarted by remember { mutableStateOf(false) }
+    var picked by remember { mutableStateOf<Long?>(null) }
+    var link by remember { mutableStateOf<String?>(null) }
     val noDex = t("offline_no_dex")
 
     val view = currentJobView()
@@ -147,7 +164,7 @@ fun LocalDialog(
             root = root,
             specs = s.specs,
             onDismiss = onDismiss,
-            why = t("godot_needs_libs"),
+            why = if (godot) t("godot_needs_libs") else t("local_java_needs_libs"),
             onStarted = { libsStarted = true },
         )
         started != null -> AlertDialog(
@@ -191,7 +208,7 @@ fun LocalDialog(
             text = {
                 SelectionContainer {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text(t("local_done_d"), style = MaterialTheme.typography.bodyLarge)
+                        Text(if (!godot) t("local_done_own_d") else t("local_done_d"), style = MaterialTheme.typography.bodyLarge)
                         signed?.let { Fact(t("signed_file"), it.toString()) }
                     }
                 }
@@ -201,14 +218,19 @@ fun LocalDialog(
         )
         f is Seen.Ready && s is Scan.Ready -> {
             val local = s.local
-            val server = local.server
-            val shown = chosen ?: local.args.filter { it != "--" }.toSet()
-            val names = local.flags.map { it.name }.distinct()
-            val args = names.filter { it in shown }.let { if (local.user_args && it.isNotEmpty()) listOf("--") + it else it }
-            val binds = local.binds.filter { bindKey(it) !in kept }
+            val java = s.takeIf { local == null }
+            val server = local?.server
+            val shown = chosen ?: local?.args.orEmpty().filter { it != "--" }.toSet()
+            val names = local?.flags.orEmpty().map { it.name }.distinct()
+            val args = names.filter { it in shown }.let { if (local?.user_args == true && it.isNotEmpty()) listOf("--") + it else it }
+            val binds = local?.binds.orEmpty().filter { bindKey(it) !in kept }
             val wanted = f.phones.filter { it.serial in (guests ?: setOf(f.phones.first().serial)) }
-            val port = server?.port?.takeIf { it in 1..65535 }
-            val ready = port != null && args.isNotEmpty() && wanted.isNotEmpty()
+            val javaServer = java?.servers?.let { all -> all.firstOrNull { it.port == picked } ?: all.firstOrNull() }
+            val port = (if (java != null) javaServer?.port else server?.port)?.takeIf { it in 1..65535 }
+            val udp = javaServer?.udp ?: server?.udp ?: false
+            // The game's own link to the relay's end on the phone, the first scheme its manifest opens.
+            val join = if (java == null) null else link ?: java.schemes.firstOrNull()?.let { "$it://127.0.0.1:$port" }.orEmpty()
+            val ready = port != null && (java != null || args.isNotEmpty()) && wanted.isNotEmpty()
             AlertDialog(
                 onDismissRequest = onDismiss,
                 title = { Text(title) },
@@ -219,37 +241,63 @@ fun LocalDialog(
                     ) {
                         Fact(t("try_package"), info.packageName)
                         Text(t("local_d"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(t("local_server"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                        if (server == null) {
+                        // Another game's ports, a box each as the offline build's servers, the link a field.
+                        // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#OfflineDialog
+                        if (java != null) {
+                            Text(t("local_java_ports"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                            if (java.servers.isEmpty()) Text(t("local_java_none"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                        }
+                        if (java != null && javaServer != null) {
+                            Text(t("local_java_ports_d"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            java.servers.forEach { js ->
+                                CheckRow((if (js.udp) "TCP + UDP " else "TCP ") + js.port, js == javaServer, FontFamily.Monospace) { picked = js.port }
+                            }
+                            SelectionContainer { Text(javaServer.chain.joinToString("\n← "), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) }
+                            Text(t("local_own_menu"), style = MaterialTheme.typography.bodyMedium)
+                            Text(t("local_join"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                            Text(t("local_join_d"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            OutlinedTextField(
+                                value = join.orEmpty(),
+                                onValueChange = { link = it },
+                                singleLine = true,
+                                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Text(t("local_lan"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                        }
+                        if (local != null) Text(t("local_server"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                        if (local != null && server == null) {
                             Text(t("local_none"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
-                        } else {
+                        } else if (server != null) {
                             Fact(t("local_where"), server.script.removePrefix("assets/") + ":" + server.line)
                             SelectionContainer { Text(server.text, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) }
                             Fact(t("local_port"), (if (server.udp) "UDP " else "TCP ") + (server.port?.toString() ?: "?"))
                             if (port == null) Text(t("local_no_port"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
                         }
-                        Text(t("local_flags"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                        Text(t("local_flags_d"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        names.forEach { name ->
-                            val opens = local.flags.any { it.name == name && it.opens != null }
-                            CheckRow(if (opens) t("local_flag_opens", name) else name, name in shown, FontFamily.Monospace) { on ->
-                                chosen = if (on) shown + name else shown - name
-                            }
-                        }
-                        if (args.isEmpty()) Text(t("local_no_flags"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
-                        if (local.binds.isNotEmpty()) {
-                            Text(t("local_binds"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                            Text(t("local_binds_d"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            local.binds.forEach { b ->
-                                CheckRow(b.script.removePrefix("assets/") + ":" + b.line + "  " + b.text, bindKey(b) !in kept, FontFamily.Monospace) { on ->
-                                    kept = if (on) kept - bindKey(b) else kept + bindKey(b)
+                        if (local != null) {
+                            Text(t("local_flags"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                            Text(t("local_flags_d"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            names.forEach { name ->
+                                val opens = local.flags.any { it.name == name && it.opens != null }
+                                CheckRow(if (opens) t("local_flag_opens", name) else name, name in shown, FontFamily.Monospace) { on ->
+                                    chosen = if (on) shown + name else shown - name
                                 }
                             }
+                            if (args.isEmpty()) Text(t("local_no_flags"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                            if (local.binds.isNotEmpty()) {
+                                Text(t("local_binds"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                                Text(t("local_binds_d"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                local.binds.forEach { b ->
+                                    CheckRow(b.script.removePrefix("assets/") + ":" + b.line + "  " + b.text, bindKey(b) !in kept, FontFamily.Monospace) { on ->
+                                        kept = if (on) kept - bindKey(b) else kept + bindKey(b)
+                                    }
+                                }
+                            }
+                            if (server != null && (server.bind_address == null || binds.isEmpty())) {
+                                Text(t("local_unbound"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                            }
+                            if (local.loopback == null) Text(t("local_no_loopback"), style = MaterialTheme.typography.bodyMedium)
                         }
-                        if (server != null && (server.bind_address == null || binds.isEmpty())) {
-                            Text(t("local_unbound"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
-                        }
-                        if (local.loopback == null) Text(t("local_no_loopback"), style = MaterialTheme.typography.bodyMedium)
                         Text(t("local_phones"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                         f.phones.forEach { phone ->
                             CheckRow(phoneLabel(phone), phone in wanted, null) { on ->
@@ -285,14 +333,14 @@ fun LocalDialog(
                             val remove = uninstallFirst
                             val targets = wanted
                             val zstd = s.zstd
-                            val udp = server!!.udp
+                            val joinLink = join?.trim()?.takeIf { it.isNotEmpty() }
                             val byScript = binds.groupBy({ it.script }, { it.token to ("127.0.0.1" as Any) }).mapValues { it.value.toMap() }
                             started = JobQueue.start(LOCAL_JOB) { job ->
                                 val steps = 1 + 2 * targets.size
                                 job.emit(JobEvent.Step("build", 1, steps))
                                 val dex = load() ?: throw IOException(noDex)
                                 val out = localOutput(dir, info.packageName, info.versionName)
-                                LocalBuild.run(original, args, port!!.toInt(), udp, byScript, zstd, dex, dir.resolve("work-local"), out, TestKey.load(), info.minSdk, version, job)
+                                LocalBuild.run(original, args, port!!.toInt(), udp, joinLink, byScript, zstd, dex, dir.resolve("work-local"), out, TestKey.load(), info.minSdk, version, job)
                                 signed = out
                                 targets.forEachIndexed { i, phone ->
                                     OfflineInstall.run(f.adb, phone.serial, out, info.packageName, remove, job, { job.cancelRequested }, first = 2 + 2 * i, steps = steps)

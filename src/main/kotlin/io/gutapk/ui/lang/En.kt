@@ -529,7 +529,6 @@ This is a plain-language summary, not legal advice.""",
     // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/ui/lang/En.kt#EN
     // The Local dialog's texts, worded like the offline ones.
     // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/ui/lang/En.kt#EN
-    "local_godot_only" to "Local reads Godot games for now",
     "local_title" to "Play together nearby",
     "local_d" to "Friends nearby play together with no internet. The host's phone runs the game's own server in the background, friends join by scanning a QR code, and everything between the phones is encrypted. Below is what GutapK read in the game: check it, then install the game on each phone.",
     "local_none" to "No server was found in the game's scripts. Local needs a game that can host its own matches.",
@@ -548,6 +547,17 @@ This is a plain-language summary, not legal advice.""",
     "local_phones" to "Install on",
     "local_wifi" to "All phones join the same Wi-Fi or the host's hotspot.",
     "local_done_d" to "The game is installed with Local. On the host's phone, open Local, press Host a match, then Play. Friends scan the QR code with their camera; one without the game downloads it from the host's page.",
+    // The Local dialog's texts for a game whose code hosts from its own menu.
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/ui/lang/En.kt#EN
+    "local_java_needs_libs" to "GutapK reads a Java game's code with dexlib2, a Java library it downloads in its newest version, like its other tools.",
+    "local_java_none" to "No server was found in the game's code: no port it binds to for others to join. Local needs a game that can host its own matches.",
+    "local_java_ports" to "Ports the game's server binds to",
+    "local_java_ports_d" to "Found in the game's code, the call that binds first. Tick the one its matches use.",
+    "local_own_menu" to "The game hosts from its own menu: on the host's phone, press Host a match in Local, then start the match in the game.",
+    "local_join" to "The game's own link to a server",
+    "local_join_d" to "A friend's Play opens the game with this link, which reaches the host through the relay. Empty: the friend joins from the game's menu at 127.0.0.1.",
+    "local_lan" to "The game's server listens on every network: someone on the same Wi-Fi could also reach it directly, without encryption.",
+    "local_done_own_d" to "The game is installed with Local. On the host's phone, open Local, press Host a match, then Play and host the match from the game's menu. Friends scan the QR code with their camera; one without the game downloads it from the host's page.",
     "offline_title" to "Play offline on the phone",
     "offline_servers" to "Servers of the game to move to the phone",
     "offline_found" to "Found %s times in the game",
