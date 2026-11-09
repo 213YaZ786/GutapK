@@ -44,6 +44,43 @@ object Inject {
         "isActiveNetworkMetered()Z",
     ).associate { "$CONNECTIVITY->$it" to "Lio/gutapk/offline/Net;" }
 
+    // The calls that open a consent window, answered by the server's Consent
+    // as if the user had answered: the SDK's own delegate is told the answer,
+    // the window never opens. Each one by its dex reference, to the class
+    // whose static method of the same name takes the receiver first, as
+    // NETWORK_CALLS does. A consent SDK is one more line here.
+    // https://github.com/lemonsqueeze/FakeWifiConnection/blob/master/FakeWifiConnection/src/com/lemonsqueeze/fakewificonnection/Main.java#L336-L406
+    // not ported: afterHookedMethod, hook_method (the calls are rewritten, not hooked)
+    // not ported: getActiveNetworkInfoForUid, getProvisioningOrActiveNetworkInfo, getActiveNetworkInfoUnfiltered (hidden from apps)
+    const val MRGS_CONSENT = "Lgames/my/mrgs/gdpr/MRGSGDPR;"
+    val CONSENT_CALLS = listOf(
+        "$MRGS_CONSENT->showAgreementAtActivity(Landroid/app/Activity;Ljava/lang/String;Ljava/lang/String;)V",
+        "$MRGS_CONSENT->showDefaultAgreementAtActivity(Landroid/app/Activity;Ljava/lang/String;)V",
+    ).associateWith { "Lio/gutapk/offline/Consent;" }
+
+    // Every call rewritten in a dex: the network checks and the consent windows.
+    val ANSWERED_CALLS = NETWORK_CALLS + CONSENT_CALLS
+
+    // The Google Play Games helper a game carries a copy of (BaseGameUtils'
+    // GameHelper, in the app's own namespace so its method names survive
+    // obfuscation): a class is one when it defines these three methods, by
+    // name and signature, never by the class name. Its onStart connects to
+    // Google, which opens the sign-in screen at every start, so the call is
+    // answered by the server's SignIn, which turns the automatic sign-in off
+    // first (setConnectOnStart) and leaves the player's own button working.
+    // https://github.com/tvbarthel/ChaseWhisplyProject/blob/1d86fcc6b373e4a1d399a39868fd44187e119471/BaseGameUtils/src/main/java/com/google/example/games/basegameutils/GameHelper.java#setConnectOnStart
+    val GameHelper = listOf("setConnectOnStart(Z)V", "beginUserInitiatedSignIn()V", "onStart(Landroid/app/Activity;)V")
+
+    // The calls the game makes to each helper to sign in, answered by SignIn:
+    // the one of the activity's start, and beginUserInitiatedSignIn, which
+    // Jungle Heat's native code also calls by itself a second after the start.
+    // https://github.com/tvbarthel/ChaseWhisplyProject/blob/1d86fcc6b373e4a1d399a39868fd44187e119471/BaseGameUtils/src/main/java/com/google/example/games/basegameutils/GameHelper.java#onStart
+    // https://github.com/tvbarthel/ChaseWhisplyProject/blob/1d86fcc6b373e4a1d399a39868fd44187e119471/BaseGameUtils/src/main/java/com/google/example/games/basegameutils/GameHelper.java#beginUserInitiatedSignIn
+    // not ported: mActivity, mAppContext, assertConfigured, mConnectOnStart, mGoogleApiClient, mConnecting, mHandler, notifyListener (the helper's own onStart does them, SignIn calls it)
+    // not ported: resetSignInCancellations, mSignInCancelled, mUserInitiatedSignIn, mConnectionResult, resolveConnectionResult, connect, logWarn (no sign-in is tried, SignIn calls the helper's notifyListener)
+    fun onStart(helpers: Collection<String>): Map<String, String> =
+        helpers.flatMap { listOf("$it->${GameHelper.last()}", "$it->${GameHelper[1]}") }.associateWith { "Lio/gutapk/offline/SignIn;" }
+
     // Local: its screen, from a launcher entry of its own and from a friend's
     // invitation gutapk://<package>/join, its properties file, and the
     // service of every Godot 4.5+ export that runs a second engine, in a
@@ -284,6 +321,23 @@ object Inject {
         }
     }
 
+    // The application class, the name attribute of the application element
+    // made whole as mainActivity makes the activity's. Null for an app that
+    // names none.
+    // https://github.com/google/bundletool/blob/master/src/main/java/com/android/tools/build/bundletool/model/AndroidManifest.java#getApplicationAttribute
+    // not ported: getApplicationAttributeAsBoolean (the name is a string)
+    fun applicationName(bytes: ByteArray): String? {
+        val manifestElement = read(bytes).firsts.firstOrNull { it.name == "manifest" } ?: throw ApkFormatError("no manifest element")
+        val packageName = getAttribute(manifestElement, "package")?.value as? String ?: ""
+        val app = manifestElement.children.firstOrNull { it.name == APPLICATION_ELEMENT_NAME } ?: return null
+        val name = getAndroidAttribute(app, Attr.NAME)?.value as? String ?: return null
+        return when {
+            name.startsWith(".") -> packageName + name
+            '.' !in name -> "$packageName.$name"
+            else -> name
+        }
+    }
+
     // The schemes an activity or alias opens from a VIEW link, the web's,
     // the system's and Local's own left out: a game's own link, such as
     // mindustry://host:port, which a friend's Local opens once its relay runs.
@@ -426,11 +480,14 @@ object Inject {
     // port it listens on, the address the app holds in its place (the server
     // points a redirect to the origin there), and the name of the socket the
     // admin side reaches it by (abstract, so no file is left on the phone).
-    fun config(packageName: String, ports: Map<String, Int>): String {
+    fun config(packageName: String, ports: Map<String, Int>, blocked: Set<String> = emptySet()): String {
         require(ports.keys.none { '\n' in it || '\r' in it || '\\' in it }) { "an origin cannot be written to a properties file" }
         return buildString {
             ports.forEach { (origin, port) -> append("listen.$port=$origin\n") }
             ports.forEach { (origin, port) -> Redirect.target(origin, port = port)?.let { append("target.$port=$it\n") } }
+            // block.<port>: that origin is answered on the phone, as mitmproxy's block_list answers a matching request.
+            // https://github.com/mitmproxy/mitmproxy/blob/main/mitmproxy/addons/blocklist.py#configure
+            ports.forEach { (origin, port) -> if (origin in blocked) append("block.$port=true\n") }
             append("admin=gutapk.$packageName\n")
         }
     }

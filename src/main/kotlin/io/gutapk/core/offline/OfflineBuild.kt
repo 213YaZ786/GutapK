@@ -27,6 +27,27 @@ object OfflineBuild {
     private const val MANIFEST = "AndroidManifest.xml"
     private const val TABLE = "resources.arsc"
 
+    // The recordings of the package, kept on the PC next to original.apk, and
+    // where they sit in the APK: beside the config the server reads, which
+    // CacheProvider lists on the phone as gutapk/recordings.
+    const val RECORDINGS = "recordings"
+    private val ASSETS = Inject.CONFIG.substringBeforeLast('/') + "/$RECORDINGS/"
+
+    // The suffix of a recording's metadata file, one per recording (Store.java).
+    const val ENTRY = ".0"
+
+    fun recordings(packageDir: Path): Path = packageDir.resolve(RECORDINGS)
+
+    // The files of the folder the phone copies, none of the ones being written aside.
+    // https://github.com/213YaZ786/GutapK/blob/ca70230/src/main/kotlin/io/gutapk/core/offline/OfflineBuild.kt#run
+    fun files(folder: Path?): List<Path> {
+        if (folder == null || !Files.isDirectory(folder)) return emptyList()
+        return Files.list(folder).use { s -> s.filter { Files.isRegularFile(it) && !it.fileName.toString().endsWith(".tmp") }.sorted().toList() }
+    }
+
+    // How many recordings the folder holds.
+    fun count(folder: Path?): Int = files(folder).count { it.fileName.toString().endsWith(ENTRY) }
+
     // A set is refused for now: the server would need to go into its base
     // and the libraries it patches may sit in a split.
     // https://github.com/213YaZ786/GutapK/blob/10ee6c76cf7177086b07b3a34b0fe962b5b414a3/src/main/kotlin/io/gutapk/core/edit/Edit.kt#run
@@ -42,6 +63,10 @@ object OfflineBuild {
         appVersion: String,
         sink: JobSink,
         codecs: AssemblyCodecs? = null,
+        recordings: Path? = null,
+        blocked: Set<String> = emptySet(),
+        consent: Boolean = true,
+        signIn: Boolean = true,
     ): SignatureInfo {
         val part = SplitSet.part(input, "")
         if (!SplitSet.standalone(part)) {
@@ -81,16 +106,29 @@ object OfflineBuild {
                         replaced[file] = Files.write(work.resolve("security$i.bin"), Inject.securityConfig(zip.getInputStream(entry).use { it.readAllBytes() }))
                     }
                 }
-                // A dex that asks Android whether the phone is online is
-                // written again too, its calls answered by the server's Net.
+                // A dex that asks Android whether the phone is online, that
+                // opens a consent window, or that starts the Google Play Games
+                // helper, is written again too, its calls answered by the
+                // server's Net, Consent and SignIn. The helpers are the classes
+                // of the game's dex files, so every dex holding one, or a call
+                // to its onStart, is written again.
+                // https://github.com/tvbarthel/ChaseWhisplyProject/blob/1d86fcc6b373e4a1d399a39868fd44187e119471/BaseGameUtils/src/main/java/com/google/example/games/basegameutils/GameHelper.java#onStart
+                val helpers = if (signIn) names.filter { DexHeader.isDex(it) }.flatMap { entry ->
+                    strings.helpers(zip.getInputStream(zip.getEntry(entry)).use { it.readAllBytes() })
+                }.distinct() else emptyList()
+                val answered = Inject.NETWORK_CALLS + (if (consent) Inject.CONSENT_CALLS else emptyMap()) + Inject.onStart(helpers)
+                val classes = answered.keys.map { it.substringBefore("->") }.distinct()
                 val asking = names.filter { DexHeader.isDex(it) && it !in dexPatches.map { p -> p.name } }.filter { entry ->
-                    String(zip.getInputStream(zip.getEntry(entry)).use { it.readAllBytes() }, Charsets.ISO_8859_1).contains(Inject.CONNECTIVITY)
+                    val text = String(zip.getInputStream(zip.getEntry(entry)).use { it.readAllBytes() }, Charsets.ISO_8859_1)
+                    classes.any { text.contains(it) }
                 }
                 (dexPatches.map { it.name }.distinct() + asking).forEachIndexed { i, entry ->
                     replaced[entry] = work.resolve("dex$i.dex")
-                    val changed = strings.writeTo(replaced.getValue(entry), zip.getInputStream(zip.getEntry(entry)).use { it.readAllBytes() }, targets, Inject.NETWORK_CALLS)
-                    val (calls, moved) = changed.partition { it in Inject.NETWORK_CALLS }
-                    sink.emit(JobEvent.Line("$entry written again, ${moved.size} strings pointed at the phone, ${calls.size} network checks answered on the phone"))
+                    val changed = strings.writeTo(replaced.getValue(entry), zip.getInputStream(zip.getEntry(entry)).use { it.readAllBytes() }, targets, answered)
+                    val (calls, moved) = changed.partition { it in answered }
+                    val (checks, others) = calls.partition { it in Inject.NETWORK_CALLS }
+                    val (windows, starts) = others.partition { it in Inject.CONSENT_CALLS }
+                    sink.emit(JobEvent.Line("$entry written again, ${moved.size} strings pointed at the phone, ${checks.size} network checks and ${windows.size} consent windows answered on the phone, ${starts.size} sign-in calls answered on the phone"))
                 }
                 // Patches.apply on the assemblies in memory: every patch checked
                 // against the old bytes, then written, the store written again.
@@ -121,8 +159,17 @@ object OfflineBuild {
                 }
                 val name = Inject.nextDexName(names)
                 added[name] = Files.write(work.resolve("server.dex"), dex)
-                added[Inject.CONFIG] = Files.write(work.resolve("offline.properties"), Inject.config(packageName, ports).toByteArray())
+                added[Inject.CONFIG] = Files.write(work.resolve("offline.properties"), Inject.config(packageName, ports, blocked).toByteArray())
                 sink.emit(JobEvent.Line("server added as $name, provider ${Inject.authority(packageName)}"))
+                val answeredHere = ports.keys.count { it in blocked }
+                if (answeredHere > 0) sink.emit(JobEvent.Line("$answeredHere servers answered on the phone, never called"))
+                // The recordings kept on the PC, each file as an asset the
+                // phone copies into its cache at the first launch.
+                // https://github.com/213YaZ786/GutapK/blob/ca70230/src/main/kotlin/io/gutapk/core/offline/OfflineBuild.kt#run
+                val kept = files(recordings)
+                kept.forEach { file -> added[ASSETS + file.fileName] = file }
+                val travelling = kept.count { it.fileName.toString().endsWith(ENTRY) }
+                if (travelling > 0) sink.emit(JobEvent.Line("$travelling recordings travel with the game"))
             }
 
             // The patches, the manifest and the new entries in one pass over the zip.

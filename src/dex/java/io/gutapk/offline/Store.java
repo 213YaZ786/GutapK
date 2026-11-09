@@ -445,6 +445,29 @@ public class Store {
         return entries;
     }
 
+    /**
+     * Every file of the cache that a zip carries (the metadata, body and request
+     * files and the latest-answer indexes), not the ones being written aside.
+     * https://github.com/TeamNewPipe/NewPipe/blob/009b00ecb68d5036f3ecc6acac11eb09e5b2587c/app/src/main/java/org/schabi/newpipe/util/ZipHelper.java#addFileToZip
+     * not ported: addFileToZip (it is Routes.addFileToZip, this lists the path it is given)
+     * not ported: acceptStream (the consumer overload of addFileToZip is left out of Routes)
+     * not ported: extractFileFromZip (the PC side unzips, in ServerAdmin)
+     * not ported: zipContainsFile, isValidZipFile (nothing reads a zip on the phone)
+     */
+    public synchronized List<File> files() {
+        List<File> path = new ArrayList<File>();
+        File[] nameInZip = directory.listFiles();
+        if (nameInZip == null) {
+            return path;
+        }
+        for (File file : nameInZip) {
+            if (file.isFile() && !file.getName().endsWith(".tmp")) {
+                path.add(file);
+            }
+        }
+        return path;
+    }
+
     static void writeAside(File target, byte[] data) throws IOException {
         File aside = new File(target.getPath() + ".tmp");
         FileOutputStream sink = new FileOutputStream(aside);

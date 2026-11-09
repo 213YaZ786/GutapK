@@ -8,7 +8,10 @@ package io.gutapk.offline;
  * network, and answers from the cache when the call fails. The cache hit
  * is the exact request first, then the nearest one recorded for the endpoint
  * (Store.nearest), and a miss is a 502 and not OkHttp's 504 only-if-cached.
+ * An origin the user chose to block is answered at once, as mitmproxy's block
+ * list answers a matching request, and never reaches the network or the cache.
  *
+ * https://github.com/mitmproxy/mitmproxy/blob/main/mitmproxy/addons/blocklist.py#request
  * https://github.com/square/okhttp/blob/master/okhttp/src/commonJvmAndroid/kotlin/okhttp3/internal/cache/CacheInterceptor.kt#intercept
  * https://github.com/wiremock/wiremock/blob/master/wiremock-core/src/main/java/com/github/tomakehurst/wiremock/http/ProxyResponseRenderer.java#proxyResponseError
  * https://github.com/NanoHttpd/nanohttpd/blob/master/core/src/main/java/org/nanohttpd/protocols/http/response/Response.java#addHeader
@@ -35,6 +38,7 @@ public class CacheInterceptor implements Http.Handler {
     public static final String LIVE = "live";
     public static final String REPLAY = "replay";
     public static final String MISS = "miss";
+    public static final String BLOCKED = "blocked";
 
     /** What the last request got, for the admin status. */
     public static volatile String lastSeen = "none";
@@ -47,12 +51,20 @@ public class CacheInterceptor implements Http.Handler {
     /** Every origin the app was moved off, to the address it holds instead. */
     private final Map<String, String> targets;
 
+    /** BlockSpec's status_code for this origin, 0 when the origin is not in the block list. */
+    private final int status_code;
+
     public CacheInterceptor(String origin, Store cache, Overrides overrides, ProxyResponseRenderer proceed, Map<String, String> targets) {
+        this(origin, cache, overrides, proceed, targets, 0);
+    }
+
+    public CacheInterceptor(String origin, Store cache, Overrides overrides, ProxyResponseRenderer proceed, Map<String, String> targets, int status_code) {
         this.origin = origin;
         this.targets = targets;
         this.cache = cache;
         this.overrides = overrides;
         this.proceed = proceed;
+        this.status_code = status_code;
     }
 
     @Override
@@ -61,6 +73,11 @@ public class CacheInterceptor implements Http.Handler {
     }
 
     public Http.Response intercept(Http chain) throws IOException {
+        // A blocked origin is answered before anything else: no upgrade check, no network, no record.
+        Http.Response blocked = request(chain);
+        if (blocked != null) {
+            return blocked;
+        }
         String upgrade = chain.getHeaders().get("upgrade");
         if (upgrade != null && upgrade.toLowerCase().contains("websocket")) {
             return error(501, "websocket", "WebSocket upgrades are not served by the offline cache");
@@ -125,6 +142,26 @@ public class CacheInterceptor implements Http.Handler {
             }
         }
         response.addHeader(HEADER, via);
+        return response;
+    }
+
+    /**
+     * The block list's request hook: a request of a blocked origin is answered
+     * with an empty response of the chosen status and never sent upstream.
+     * This interceptor serves one origin, so its one spec matches every
+     * request it gets. Null when the origin is not blocked.
+     * https://github.com/mitmproxy/mitmproxy/blob/main/mitmproxy/addons/blocklist.py#request
+     * Not ported: flow.response, flow.error, flow.live (a request here has no answer yet, no error and is always live)
+     * Not ported: flow.metadata (nothing reads which flows were blocked)
+     * Not ported: flow.kill and NO_RESPONSE (a connection is never dropped, the app gets its status)
+     * Not ported: the Server header (X-GutapK says who answered)
+     */
+    private Http.Response request(Http flow) {
+        if (status_code == 0) {
+            return null;
+        }
+        Http.Response response = Http.Response.newFixedLengthResponse(status_code, "text/plain", new byte[0]);
+        response.addHeader(HEADER, BLOCKED);
         return response;
     }
 

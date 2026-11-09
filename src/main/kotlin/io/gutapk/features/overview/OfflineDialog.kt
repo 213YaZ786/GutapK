@@ -38,8 +38,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import io.gutapk.core.apk.ApkInfo
+import io.gutapk.core.apk.DexClasses
+import io.gutapk.core.apk.Trackers
 import io.gutapk.core.offline.AssemblyCodecs
 import io.gutapk.core.offline.AssemblyStore
+import io.gutapk.core.offline.DexHeader
 import io.gutapk.core.offline.DexStringRewrite
 import io.gutapk.core.offline.Endpoint
 import io.gutapk.core.offline.Endpoints
@@ -63,6 +66,7 @@ import io.gutapk.job.JobEvent
 import io.gutapk.job.JobQueue
 import io.gutapk.job.JobState
 import io.gutapk.tools.Libraries
+import io.gutapk.tools.TrackerList
 import io.gutapk.tools.ToolSpec
 import io.gutapk.ui.Fact
 import io.gutapk.ui.LookupDialog
@@ -145,17 +149,29 @@ fun OfflineDialog(
     // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/features/device/MirrorPage.kt#L80-L85
     val store = remember(original) { runCatching { ZipFile(original.toFile()).use { z -> z.entries().asSequence().any { AssemblyStore.isStore(it.name) } } }.getOrDefault(false) }
     var storeRead by remember { mutableStateOf(0) }
-    var storeLibs by remember { mutableStateOf(false) }
+    var waiting by remember { mutableStateOf<String?>(null) }
     val read by produceState<List<Endpoint>?>(if (store) null else endpoints, endpoints, storeRead) {
         value = if (!store) endpoints else withContext(Dispatchers.IO) {
             if (Libraries.missing(root, Libraries.AIRCOMPRESSOR).isNotEmpty()) null
             else runCatching { Endpoints.scan(original, Libraries.load(root, Libraries.AIRCOMPRESSOR, "io.gutapk.core.offline.AircompressorCodecs", AssemblyCodecs::class.java)) }.getOrDefault(endpoints)
         }
     }
+    // The recordings kept on the PC, read off the composition thread.
+    val recorded by produceState(0, dir) { value = withContext(Dispatchers.IO) { OfflineBuild.count(OfflineBuild.recordings(dir)) } }
     val all = read.orEmpty()
     val listing = remember(all) { Endpoints.order(all, info.packageName) }
-    var chosen by remember(all) { mutableStateOf<Set<String>?>(null) }
-    val shown = chosen ?: listing.servers.map { it.origin }.toSet()
+    // The recommended choices, read from the game once its libraries are in: a
+    // blocked address is moved to the phone too, to be answered there.
+    val analysis by produceState<Analysis?>(null, all, storeRead) {
+        value = if (all.isEmpty()) null else withContext(Dispatchers.IO) { runCatching { analyse(root, original, info, all) }.getOrNull() }
+    }
+    val advised = analysis?.blocked.orEmpty()
+    var chosen by remember(all, analysis) { mutableStateOf<Set<String>?>(null) }
+    var refused by remember(all, analysis) { mutableStateOf<Set<String>?>(null) }
+    var skipConsent by remember { mutableStateOf(true) }
+    var skipSignIn by remember { mutableStateOf(true) }
+    val blocked = refused ?: advised.keys
+    val shown = chosen ?: (listing.servers.map { it.origin } + advised.keys).toSet()
     var serial by remember { mutableStateOf<String?>(null) }
     var uninstallFirst by remember { mutableStateOf(false) }
     var started by remember { mutableStateOf<Job?>(null) }
@@ -168,12 +184,13 @@ fun OfflineDialog(
     val noDex = t("offline_no_dex")
 
     val view = currentJobView()
+    // dexlib2 tells which classes hold each address, so the defaults are asked for at once.
     LaunchedEffect(store) {
-        if (store) askingLibs = Libraries.missing(root, Libraries.AIRCOMPRESSOR)
+        askingLibs = withContext(Dispatchers.IO) { Libraries.missing(root, Libraries.DEXLIB2 + if (store) Libraries.AIRCOMPRESSOR else emptyList()) }
     }
     LaunchedEffect(view) {
-        if (storeLibs && view != null && view.title == jobTitle(Libraries.AIRCOMPRESSOR) && view.state == JobState.DONE) {
-            storeLibs = false
+        if (waiting != null && view != null && view.title == waiting && view.state == JobState.DONE) {
+            waiting = null
             storeRead++
         }
         val job = started
@@ -199,7 +216,7 @@ fun OfflineDialog(
             onDismiss = { askingLibs = emptyList() },
             why = t(if (askingLibs.any { it.id in Libraries.AIRCOMPRESSOR }) "offline_needs_dotnet" else "offline_needs_libs"),
             onStarted = {
-                if (askingLibs.any { it.id in Libraries.AIRCOMPRESSOR }) storeLibs = true
+                waiting = jobTitle(askingLibs.map { it.id })
                 askingLibs = emptyList()
             },
         )
@@ -272,6 +289,30 @@ fun OfflineDialog(
             // What each ticked address becomes, as OfflineBuild writes it.
             val ports = Inject.ports(info.packageName, fitting.map { it.origin })
             val changes = ports.mapValues { (origin, port) -> Redirect.target(origin, port = port) }
+            // The rows' choices, as the dialog held them: a set of origins ticked, here one more set blocked.
+            // https://github.com/213YaZ786/GutapK/blob/ca70230/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#OfflineDialog
+            // Why each address is advised to be blocked, in the user's language.
+            val blockText = t("offline_block")
+            val trackerText = t("offline_why_tracker")
+            val libraryText = t("offline_why_library")
+            val whys = advised.mapValues { (_, why) -> (if (why.startsWith("tracker")) trackerText else libraryText).format(why.substringAfter(": ")) }
+            // A blocked address is moved too, an address no longer moved is no longer blocked.
+            val toggle: (String, Boolean) -> Unit = { origin, on ->
+                chosen = if (on) shown + origin else shown - origin
+                if (!on) {
+                    refused = blocked - origin
+                }
+            }
+            val block: (String, Boolean) -> Unit = { origin, on ->
+                refused = if (on) blocked + origin else blocked - origin
+                if (on) {
+                    chosen = shown + origin
+                }
+            }
+            // A consent window the game opens, found in its code: skipped, and the game told the answer.
+            val windows = analysis?.consent.orEmpty()
+            // The Google Play Games helper that connects at every start: its automatic sign-in is turned off.
+            val helpers = analysis?.helpers.orEmpty()
             AlertDialog(
                 onDismissRequest = onDismiss,
                 title = { Text(title) },
@@ -287,18 +328,18 @@ fun OfflineDialog(
                         if (store && read == null) Text(t("offline_reading_dotnet"), style = MaterialTheme.typography.bodyMedium)
                         if (listing.servers.isEmpty()) Text(t("offline_no_sure"), style = MaterialTheme.typography.bodyMedium)
                         listing.servers.forEach { e ->
-                            ServerRow(e, e.origin in shown, true, t("offline_found", e.occurrences.size.toString()), changes[e.origin]) { on ->
-                                chosen = if (on) shown + e.origin else shown - e.origin
+                            ServerRow(e, e.origin in shown, true, t("offline_found", e.occurrences.size.toString()), changes[e.origin], e.origin in blocked, whys[e.origin], blockText, { on -> block(e.origin, on) }) { on ->
+                                toggle(e.origin, on)
                             }
                         }
                         listing.possible.forEach { e ->
-                            ServerRow(e, e.origin in shown, true, t("offline_possible", e.occurrences.size.toString()), changes[e.origin]) { on ->
-                                chosen = if (on) shown + e.origin else shown - e.origin
+                            ServerRow(e, e.origin in shown, true, t("offline_possible", e.occurrences.size.toString()), changes[e.origin], e.origin in blocked, whys[e.origin], blockText, { on -> block(e.origin, on) }) { on ->
+                                toggle(e.origin, on)
                             }
                         }
                         listing.links.forEach { e ->
-                            ServerRow(e, e.origin in shown, true, t("offline_link", e.occurrences.size.toString()), changes[e.origin]) { on ->
-                                chosen = if (on) shown + e.origin else shown - e.origin
+                            ServerRow(e, e.origin in shown, true, t("offline_link", e.occurrences.size.toString()), changes[e.origin], e.origin in blocked, whys[e.origin], blockText, { on -> block(e.origin, on) }) { on ->
+                                toggle(e.origin, on)
                             }
                         }
                         // The shortest the phone's address can be: the plain scheme, 0.0.0.0 and four digits.
@@ -306,8 +347,8 @@ fun OfflineDialog(
                         val tooShort: (Endpoint) -> String = { e -> shortText.format(e.origin.length, Redirect.Builder().scheme(e.origin.substringBefore("://")).host("0.0.0.0").port(Redirect.FITTING_PORT).build().length) }
                         listing.rest.forEach { e ->
                             val fits = Redirect.target(e.origin, port = Redirect.FITTING_PORT) != null
-                            ServerRow(e, e.origin in shown, fits, if (fits) t("offline_spec", e.occurrences.size.toString()) else tooShort(e), changes[e.origin]) { on ->
-                                chosen = if (on) shown + e.origin else shown - e.origin
+                            ServerRow(e, e.origin in shown, fits, if (fits) t("offline_spec", e.occurrences.size.toString()) else tooShort(e), changes[e.origin], e.origin in blocked, whys[e.origin], blockText, { on -> block(e.origin, on) }) { on ->
+                                toggle(e.origin, on)
                             }
                         }
                         listing.short.forEach { e ->
@@ -316,10 +357,32 @@ fun OfflineDialog(
                         if (!ready) {
                             Text(t("offline_none_selected"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
                         }
+                        if (windows.isNotEmpty()) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(t("offline_consent"), style = MaterialTheme.typography.bodyLarge)
+                                    Text(t("offline_consent_d", windows.joinToString(", ")), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Switch(checked = skipConsent, onCheckedChange = { skipConsent = it })
+                            }
+                        }
+                        if (helpers.isNotEmpty()) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(t("offline_signin"), style = MaterialTheme.typography.bodyLarge)
+                                    Text(t("offline_signin_d"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Switch(checked = skipSignIn, onCheckedChange = { skipSignIn = it })
+                            }
+                        }
                         Text(t("try_phone"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                         f.phones.forEach { phone ->
                             PhoneRow(phone, host == phone.serial) { serial = phone.serial }
                         }
+                        Text(
+                            if (recorded > 0) t("offline_recordings", recorded.toString()) else t("offline_no_recordings"),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
                         Text(t("sign_test_warning"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             Column(Modifier.weight(1f)) {
@@ -344,6 +407,9 @@ fun OfflineDialog(
                         onClick = {
                             val remove = uninstallFirst
                             val servers = fitting
+                            val refusing = blocked.intersect(fitting.map { it.origin }.toSet())
+                            val skipping = skipConsent && windows.isNotEmpty()
+                            val signing = skipSignIn && helpers.isNotEmpty()
                             val phone = host
                             askingLibs = Libraries.missing(root, Libraries.DEXLIB2 + if (store) Libraries.AIRCOMPRESSOR else emptyList())
                             if (askingLibs.isNotEmpty()) return@TextButton
@@ -355,7 +421,7 @@ fun OfflineDialog(
                                 // The test key signs, as the Sign dialog does with it: the
                                 // game is for the user's own phones.
                                 val out = output(dir, info.packageName, info.versionName, KeyChoice.TEST)
-                                OfflineBuild.run(original, servers, dex, strings, dir.resolve("work-offline"), out, TestKey.load(), info.minSdk, version, job, codecs)
+                                OfflineBuild.run(original, servers, dex, strings, dir.resolve("work-offline"), out, TestKey.load(), info.minSdk, version, job, codecs, OfflineBuild.recordings(dir), refusing, skipping, signing)
                                 signed = out
                                 OfflineInstall.run(f.adb, phone, out, info.packageName, remove, job, { job.cancelRequested }, first = 2, steps = 3)
                                 finished = true
@@ -391,20 +457,78 @@ fun OfflineDialog(
     }
 }
 
-// One server of the game: its address, how often the game holds it, and a
-// box. An address too short to hold the phone's is shown and cannot be ticked.
+// What the default choices rest on, read from the game: the addresses that
+// are blocked with the reason, and the consent windows it opens (the classes
+// of the SDKs, dotted). Without dexlib2 the libraries and the windows are not
+// read, only Exodus' network signatures are matched.
+// The Google Play Games helpers it starts (dotted classes) are read the same way.
+private class Analysis(val blocked: Map<String, String>, val consent: List<String>, val helpers: List<String>)
+
+// The same reads as the build makes, before it: the manifest for the app's
+// namespaces, the dex files for the classes that hold each address and the
+// consent calls, the classes against Exodus' list for the trackers found.
+// https://github.com/213YaZ786/GutapK/blob/ca70230/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#OfflineDialog
+// https://github.com/213YaZ786/GutapK/blob/ca70230/src/main/kotlin/io/gutapk/core/offline/OfflineBuild.kt#run
+// not ported: Seen, probe, ServerRow, PhoneRow (the dialog's phone and rows, they stay in OfflineDialog)
+private fun analyse(root: Path, original: Path, info: ApkInfo, endpoints: List<Endpoint>): Analysis {
+    val trackers = TrackerList.load(root).orEmpty()
+    val strings = if (Libraries.missing(root, Libraries.DEXLIB2).isEmpty()) {
+        Libraries.load(root, Libraries.DEXLIB2, "io.gutapk.core.offline.DexStrings", DexStringRewrite::class.java)
+    } else {
+        null
+    }
+    ZipFile(original.toFile()).use { zip ->
+        val found = Trackers.detect(DexClasses.read(zip), trackers)
+        val manifest = zip.getEntry("AndroidManifest.xml")?.let { entry -> zip.getInputStream(entry).use { it.readAllBytes() } }
+        // The components of a manifest hold the libraries' own, Facebook's and MRGS's activities: only the application and the launcher activity are the app's.
+        val own = Endpoints.owned(info.packageName, listOfNotNull(manifest?.let { runCatching { Inject.applicationName(it) }.getOrNull() }, manifest?.let { runCatching { Inject.mainActivity(it) }.getOrNull() }))
+        val dex = zip.entries().asSequence().filter { DexHeader.isDex(it.name) }.toList()
+        val holders = if (strings == null) emptyMap() else Endpoints.holders(original, endpoints, strings)
+        val windows = if (strings == null) emptyList() else dex.flatMap { entry ->
+            strings.found(zip.getInputStream(entry).use { it.readAllBytes() }, Inject.CONSENT_CALLS)
+        }.map { it.substringBefore("->").removePrefix("L").removeSuffix(";").replace('/', '.') }.distinct()
+        val helpers = if (strings == null) emptyList() else dex.flatMap { entry ->
+            strings.helpers(zip.getInputStream(entry).use { it.readAllBytes() })
+        }.map { it.removePrefix("L").removeSuffix(";").replace('/', '.') }.distinct()
+        return Analysis(Endpoints.blocklist(endpoints, found, own, holders), windows, helpers)
+    }
+}
+
+// One server of the game: its address, how often the game holds it, a box,
+// and a switch to block it: answered on the phone, never sent, with the
+// reason it is recommended. An address too short to hold the phone's is
+// shown and cannot be ticked or blocked.
+// https://github.com/213YaZ786/GutapK/blob/ca70230/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#ServerRow
 @Composable
-private fun ServerRow(endpoint: Endpoint, checked: Boolean, fits: Boolean, detail: String, change: String?, onToggle: (Boolean) -> Unit) {
+private fun ServerRow(
+    endpoint: Endpoint,
+    checked: Boolean,
+    fits: Boolean,
+    detail: String,
+    change: String?,
+    block: Boolean = false,
+    why: String? = null,
+    blockLabel: String = "",
+    onBlock: (Boolean) -> Unit = {},
+    onToggle: (Boolean) -> Unit,
+) {
     Row(
         Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium).clickable(enabled = fits) { onToggle(!checked) }.padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Checkbox(checked = checked && fits, onCheckedChange = null, enabled = fits)
-        Column(Modifier.padding(start = 12.dp)) {
+        Column(Modifier.padding(start = 12.dp).weight(1f)) {
             Text(endpoint.origin, style = MaterialTheme.typography.bodyLarge, fontFamily = FontFamily.Monospace)
             // The address written in its place, same length, or why it stays.
             if (change != null) Text("→ $change", style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.primary)
             Text(detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (why != null) Text(why, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+        }
+        if (fits) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(start = 12.dp)) {
+                Text(blockLabel, style = MaterialTheme.typography.labelMedium)
+                Switch(checked = block, onCheckedChange = onBlock)
+            }
         }
     }
 }
@@ -453,6 +577,7 @@ private fun readServer(l: Link): Pair<Status, List<Value>> = ServerAdmin.status(
 @Composable
 fun AdminDialog(
     root: Path,
+    dir: Path,
     info: ApkInfo,
     onDismiss: () -> Unit,
 ) {
@@ -473,6 +598,7 @@ fun AdminDialog(
     var answer by remember { mutableStateOf<Answer?>(null) }
     var kind by remember { mutableStateOf("set") }
     var confirming by remember { mutableStateOf<String?>(null) }
+    var kept by remember { mutableStateOf<Int?>(null) }
     val noAnswer = t("admin_no_answer")
     val scope = rememberCoroutineScope()
 
@@ -563,12 +689,29 @@ fun AdminDialog(
                                     )
                                 }
                                 failure?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error) }
+                                kept?.let { Text(t("admin_kept", it.toString()), style = MaterialTheme.typography.bodyMedium) }
                                 val sure = confirming
                                 if (sure == null) {
                                     Row {
                                         TextButton(enabled = !working, onClick = { confirming = "reset" }) { Text(t("admin_reset")) }
                                         TextButton(enabled = !working, onClick = { confirming = "clear" }) { Text(t("admin_clear")) }
                                     }
+                                    // The recordings leave the phone for the PC, where the
+                                    // next offline build takes them into the game.
+                                    TextButton(
+                                        enabled = !working,
+                                        onClick = {
+                                            working = true
+                                            answer = null
+                                            failure = null
+                                            kept = null
+                                            scope.launch {
+                                                val outcome = withContext(Dispatchers.IO) { runCatching { ServerAdmin.export(l.local, OfflineBuild.recordings(dir)) } }
+                                                outcome.onSuccess { kept = it }.onFailure { failure = it.message ?: it.javaClass.simpleName }
+                                                working = false
+                                            }
+                                        },
+                                    ) { Text(t("admin_keep")) }
                                 } else {
                                     Text(t(if (sure == "reset") "admin_confirm_reset" else "admin_confirm_clear"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
                                     Row {

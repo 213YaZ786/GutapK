@@ -12,4 +12,9 @@ public final class AssetManager {
     public final InputStream open(String fileName) throws IOException {
         throw new RuntimeException("stub");
     }
+
+    // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/content/res/AssetManager.java#list
+    public String[] list(String path) throws IOException {
+        throw new RuntimeException("stub");
+    }
 }

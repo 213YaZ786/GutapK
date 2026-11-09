@@ -14,9 +14,12 @@ import io.gutapk.offline.Offline
 import io.gutapk.offline.Overrides
 import io.gutapk.offline.Peer
 import io.gutapk.offline.ProxyResponseRenderer
+import io.gutapk.device.ServerAdmin
 import io.gutapk.offline.Routes
+import io.gutapk.offline.Seed
 import io.gutapk.offline.Server
 import io.gutapk.offline.Store
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.HttpURLConnection
@@ -29,6 +32,8 @@ import java.nio.file.Files
 import java.util.TreeMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.GZIPOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.test.Test
@@ -414,6 +419,92 @@ class OfflineTest {
         assertEquals(1, reread.count())
     }
 
+    // The PC reads /export through ServerAdmin, unzips into an emptied folder, and
+    // a store over that folder answers what the phone had recorded, which is what
+    // the offline build carries. A file being written aside is not exported.
+    // https://github.com/TeamNewPipe/NewPipe/blob/009b00ecb68d5036f3ecc6acac11eb09e5b2587c/app/src/main/java/org/schabi/newpipe/util/ZipHelper.java#addFileToZip
+    // https://github.com/TeamNewPipe/NewPipe/blob/009b00ecb68d5036f3ecc6acac11eb09e5b2587c/app/src/main/java/org/schabi/newpipe/util/ZipHelper.java#extractFileFromZip
+    @Test
+    fun exportedRecordingsUnzipOnThePcAndReplay() = rig { r ->
+        val live = r.get("/config?a=1")
+        r.post("/echo", "hi")
+        File(r.dir, "cache/stray.0.tmp").writeText("half")
+        val into = File(r.dir, "pc/recordings")
+        File(into, "stale.0").also { it.parentFile.mkdirs() }.writeText("old")
+
+        assertEquals(2, ServerAdmin.export(r.admin.listeningPort, into.toPath()))
+
+        assertFalse(File(into, "stale.0").exists(), "the folder is emptied first")
+        assertFalse(File(into, "stray.0.tmp").exists())
+        assertEquals(File(r.dir, "cache").list()!!.filter { !it.endsWith(".tmp") }.toSet(), into.list()!!.toSet())
+        val pc = Store(into)
+        val entry = assertNotNull(pc.latest("GET", r.origin, "/config"))
+        assertEquals("a=1", entry.query)
+        assertEquals(live.body, String(entry.body))
+        assertEquals(2, pc.urls().size)
+        val reply = r.admin("GET", "/export")
+        assertEquals(200, reply.code)
+    }
+
+    @Test
+    fun anExportEntryThatLeavesTheFolderIsRefused() {
+        val d = Files.createTempDirectory("gutapk-export")
+        try {
+            val bytes = ByteArrayOutputStream().also { raw ->
+                ZipOutputStream(raw).use { z ->
+                    z.putNextEntry(ZipEntry("a.0"))
+                    z.write(1)
+                    z.putNextEntry(ZipEntry("../evil.0"))
+                    z.write(2)
+                }
+            }.toByteArray()
+            val into = Files.createDirectories(d.resolve("pc/recordings"))
+            assertFailsWith<java.io.IOException> { ServerAdmin.extractFileFromZip(bytes, into) }
+            assertFalse(Files.exists(d.resolve("pc/evil.0")))
+            assertEquals(listOf("a.0"), into.toFile().list()!!.toList())
+        } finally {
+            d.toFile().deleteRecursively()
+        }
+    }
+
+    // The copy of the recordings in the assets into the cache of the phone: the
+    // folder is made, every file comes over, and a file the cache holds already
+    // (a recording made on the phone, newer) is kept.
+    // https://github.com/EKA2L1/EKA2L1/blob/6ad873a07ee3d745cd17179026dca247f6d11f6b/src/emu/android/app/src/main/java/com/github/eka2l1/util/FileUtils.java#copyAssetFolder
+    // https://github.com/EKA2L1/EKA2L1/blob/6ad873a07ee3d745cd17179026dca247f6d11f6b/src/emu/android/app/src/main/java/com/github/eka2l1/util/FileUtils.java#copyAssetFile
+    @Test
+    fun seedCopiesTheAssetsAndKeepsAFileTheCacheHolds() {
+        val shipped = mapOf("a.0" to "shipped a", "a.1" to "shipped body", "b.0" to "shipped b")
+        val assets = object : Seed.Assets {
+            override fun list(path: String): Array<String> = if (path == "gutapk/recordings") shipped.keys.toTypedArray() else emptyArray()
+            override fun open(fileName: String): java.io.InputStream = ByteArrayInputStream(shipped.getValue(fileName.substringAfterLast('/')).toByteArray())
+        }
+        val d = Files.createTempDirectory("gutapk-seed").toFile()
+        try {
+            val cache = File(d, "files/gutapk-offline/cache")
+            cache.mkdirs()
+            File(cache, "a.0").writeText("recorded on the phone")
+
+            assertTrue(Seed.copyAssetFolder(assets, "gutapk/recordings", cache.path))
+
+            assertEquals("recorded on the phone", File(cache, "a.0").readText())
+            assertEquals("shipped body", File(cache, "a.1").readText())
+            assertEquals("shipped b", File(cache, "b.0").readText())
+            assertEquals(setOf("a.0", "a.1", "b.0"), cache.list()!!.toSet())
+
+            // A first launch: the folder does not exist yet.
+            val fresh = File(d, "fresh/cache")
+            assertTrue(Seed.copyAssetFolder(assets, "gutapk/recordings", fresh.path))
+            assertEquals("shipped a", File(fresh, "a.0").readText())
+            assertEquals(3, fresh.list()!!.size)
+            // A second launch changes nothing.
+            assertTrue(Seed.copyAssetFolder(assets, "gutapk/recordings", fresh.path))
+            assertEquals(3, fresh.list()!!.size)
+        } finally {
+            d.deleteRecursively()
+        }
+    }
+
     // A redirect to the origin stays on this server, live and replayed, one to
     // another moved origin goes to its address, and any other is left alone.
     // https://github.com/ktorio/ktor-samples/blob/main/reverse-proxy/src/main/kotlin/io/ktor/samples/reverseproxy/ReverseProxyApplication.kt#L41-L52
@@ -452,6 +543,63 @@ class OfflineTest {
             }
         } finally {
             taken.close()
+            dir.deleteRecursively()
+        }
+    }
+
+    // mitmproxy's block_list: a matching request is answered with an empty response of the chosen
+    // status and never sent upstream. The stand-in server counts every call it gets.
+    // https://github.com/mitmproxy/mitmproxy/blob/main/mitmproxy/addons/blocklist.py#request
+    @Test
+    fun aBlockedOriginIsAnsweredWithNoContentAndNeverCalled() {
+        val upstream = Upstream()
+        val dir = Files.createTempDirectory("gutapk-offline-block").toFile()
+        val origin = "http://127.0.0.1:${upstream.port}"
+        val cache = Store(File(dir, "cache"))
+        val front = Server("127.0.0.1", 0, CacheInterceptor(origin, cache, Overrides(File(dir, "overrides.json")), ProxyResponseRenderer(), emptyMap(), 204))
+        try {
+            front.start()
+            val get = call(front.listeningPort, "GET", "/config?a=1")
+            assertEquals(204, get.code)
+            assertEquals("", get.body)
+            assertEquals("blocked", get.mode)
+            val post = call(front.listeningPort, "POST", "/event", """{"e":1}""")
+            assertEquals(204, post.code)
+            assertEquals("blocked", post.mode)
+            assertEquals(0, upstream.hits.get())
+            // Never recorded either.
+            assertNull(cache.get("GET", origin, "/config", "a=1", Store.sha256(ByteArray(0))))
+            assertEquals(0, dir.resolve("cache").listFiles().orEmpty().size)
+        } finally {
+            front.stop()
+            upstream.stop()
+            dir.deleteRecursively()
+        }
+    }
+
+    // block.<port> lines: true is the default status, a number is the status itself,
+    // a value that is neither leaves the origin served as any other.
+    @Test
+    fun startReadsTheBlockLinesOfTheConfig() {
+        val one = freePort()
+        val two = freePort()
+        val three = freePort()
+        val dir = Files.createTempDirectory("gutapk-offline-lines").toFile()
+        try {
+            val config = "listen.$one=https://one.example\nlisten.$two=https://two.example\nlisten.$three=https://three.example\n" +
+                "block.$one=true\nblock.$two=403\nblock.$three=maybe\n"
+            val offline = Offline.start(config.byteInputStream(), dir)
+            try {
+                assertEquals(mapOf(one to 204, two to 403), offline.items)
+                val one204 = call(one, "GET", "/x")
+                assertEquals(204, one204.code)
+                assertEquals("blocked", one204.mode)
+                assertEquals(403, call(two, "GET", "/x").code)
+                assertEquals("miss", call(three, "GET", "/x").mode)
+            } finally {
+                offline.stop()
+            }
+        } finally {
             dir.deleteRecursively()
         }
     }

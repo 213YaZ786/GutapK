@@ -8,8 +8,12 @@ import com.android.tools.smali.dexlib2.dexbacked.DexBackedDexFile
 import com.android.tools.smali.dexlib2.immutable.ImmutableClassDef
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethod
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethodImplementation
+import com.android.tools.smali.dexlib2.immutable.ImmutableMethodParameter
+import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction10x
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction11x
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction21c
+import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction35c
+import com.android.tools.smali.dexlib2.immutable.reference.ImmutableMethodReference
 import com.android.tools.smali.dexlib2.immutable.reference.ImmutableStringReference
 import com.android.tools.smali.dexlib2.writer.io.MemoryDataStore
 import com.android.tools.smali.dexlib2.writer.pool.DexPool
@@ -349,6 +353,18 @@ class InjectTest {
         assertFailsWith<IllegalArgumentException> { Inject.config("bim.app", mapOf("https://a\nb" to 24210)) }
     }
 
+    // A block.<port>=true line per blocked origin, none for an origin the config does not move.
+    // https://github.com/mitmproxy/mitmproxy/blob/main/mitmproxy/addons/blocklist.py#configure
+    @Test
+    fun theConfigMarksTheBlockedPorts() {
+        val ports = mapOf("https://bim-prod.jorge.st" to 24210, "https://events.tracker.example" to 24211, "wss://play.example.net:8443" to 24212)
+        val text = Inject.config("bim.app", ports, setOf("https://events.tracker.example", "https://elsewhere.example"))
+        val props = java.util.Properties().also { it.load(text.reader()) }
+        assertEquals(setOf("block.24211"), props.stringPropertyNames().filter { it.startsWith("block.") }.toSet())
+        assertEquals("true", props.getProperty("block.24211"))
+        assertFalse("block." in Inject.config("bim.app", ports))
+    }
+
     // The offline build.
 
     private fun ascii(text: String): ByteArray = text.toByteArray(Charsets.ISO_8859_1)
@@ -460,7 +476,7 @@ class InjectTest {
         z.getInputStream(z.getEntry(name) ?: throw AssertionError("$name is not in $apk")).use { it.readAllBytes() }
     }
 
-    private fun build(d: Path, apk: Path, out: Path = d.resolve("out/offline.apk"), servers: List<Endpoint>? = null) = OfflineBuild.run(
+    private fun build(d: Path, apk: Path, out: Path = d.resolve("out/offline.apk"), servers: List<Endpoint>? = null, recordings: Path? = null, sink: JobSink = quiet, blocked: Set<String> = emptySet(), consent: Boolean = true, signIn: Boolean = true) = OfflineBuild.run(
         input = apk,
         endpoints = servers ?: Endpoints.scan(apk).filter { it.likelyServer },
         dex = serverDex,
@@ -470,11 +486,157 @@ class InjectTest {
         key = TestKey.load(),
         minSdk = 16,
         appVersion = "test",
-        sink = quiet,
+        sink = sink,
+        recordings = recordings,
+        blocked = blocked,
+        consent = consent,
+        signIn = signIn,
     )
 
+    // A second dex with the game's call to a consent SDK: MRGSGDPR's
+    // showAgreementAtActivity, receiver in v0, the activity in v1 and the two names after.
+    // https://github.com/google/smali/blob/3.0.9/dexlib2/src/main/java/com/android/tools/smali/dexlib2/writer/pool/DexPool.java#writeTo
+    private fun consentDex(): ByteArray {
+        val show = ImmutableMethodReference(Inject.MRGS_CONSENT, "showAgreementAtActivity", listOf("Landroid/app/Activity;", "Ljava/lang/String;", "Ljava/lang/String;"), "V")
+        val code = ImmutableMethodImplementation(
+            4,
+            listOf(ImmutableInstruction35c(Opcode.INVOKE_VIRTUAL, 4, 0, 1, 2, 3, 0, show), ImmutableInstruction10x(Opcode.RETURN_VOID)),
+            null,
+            null,
+        )
+        val params = listOf(Inject.MRGS_CONSENT, "Landroid/app/Activity;", "Ljava/lang/String;", "Ljava/lang/String;").map { ImmutableMethodParameter(it, null, null) }
+        val method = ImmutableMethod("Lgame/Main;", "ask", params, "V", AccessFlags.STATIC.value, null, null, code)
+        val dexPool = DexPool(Opcodes.forApi(21))
+        dexPool.internClass(ImmutableClassDef("Lgame/Main;", AccessFlags.PUBLIC.value, "Ljava/lang/Object;", null, null, null, null, listOf(method)))
+        return MemoryDataStore().also { dexPool.writeTo(it) }.data
+    }
+
+    // The build marks the blocked origins in the config the server reads, and the dex
+    // that opens a consent window is written again with the call answered by Consent.
+    // A game that skips the switch keeps its dex byte for byte.
+    // https://github.com/mitmproxy/mitmproxy/blob/main/mitmproxy/addons/blocklist.py#configure
     @Test
-    fun theOfflineBuildCarriesItsServer() = withDir { d ->
+    fun theBuildBlocksTheChosenOriginsAndSkipsTheConsentWindow() = withDir { d ->
+        val apk = fakeApk(d, extra = listOf("classes2.dex" to consentDex()))
+        val lines = mutableListOf<String>()
+        val out = d.resolve("out/offline.apk")
+        assertTrue(build(d, apk, out, blocked = setOf(game), sink = object : JobSink {
+            override fun emit(event: JobEvent) {
+                if (event is JobEvent.Line) lines.add(event.text)
+            }
+        }).verified)
+        val props = java.util.Properties().also { it.load(entry(out, Inject.CONFIG).inputStream()) }
+        val port = props.stringPropertyNames().single { it.startsWith("listen.") && props.getProperty(it) == game }.substringAfter("listen.")
+        assertEquals(setOf("block.$port"), props.stringPropertyNames().filter { it.startsWith("block.") }.toSet())
+        assertEquals("true", props.getProperty("block.$port"))
+        assertTrue("1 servers answered on the phone, never called" in lines, lines.toString())
+        val call = DexBackedDexFile(null, entry(out, "classes2.dex")).classes.single().methods.single().implementation!!.instructions.first() as com.android.tools.smali.dexlib2.iface.instruction.formats.Instruction35c
+        assertEquals(Opcode.INVOKE_STATIC, call.opcode)
+        assertEquals(4, call.registerCount)
+        val reference = call.reference as com.android.tools.smali.dexlib2.iface.reference.MethodReference
+        assertEquals("Lio/gutapk/offline/Consent;", reference.definingClass)
+        assertEquals("showAgreementAtActivity", reference.name)
+        assertEquals(listOf("Ljava/lang/Object;", "Landroid/app/Activity;", "Ljava/lang/String;", "Ljava/lang/String;"), reference.parameterTypes.map { it.toString() })
+        assertTrue(lines.any { "1 consent windows answered" in it }, lines.toString())
+
+        // Nothing blocked, the switch off: no block line, the dex as it was.
+        val plain = d.resolve("out/plain.apk")
+        assertTrue(build(d, apk, plain, consent = false).verified)
+        assertFalse("block." in String(entry(plain, Inject.CONFIG)))
+        assertContentEquals(consentDex(), entry(plain, "classes2.dex"))
+    }
+
+    // A second dex with a GameHelper under an obfuscated name (its three methods) and the
+    // activity's call to its onStart: the dex is written again with the call answered by
+    // SignIn, the line counts it, and the switch off leaves the dex byte for byte.
+    // https://github.com/tvbarthel/ChaseWhisplyProject/blob/1d86fcc6b373e4a1d399a39868fd44187e119471/BaseGameUtils/src/main/java/com/google/example/games/basegameutils/GameHelper.java#onStart
+    @Test
+    fun theBuildTurnsTheAutomaticSignInOff() = withDir { d ->
+        val activity = "Landroid/app/Activity;"
+        val helper = "Lgame/a;"
+        val own = listOf("setConnectOnStart" to listOf("Z"), "beginUserInitiatedSignIn" to emptyList(), "onStart" to listOf(activity)).map { (name, params) ->
+            val code = ImmutableMethodImplementation(1 + params.size, listOf(ImmutableInstruction10x(Opcode.RETURN_VOID)), null, null)
+            ImmutableMethod(helper, name, params.map { ImmutableMethodParameter(it, null, null) }, "V", AccessFlags.PUBLIC.value, null, null, code)
+        }
+        val start = ImmutableMethodReference(helper, "onStart", listOf(activity), "V")
+        val code = ImmutableMethodImplementation(3, listOf(ImmutableInstruction35c(Opcode.INVOKE_VIRTUAL, 2, 1, 2, 0, 0, 0, start), ImmutableInstruction10x(Opcode.RETURN_VOID)), null, null)
+        val begin = ImmutableMethod("Lgame/Main;", "begin", listOf(helper, activity).map { ImmutableMethodParameter(it, null, null) }, "V", AccessFlags.STATIC.value, null, null, code)
+        val dexPool = DexPool(Opcodes.forApi(21))
+        dexPool.internClass(ImmutableClassDef(helper, AccessFlags.PUBLIC.value, "Ljava/lang/Object;", null, null, null, null, own))
+        dexPool.internClass(ImmutableClassDef("Lgame/Main;", AccessFlags.PUBLIC.value, "Ljava/lang/Object;", null, null, null, null, listOf(begin)))
+        val helperDex = MemoryDataStore().also { dexPool.writeTo(it) }.data
+        val apk = fakeApk(d, extra = listOf("classes2.dex" to helperDex))
+        val lines = mutableListOf<String>()
+        val out = d.resolve("out/offline.apk")
+        assertTrue(build(d, apk, out, sink = object : JobSink {
+            override fun emit(event: JobEvent) {
+                if (event is JobEvent.Line) lines.add(event.text)
+            }
+        }).verified)
+        val call = DexBackedDexFile(null, entry(out, "classes2.dex")).classes.single { it.type == "Lgame/Main;" }.methods.single().implementation!!.instructions.first() as com.android.tools.smali.dexlib2.iface.instruction.formats.Instruction35c
+        assertEquals(Opcode.INVOKE_STATIC, call.opcode)
+        val reference = call.reference as com.android.tools.smali.dexlib2.iface.reference.MethodReference
+        assertEquals("Lio/gutapk/offline/SignIn;", reference.definingClass)
+        assertEquals(listOf("Ljava/lang/Object;", activity), reference.parameterTypes.map { it.toString() })
+        assertTrue(lines.any { "1 sign-in calls answered" in it }, lines.toString())
+
+        val plain = d.resolve("out/plain.apk")
+        assertTrue(build(d, apk, plain, signIn = false).verified)
+        assertContentEquals(helperDex, entry(plain, "classes2.dex"))
+    }
+
+    // The recordings kept on the PC go into the APK as assets, name for name, the
+    // files being written aside left out, and the build says how many travel.
+    // https://github.com/213YaZ786/GutapK/blob/ca70230/src/main/kotlin/io/gutapk/core/offline/OfflineBuild.kt#run
+    @Test
+    fun theRecordingsKeptOnThePcTravelAsAssets() = withDir { d ->
+        val apk = fakeApk(d)
+        val folder = Files.createDirectories(OfflineBuild.recordings(d))
+        mapOf("k1.0" to "meta1", "k1.1" to "body1", "k1.2" to "", "k2.0" to "meta2", "k2.1" to "body2", "h.latest" to "k2", "k3.0.tmp" to "half").forEach { (name, text) ->
+            Files.write(folder.resolve(name), ascii(text))
+        }
+        val lines = mutableListOf<String>()
+        val out = d.resolve("out/offline.apk")
+        val check = build(d, apk, out, recordings = folder, sink = object : JobSink {
+            override fun emit(event: JobEvent) {
+                if (event is JobEvent.Line) lines.add(event.text)
+            }
+        })
+        assertTrue(check.verified, check.problems.joinToString())
+        assertEquals(2, OfflineBuild.count(folder))
+        assertTrue("2 recordings travel with the game" in lines, lines.toString())
+        val prefix = Inject.CONFIG.substringBeforeLast('/') + "/recordings/"
+        assertEquals("assets/gutapk/recordings/", prefix)
+        assertContentEquals(ascii("body2"), entry(out, prefix + "k2.1"))
+        assertContentEquals(ascii("meta1"), entry(out, prefix + "k1.0"))
+        assertContentEquals(ascii("k2"), entry(out, prefix + "h.latest"))
+        val names = ZipFile(out.toFile()).use { z -> z.entries().asSequence().map { it.name }.filter { it.startsWith(prefix) }.toSet() }
+        assertEquals(setOf("k1.0", "k1.1", "k1.2", "k2.0", "k2.1", "h.latest").map { prefix + it }.toSet(), names)
+        // The server's own asset is still there, and the signature verifies with them.
+        assertNotNull(entry(out, Inject.CONFIG))
+        assertTrue(ApkVerifier.Builder(out.toFile()).build().verify().isVerified)
+    }
+
+    @Test
+    fun noRecordingsMeansNoAssetAndNoLine() = withDir { d ->
+        val apk = fakeApk(d)
+        val lines = mutableListOf<String>()
+        val sink = object : JobSink {
+            override fun emit(event: JobEvent) {
+                if (event is JobEvent.Line) lines.add(event.text)
+            }
+        }
+        // A folder that does not exist, and one that is empty, are the same as none.
+        build(d, apk, d.resolve("out/a.apk"), recordings = d.resolve("recordings"), sink = sink)
+        build(d, apk, d.resolve("out/b.apk"), recordings = Files.createDirectories(d.resolve("empty")), sink = sink)
+        assertTrue(lines.none { "travel" in it }, lines.toString())
+        listOf("a", "b").forEach { n ->
+            ZipFile(d.resolve("out/$n.apk").toFile()).use { z -> assertTrue(z.entries().asSequence().none { it.name.startsWith("assets/gutapk/recordings") }) }
+        }
+    }
+
+    @Test
+    fun theOfflineBuildCarriesItsServer()= withDir { d ->
         val apk = fakeApk(d)
         val out = d.resolve("out/offline.apk")
         val check = build(d, apk, out)

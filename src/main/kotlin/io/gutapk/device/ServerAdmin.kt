@@ -1,7 +1,11 @@
 package io.gutapk.device
 
 import io.gutapk.core.offline.Inject
+import io.gutapk.core.offline.OfflineBuild
 import io.gutapk.tools.Json
+import io.gutapk.tools.Storage
+import java.io.BufferedInputStream
+import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -9,8 +13,12 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.time.Duration
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
 
 // What GET /status says: the mode of the last request (live, replay, miss or
 // none), the recordings held, the overrides set and the origin each port
@@ -77,7 +85,12 @@ object ServerAdmin {
     // since the server speaks no upgrade, and no proxy: the address is the
     // loopback of this computer. A body, or post, makes a POST.
     // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#send
-    fun send(local: Int, path: String, body: String? = null, post: Boolean = body != null): HttpResponse<String> {
+    fun send(local: Int, path: String, body: String? = null, post: Boolean = body != null): HttpResponse<String> =
+        send(local, path, body, post, HttpResponse.BodyHandlers.ofString())
+
+    // The same request with the answer read by the given handler: the zip of
+    // /export is bytes, not text.
+    fun <T> send(local: Int, path: String, body: String?, post: Boolean, handler: HttpResponse.BodyHandler<T>): HttpResponse<T> {
         val client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).connectTimeout(Duration.ofSeconds(TIMEOUT_S)).build()
         val uri = URI("http", null, "127.0.0.1", local, path, null, null)
         val builder = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(TIMEOUT_S))
@@ -87,7 +100,7 @@ object ServerAdmin {
             builder.header("Content-Type", "application/json").POST(if (body == null) HttpRequest.BodyPublishers.noBody() else HttpRequest.BodyPublishers.ofString(body)).build()
         }
         try {
-            return client.send(request, HttpResponse.BodyHandlers.ofString())
+            return client.send(request, handler)
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
             throw IOException("the request was interrupted")
@@ -123,6 +136,44 @@ object ServerAdmin {
 
     // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#set
     fun clear(local: Int): Answer = send(local, "/clear", post = true).let { parseAnswer(it.statusCode(), it.body()) }
+
+    // GET /export: the zip of every file of the store, unzipped into the given
+    // folder, which is emptied first. Returns the recordings, the files of
+    // metadata. The folder is emptied only once the zip is in hand, so a phone
+    // that does not answer leaves the earlier recordings.
+    // https://github.com/TeamNewPipe/NewPipe/blob/009b00ecb68d5036f3ecc6acac11eb09e5b2587c/app/src/main/java/org/schabi/newpipe/util/ZipHelper.java#extractFileFromZip
+    // not ported: the StoredFileHelper and nameInZip overloads of extractFileFromZip (the zip is in memory and every entry is taken, not one by name)
+    // not ported: InputStreamConsumer, acceptStream (Files.copy is called in the loop)
+    // not ported: addFileToZip, OutputStreamConsumer (the zip is written on the phone, in Routes.java)
+    // not ported: zipContainsFile, isValidZipFile (a zip that is not one fails the loop)
+    fun export(local: Int, into: Path): Int {
+        val response = send(local, "/export", null, false, HttpResponse.BodyHandlers.ofByteArray())
+        if (response.statusCode() != 200) throw IOException("the server answered ${response.statusCode()} to the export: ${String(response.body(), Charsets.UTF_8).take(200)}")
+        val zipFile = response.body()
+        if (!Storage.deleteTree(into, into.toAbsolutePath().parent)) throw IOException("could not empty $into")
+        Files.createDirectories(into)
+        return extractFileFromZip(zipFile, into)
+    }
+
+    // The loop of extractFileFromZip over every entry. A name with a folder in
+    // it, or a dot name, is refused before that entry is written: the files of
+    // the store are plain names, anything else would leave the folder (zip slip).
+    // https://github.com/TeamNewPipe/NewPipe/blob/009b00ecb68d5036f3ecc6acac11eb09e5b2587c/app/src/main/java/org/schabi/newpipe/util/ZipHelper.java#extractFileFromZip
+    internal fun extractFileFromZip(zipFile: ByteArray, path: Path): Int {
+        var recordings = 0
+        ZipInputStream(BufferedInputStream(ByteArrayInputStream(zipFile))).use { inZip ->
+            var ze: ZipEntry?
+            while (inZip.nextEntry.also { ze = it } != null) {
+                val nameInZip = ze!!.name
+                if (nameInZip.isEmpty() || nameInZip == "." || nameInZip == ".." || nameInZip.any { it == '/' || it == '\\' || it == '\u0000' }) {
+                    throw IOException("the export holds an entry that is not a plain file name: " + nameInZip.take(80))
+                }
+                Files.copy(inZip, path.resolve(nameInZip), StandardCopyOption.REPLACE_EXISTING)
+                if (nameInZip.endsWith(OfflineBuild.ENTRY)) recordings++
+            }
+        }
+        return recordings
+    }
 
     // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#parseParams
     internal fun parseStatus(text: String): Status {

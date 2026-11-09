@@ -1,5 +1,7 @@
 package io.gutapk.core.offline
 
+import io.gutapk.core.apk.Tracker
+import io.gutapk.core.apk.Trackers
 import java.nio.file.Path
 import java.util.zip.ZipFile
 
@@ -193,6 +195,76 @@ object Endpoints {
         val (servers, possible) = if (own.isNotEmpty()) calls.partition { it in own } else calls.partition { inCode(it) > 0 }
         val by = compareByDescending<Endpoint> { inCode(it) }.thenByDescending { it.occurrences.size }
         return Listing(servers.sortedWith(by), possible.sortedWith(by), links.sortedWith(by), short.sortedWith(by), rest.sortedWith(by))
+    }
+
+    // Which addresses leave the phone: logging and ads must not. The origins
+    // as order has them, each with the reason it is blocked by default, none
+    // for the ones left to the game. An origin is blocked when its host
+    // matches the network signature of a tracker found in the app, or when
+    // every place it is found is the code of a library that is not the app's.
+    // A place in a native library, in an asset or in the data is the app's.
+    // A library is a class whose package begins with a namespace the app does
+    // not own: the app owns the first two labels of its package name, of its
+    // application and of its launcher activity, and every obfuscated one-letter package.
+    // not ported: pack, served, origin, match (no server app stands in for a server here)
+    // https://github.com/213YaZ786/GutapK/blob/ca70230/src/main/kotlin/io/gutapk/core/offline/Endpoints.kt#order
+    fun blocklist(endpoints: List<Endpoint>, trackers: List<Tracker>, own: Set<String>, classes: Map<String, Set<String>>): Map<String, String> {
+        val blocked = LinkedHashMap<String, String>()
+        for (e in endpoints) {
+            if (!e.likelyServer || Redirect.target(e.origin, port = Redirect.FITTING_PORT) == null) continue
+            val domain = e.origin.substringAfter("://").substringBefore(':')
+            val tracker = Trackers.detect_trackers_in_list(listOf(domain.lowercase()), trackers).firstOrNull()
+            if (tracker != null) {
+                blocked[e.origin] = "tracker: ${tracker.name}"
+                continue
+            }
+            val held = classes[e.origin].orEmpty()
+            if (held.isEmpty()) continue
+            val libraries = held.map { library(it, own) }
+            if (libraries.any { it == null }) continue
+            // An asset named after one of those libraries is its data, as
+            // MRGS's assets/mrgsgdpr_langs.json: it does not make the origin the app's.
+            val labels = libraries.filterNotNull().map { it.substringAfterLast('.').lowercase() }.filter { it.length >= 3 }
+            if (e.occurrences.any { o -> !DexHeader.isDex(o.file) && labels.none { o.file.substringAfterLast('/').lowercase().startsWith(it) } }) continue
+            blocked[e.origin] = "library: " + libraries.filterNotNull().distinct().sorted().take(2).joinToString(", ")
+        }
+        return blocked
+    }
+
+    // The first two labels of a package: ru.mail for ru.mail.games.android.
+    fun namespace(name: String): String = name.split('.').take(2).joinToString(".")
+
+    // What the app owns: the namespace of its package name and of every name
+    // given, the application's and the launcher activity's. The other
+    // components of a manifest are often a library's.
+    fun owned(packageName: String, names: List<String>): Set<String> =
+        (names.map { namespace(it.substringBeforeLast('.', "")) } + namespace(packageName)).filter { it.isNotEmpty() }.toSet()
+
+    // The library a class descriptor belongs to, as its first three labels
+    // (games.my.mrgs), null when the app owns it. The default package and a
+    // package whose first label is one letter are the app's, a name an
+    // obfuscator gives.
+    fun library(descriptor: String, own: Set<String>): String? {
+        val name = descriptor.removePrefix("L").removeSuffix(";").replace('/', '.')
+        val labels = name.substringBeforeLast('.', "").split('.').filter { it.isNotEmpty() }
+        if (labels.isEmpty() || labels.first().length == 1) return null
+        return if (namespace(labels.joinToString(".")) in own) null else labels.take(3).joinToString(".")
+    }
+
+    // The classes of the dex files of an APK that hold each origin, merged:
+    // origin to class descriptors, read by the dex rewriter's scan.
+    fun holders(apk: Path, endpoints: List<Endpoint>, strings: DexStringRewrite): Map<String, Set<String>> {
+        val origins = endpoints.filter { e -> e.occurrences.any { DexHeader.isDex(it.file) } }.map { it.origin }
+        val servers = HashMap<String, MutableSet<String>>()
+        if (origins.isEmpty()) return servers
+        ZipFile(apk.toFile()).use { zip ->
+            for (file in zip.entries()) {
+                if (file.isDirectory || !DexHeader.isDex(file.name)) continue
+                val content = zip.getInputStream(file).use { it.readAllBytes() }
+                for ((origin, held) in strings.classes(content, origins)) servers.getOrPut(origin) { HashSet() }.addAll(held)
+            }
+        }
+        return servers
     }
 
     // LinkFinder's parser_file: every match of the regex in the content, kept

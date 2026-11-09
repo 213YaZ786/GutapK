@@ -379,6 +379,7 @@ fun OverviewScreen(
             )
             "admin" -> if (root != null) AdminDialog(
                 root = root,
+                dir = dir,
                 info = info,
                 onDismiss = { dialog = null },
             )

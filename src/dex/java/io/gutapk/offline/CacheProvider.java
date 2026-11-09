@@ -14,6 +14,7 @@ package io.gutapk.offline;
 import android.content.ContentProvider;
 import android.content.ContentValues;
 import android.content.Context;
+import android.content.res.AssetManager;
 import android.database.Cursor;
 import android.net.Uri;
 import android.util.Log;
@@ -57,10 +58,33 @@ public class CacheProvider extends ContentProvider {
     }
   }
 
-  private static void start(Context context) throws IOException {
+  /** Where the recordings kept on the PC sit in the game's assets. */
+  static final String RECORDINGS = "gutapk/recordings";
+
+  private static void start(final Context context) throws IOException {
     InputStream source = context.getAssets().open(CONFIG);
     try {
-      Offline.start(source, new File(context.getFilesDir(), "gutapk-offline"));
+      File root = new File(context.getFilesDir(), "gutapk-offline");
+      // The recordings that travel with the game join the cache before the server
+      // reads it, so the very first launch can answer with no network.
+      // https://github.com/EKA2L1/EKA2L1/blob/6ad873a07ee3d745cd17179026dca247f6d11f6b/src/emu/android/app/src/main/java/com/github/eka2l1/util/FileUtils.java#copyAssetFolder
+      // Not ported: the other helpers of FileUtils (see Seed)
+      final AssetManager assets = context.getAssets();
+      String[] fileList = assets.list(RECORDINGS);
+      if (fileList != null && fileList.length != 0) {
+        Seed.copyAssetFolder(new Seed.Assets() {
+          @Override
+          public String[] list(String path) throws IOException {
+            return assets.list(path);
+          }
+
+          @Override
+          public InputStream open(String fileName) throws IOException {
+            return assets.open(fileName);
+          }
+        }, RECORDINGS, new File(root, "cache").getPath());
+      }
+      Offline.start(source, root);
     } finally {
       source.close();
     }

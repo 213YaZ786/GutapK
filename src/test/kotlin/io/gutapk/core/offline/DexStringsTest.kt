@@ -14,6 +14,7 @@ import com.android.tools.smali.dexlib2.immutable.ImmutableField
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethod
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethodImplementation
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethodParameter
+import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction10x
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction11x
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction21c
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction35c
@@ -78,6 +79,66 @@ class DexStringsTest {
         }
     }
 
+    // The classes that hold an origin: the one with the constant value of a field and the
+    // const-string of a method, an origin the dex does not hold is not in the answer.
+    // https://github.com/google/smali/blob/3.0.9/third_party/baksmali/src/main/java/com/android/tools/smali/baksmali/Adaptors/ClassDefinition.java#writeStaticFields
+    @Test
+    fun theClassesHoldingAnOriginAreFound() {
+        val held = DexStrings().classes(dex(), listOf(api, "https://developer.apple.com", "https://absent.example.org"))
+        assertEquals(mapOf(api to setOf(type), "https://developer.apple.com" to setOf(type)), held)
+        assertEquals(emptyMap(), DexStrings().classes(dex(), listOf("https://absent.example.org")))
+    }
+
+    // MRGSGDPR.showAgreementAtActivity as Jungle Heat 2.2.7 calls it, the SDK's receiver in v0 and
+    // the activity and the two names after it: the call goes to Consent, the receiver as an Object
+    // since the server's dex knows no SDK, the registers as they were.
+    // https://github.com/google/smali/blob/3.0.9/dexlib2/src/main/java/com/android/tools/smali/dexlib2/rewriter/InstructionRewriter.java#L191-L252
+    @Test
+    fun aConsentCallIsAnsweredByTheServer() {
+        val sdk = Inject.MRGS_CONSENT
+        val activity = "Landroid/app/Activity;"
+        val string = "Ljava/lang/String;"
+        val show = ImmutableMethodReference(sdk, "showAgreementAtActivity", listOf(activity, string, string), "V")
+        val other = ImmutableMethodReference(sdk, "setDelegate", listOf("Lgames/my/mrgs/gdpr/MRGSGDPR\$MRGSGDPRDelegate;"), "V")
+        val code = ImmutableMethodImplementation(
+            4,
+            listOf(
+                ImmutableInstruction35c(Opcode.INVOKE_VIRTUAL, 2, 0, 1, 0, 0, 0, other),
+                ImmutableInstruction35c(Opcode.INVOKE_VIRTUAL, 4, 0, 1, 2, 3, 0, show),
+                ImmutableInstruction10x(Opcode.RETURN_VOID),
+            ),
+            null,
+            null,
+        )
+        val params = listOf(sdk, activity, string, string).map { ImmutableMethodParameter(it, null, null) }
+        val method = ImmutableMethod(type, "ask", params, "V", AccessFlags.STATIC.value, null, null, code)
+        val dexPool = DexPool(Opcodes.forApi(21))
+        dexPool.internClass(ImmutableClassDef(type, AccessFlags.PUBLIC.value, "Ljava/lang/Object;", null, null, null, null, listOf(method)))
+        val dataStore = MemoryDataStore()
+        dexPool.writeTo(dataStore)
+        // The call is in the dex, found without being rewritten.
+        assertEquals(setOf("$sdk->showAgreementAtActivity($activity$string$string)V"), DexStrings().found(dataStore.data, Inject.CONSENT_CALLS))
+        assertEquals(emptySet(), DexStrings().found(dex(), Inject.CONSENT_CALLS))
+        val out = Files.createTempFile("gutapk", ".dex")
+        try {
+            val changed = DexStrings().writeTo(out, dataStore.data, emptyMap(), Inject.CONSENT_CALLS)
+            assertEquals(setOf("$sdk->showAgreementAtActivity($activity$string$string)V"), changed)
+            val instructions = DexBackedDexFile(null, Files.readAllBytes(out)).classes.single().methods.single().implementation!!.instructions.toList()
+            // Another call of the SDK is left alone.
+            assertEquals(Opcode.INVOKE_VIRTUAL, instructions[0].opcode)
+            val call = instructions[1] as Instruction35c
+            assertEquals(Opcode.INVOKE_STATIC, call.opcode)
+            assertEquals(listOf(4, 0, 1, 2, 3), listOf(call.registerCount, call.registerC, call.registerD, call.registerE, call.registerF))
+            val reference = call.reference as MethodReference
+            assertEquals("Lio/gutapk/offline/Consent;", reference.definingClass)
+            assertEquals("showAgreementAtActivity", reference.name)
+            assertEquals(listOf("Ljava/lang/Object;", activity, string, string), reference.parameterTypes.map { it.toString() })
+            assertEquals("V", reference.returnType)
+        } finally {
+            Files.deleteIfExists(out)
+        }
+    }
+
     // Jungle Heat 2.2.7's Device.isNetworkAvailable: the manager's
     // getActiveNetworkInfo, then isConnected. With the phone in flight mode
     // the game stopped there. The call goes to the server's Net, the receiver
@@ -121,6 +182,82 @@ class DexStringsTest {
             assertEquals(listOf(manager), reference.parameterTypes.map { it.toString() })
             assertEquals(info, reference.returnType)
             assertEquals(Opcode.INVOKE_VIRTUAL, instructions[2].opcode)
+        } finally {
+            Files.deleteIfExists(out)
+        }
+    }
+
+    // A GameHelper under an obfuscated name, as BaseGameUtils' copy in Jungle Heat 2.2.7 defines
+    // them: a virtual method each, the class found by the three and by nothing else.
+    // https://github.com/google/smali/blob/3.0.9/third_party/baksmali/src/main/java/com/android/tools/smali/baksmali/Adaptors/ClassDefinition.java#writeVirtualMethods
+    private fun helperDex(name: String, methods: List<Pair<String, List<String>>>, caller: Boolean = false): ByteArray {
+        val helper = "Lgame/$name;"
+        val own = methods.map { (method, params) ->
+            val code = ImmutableMethodImplementation(1 + params.size, listOf(ImmutableInstruction10x(Opcode.RETURN_VOID)), null, null)
+            ImmutableMethod(helper, method, params.map { ImmutableMethodParameter(it, null, null) }, "V", AccessFlags.PUBLIC.value, null, null, code)
+        }
+        val dexPool = DexPool(Opcodes.forApi(21))
+        dexPool.internClass(ImmutableClassDef(helper, AccessFlags.PUBLIC.value, "Ljava/lang/Object;", null, null, null, null, own))
+        if (caller) {
+            // The activity's onStart: the helper and the activity are the two parameters, v1 and v2.
+            val start = ImmutableMethodReference(helper, "onStart", listOf("Landroid/app/Activity;"), "V")
+            val code = ImmutableMethodImplementation(
+                3,
+                listOf(ImmutableInstruction35c(Opcode.INVOKE_VIRTUAL, 2, 1, 2, 0, 0, 0, start), ImmutableInstruction10x(Opcode.RETURN_VOID)),
+                null,
+                null,
+            )
+            val params = listOf(helper, "Landroid/app/Activity;").map { ImmutableMethodParameter(it, null, null) }
+            val method = ImmutableMethod("Lgame/Main;", "begin", params, "V", AccessFlags.STATIC.value, null, null, code)
+            dexPool.internClass(ImmutableClassDef("Lgame/Main;", AccessFlags.PUBLIC.value, "Ljava/lang/Object;", null, null, null, null, listOf(method)))
+        }
+        return MemoryDataStore().also { dexPool.writeTo(it) }.data
+    }
+
+    private val activity = "Landroid/app/Activity;"
+    private val all = listOf("setConnectOnStart" to listOf("Z"), "beginUserInitiatedSignIn" to emptyList(), "onStart" to listOf(activity))
+
+    @Test
+    fun aClassWithTheThreeMethodsIsAHelperWhateverItsName() {
+        assertEquals(setOf("Lgame/a/b;"), DexStrings().helpers(helperDex("a/b", all)))
+        assertEquals(setOf("Lgame/GameHelper;"), DexStrings().helpers(helperDex("GameHelper", all + ("signOut" to emptyList()))))
+    }
+
+    @Test
+    fun aClassWithTwoOfTheThreeMethodsIsNotAHelper() {
+        for (left in all.indices) {
+            assertEquals(emptySet(), DexStrings().helpers(helperDex("GameHelper", all.filterIndexed { i, _ -> i != left })), "without ${all[left].first}")
+        }
+        // The names are not enough: onStart with another signature is another method.
+        assertEquals(emptySet(), DexStrings().helpers(helperDex("GameHelper", all.dropLast(1) + ("onStart" to emptyList()))))
+        assertEquals(emptySet(), DexStrings().helpers(dex()))
+    }
+
+    // The activity's call to the helper's onStart goes to SignIn, the helper as an Object and the
+    // registers as they were, found in the dex and left alone when it is not the helper's.
+    // https://github.com/google/smali/blob/3.0.9/dexlib2/src/main/java/com/android/tools/smali/dexlib2/rewriter/InstructionRewriter.java#L191-L252
+    @Test
+    fun theHelpersStartIsAnsweredBySignIn() {
+        val input = helperDex("GameHelper", all, caller = true)
+        val calls = Inject.onStart(DexStrings().helpers(input))
+        val start = "Lgame/GameHelper;->onStart(Landroid/app/Activity;)V"
+        assertEquals(mapOf(start to "Lio/gutapk/offline/SignIn;", "Lgame/GameHelper;->beginUserInitiatedSignIn()V" to "Lio/gutapk/offline/SignIn;"), calls)
+        assertEquals(calls.keys, DexStrings().found(input, calls))
+        val out = Files.createTempFile("gutapk", ".dex")
+        try {
+            // Only the start is called in this dex, the sign-in method is only defined.
+            assertEquals(setOf(start), DexStrings().writeTo(out, input, emptyMap(), calls))
+            val back = DexBackedDexFile(null, Files.readAllBytes(out))
+            val call = back.classes.single { it.type == "Lgame/Main;" }.methods.single().implementation!!.instructions.first() as Instruction35c
+            assertEquals(Opcode.INVOKE_STATIC, call.opcode)
+            assertEquals(listOf(2, 1, 2), listOf(call.registerCount, call.registerC, call.registerD))
+            val reference = call.reference as MethodReference
+            assertEquals("Lio/gutapk/offline/SignIn;", reference.definingClass)
+            assertEquals("onStart", reference.name)
+            assertEquals(listOf("Ljava/lang/Object;", activity), reference.parameterTypes.map { it.toString() })
+            assertEquals("V", reference.returnType)
+            // The helper's own onStart is still there for SignIn to call.
+            assertTrue(back.classes.single { it.type == "Lgame/GameHelper;" }.virtualMethods.any { it.name == "onStart" })
         } finally {
             Files.deleteIfExists(out)
         }

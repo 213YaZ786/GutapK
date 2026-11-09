@@ -18,10 +18,16 @@ package io.gutapk.offline;
  * Copyright (C) 2012 - 2016 nanohttpd, BSD 3-Clause, the licence text sits in Http.java.
  */
 
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -78,6 +84,7 @@ public final class Routes implements Http.Handler {
         addRoute("/set", new SetHandler());
         addRoute("/reset-overrides", new ResetHandler());
         addRoute("/clear", new ClearHandler());
+        addRoute("/export", new ExportHandler());
     }
 
     public void addRoute(String url, UriResponder handler) {
@@ -111,7 +118,7 @@ public final class Routes implements Http.Handler {
         String work = normalizeUri(session.getUri());
         UriResponder responder = router.get(work);
         if (responder == null) {
-            return json(404, error("not found", "Routes: /status /entries /values /set /reset-overrides /clear"));
+            return json(404, error("not found", "Routes: /status /entries /values /set /reset-overrides /clear /export"));
         }
         String error = "General error!";
         try {
@@ -265,6 +272,70 @@ public final class Routes implements Http.Handler {
         public Http.Response post(Http session) {
             cache.evictAll();
             return json(200, ok());
+        }
+    }
+
+    /**
+     * GET /export: a zip of every file of the store, kept on the PC to travel
+     * with the game. The store is held while the zip is written, so no answer
+     * is half replaced in it.
+     * https://github.com/TeamNewPipe/NewPipe/blob/009b00ecb68d5036f3ecc6acac11eb09e5b2587c/app/src/main/java/org/schabi/newpipe/util/ZipHelper.java#addFileToZip
+     */
+    private class ExportHandler extends UriResponder {
+        @Override
+        public Http.Response get(Http session) {
+            try {
+                ByteArrayOutputStream byteOutput = new ByteArrayOutputStream();
+                ZipOutputStream outZip = new ZipOutputStream(byteOutput);
+                try {
+                    synchronized (cache) {
+                        for (File path : cache.files()) {
+                            addFileToZip(outZip, path.getName(), path);
+                        }
+                    }
+                } finally {
+                    outZip.close();
+                }
+                return Http.Response.newFixedLengthResponse(200, "application/zip", byteOutput.toByteArray());
+            } catch (IOException e) {
+                return json(500, error("internal", "Export: " + e.getMessage()));
+            }
+        }
+    }
+
+    /**
+     * This function helps to create zip files.
+     *
+     * @param outZip     the ZipOutputStream where the data should be stored in
+     * @param nameInZip  the path of the file inside the zip
+     * @param path       the path of the file on the disk that should be added to zip
+     *
+     * https://github.com/TeamNewPipe/NewPipe/blob/009b00ecb68d5036f3ecc6acac11eb09e5b2587c/app/src/main/java/org/schabi/newpipe/util/ZipHelper.java#addFileToZip
+     * not ported: OutputStreamConsumer, acceptStream (the overload with a consumer: no caller needs it)
+     * not ported: InputStreamConsumer, extractFileFromZip, zipContainsFile, isValidZipFile (the PC side reads the zip, ServerAdmin)
+     */
+    static void addFileToZip(ZipOutputStream outZip, String nameInZip, File path) throws IOException {
+        // java.nio.file.Files is not on the phones this runs on before Android 8, a stream is.
+        InputStream inputStream = new FileInputStream(path);
+        try {
+            addFileToZip(outZip, nameInZip, inputStream);
+        } finally {
+            inputStream.close();
+        }
+    }
+
+    /**
+     * @param outZip      the ZipOutputStream where the data should be stored in
+     * @param nameInZip   the path of the file inside the zip
+     * @param inputStream the content to put inside the file
+     */
+    private static void addFileToZip(ZipOutputStream outZip, String nameInZip, InputStream inputStream) throws IOException {
+        outZip.putNextEntry(new ZipEntry(nameInZip));
+        // InputStream#transferTo is Java 9, and Android has it from API 33 only.
+        byte[] buffer = new byte[8192];
+        int read;
+        while ((read = inputStream.read(buffer)) >= 0) {
+            outZip.write(buffer, 0, read);
         }
     }
 

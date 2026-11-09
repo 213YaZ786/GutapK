@@ -32,6 +32,18 @@ public class Offline {
     /** target.<port> is the address the app holds in place of that port's origin. */
     public static final String TARGET = "target.";
 
+    /**
+     * block.<port> is the status that origin is answered with, on the phone,
+     * without a call: true for the default status. Like mitmproxy's block_list
+     * option, one spec per origin.
+     */
+    public static final String BLOCK = "block.";
+
+    public static final int NO_CONTENT = 204;
+
+    /** The block list: the port of a blocked origin to the status_code it is answered with. */
+    public final Map<Integer, Integer> items = new TreeMap<Integer, Integer>();
+
     public final List<Server> servers = new ArrayList<Server>();
 
     public final Map<Integer, String> origins = new TreeMap<Integer, String>();
@@ -63,6 +75,16 @@ public class Offline {
                 options.origins.put(Integer.parseInt(name.substring(LISTEN.length()).trim()), args.getProperty(name).trim());
             } else if (name.startsWith(TARGET)) {
                 moved.put(Integer.parseInt(name.substring(TARGET.length()).trim()), args.getProperty(name).trim());
+            } else if (name.startsWith(BLOCK)) {
+                // configure: the list is emptied, then each option of block_list is parsed into a spec.
+                // https://github.com/mitmproxy/mitmproxy/blob/main/mitmproxy/addons/blocklist.py#configure
+                int port = Integer.parseInt(name.substring(BLOCK.length()).trim());
+                try {
+                    options.items.put(port, parse_spec(args.getProperty(name).trim()));
+                } catch (IllegalArgumentException e) {
+                    // OptionsError in mitmproxy stops the run, here the origin is only served as any other.
+                    Server.LOG.log(Level.WARNING, "Cannot parse block_list option " + name + ": " + e.getMessage());
+                }
             } else if ("admin".equals(name)) {
                 admin = args.getProperty(name).trim();
             }
@@ -78,11 +100,12 @@ public class Offline {
         options.overrides = new Overrides(new File(rootDirs, "overrides.json"));
         ProxyResponseRenderer renderer = new ProxyResponseRenderer();
         for (Map.Entry<Integer, String> origin : options.origins.entrySet()) {
-            Server server = new Server(host, origin.getKey(), new CacheInterceptor(origin.getValue(), options.cache, options.overrides, renderer, targets));
+            int status_code = options.items.containsKey(origin.getKey()) ? options.items.get(origin.getKey()) : 0;
+            Server server = new Server(host, origin.getKey(), new CacheInterceptor(origin.getValue(), options.cache, options.overrides, renderer, targets, status_code));
             try {
                 server.start();
                 options.servers.add(server);
-                Server.LOG.info("Offline cache for " + origin.getValue() + " on " + host + ":" + origin.getKey());
+                Server.LOG.info((status_code == 0 ? "Offline cache for " : "Blocked, answered " + status_code + " without a call: ") + origin.getValue() + " on " + host + ":" + origin.getKey());
             } catch (IOException e) {
                 Server.LOG.log(Level.WARNING, "Port " + origin.getKey() + " not bound, another process serves it: " + e);
             }
@@ -98,6 +121,28 @@ public class Offline {
             }
         }
         return options;
+    }
+
+    /**
+     * One block.<port> value as a status code: true is the default status, a
+     * number is the status itself, as parse_spec reads the status of
+     * "/flow-filter/status". The filter is the port, the line's name. A
+     * number is read as SimpleWebServer.main reads the port of its options.
+     * https://github.com/mitmproxy/mitmproxy/blob/main/mitmproxy/addons/blocklist.py#parse_spec
+     * https://github.com/NanoHttpd/nanohttpd/blob/master/webserver/src/main/java/org/nanohttpd/webserver/SimpleWebServer.java#main
+     * Not ported: main (start is the Offline.start that already cites it)
+     */
+    static int parse_spec(String option) {
+        String status = option;
+        int status_code = NO_CONTENT;
+        if (!"true".equals(status)) {
+            try {
+                status_code = Integer.parseInt(status);
+            } catch (NumberFormatException ignored) {
+                throw new IllegalArgumentException("Invalid HTTP status code: " + status);
+            }
+        }
+        return status_code;
     }
 
     public void stop() {

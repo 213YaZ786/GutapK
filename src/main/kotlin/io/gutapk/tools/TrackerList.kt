@@ -69,16 +69,20 @@ object TrackerList {
         sink.emit(JobEvent.Line("$count trackers saved to $target"))
     }
 
-    // Each tracker keeps its name, categories and the class prefixes of its
-    // code signature. An empty signature cannot match anything and is left out.
+    // Each tracker keeps its name, categories, the class prefixes of its code
+    // signature and the host regex of its network signature (one that does
+    // not compile is left out). A tracker with neither cannot match
+    // anything and is left out.
     internal fun parse(text: String): List<Tracker> {
         val root = Json.parse(text) as? Map<*, *> ?: throw IOException("the tracker list is not a JSON object")
         val all = root["trackers"] as? Map<*, *> ?: throw IOException("the tracker list has no trackers")
         return all.values.filterIsInstance<Map<*, *>>().mapNotNull { t ->
             val name = t["name"] as? String ?: return@mapNotNull null
             val prefixes = (t["code_signature"] as? String).orEmpty().split('|').map { it.trim() }.filter { it.isNotEmpty() }
-            if (prefixes.isEmpty()) return@mapNotNull null
-            Tracker(name, (t["categories"] as? List<*>).orEmpty().filterIsInstance<String>(), prefixes)
+            // One regex, as Exodus compiles it: the bars are its alternatives.
+            val hosts = listOfNotNull((t["network_signature"] as? String)?.trim()?.takeIf { it.isNotEmpty() }?.let { runCatching { Regex(it) }.getOrNull() })
+            if (prefixes.isEmpty() && hosts.isEmpty()) return@mapNotNull null
+            Tracker(name, (t["categories"] as? List<*>).orEmpty().filterIsInstance<String>(), prefixes, hosts)
         }.sortedBy { it.name.lowercase() }
     }
 }
