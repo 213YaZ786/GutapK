@@ -11,12 +11,15 @@ dbus-java = "5.2.2"
 # Material You colour generation from one seed, MIT. The utilities module
 # only, pure Kotlin: the Compose module would pull material3 up to an alpha.
 materialkolor = "5.0.1"
+# Charts for Compose Multiplatform, Apache-2.0.
+vico = "3.3.1"
 
 [libraries]
 apksig = { module = "com.android.tools.build:apksig", version.ref = "apksig" }
 dbus-java-core = { module = "com.github.hypfvieh:dbus-java-core", version.ref = "dbus-java" }
 dbus-java-transport = { module = "com.github.hypfvieh:dbus-java-transport-native-unixsocket", version.ref = "dbus-java" }
 materialkolor-utilities = { module = "com.materialkolor:material-color-utilities", version.ref = "materialkolor" }
+vico-compose-m3 = { module = "com.patrykandpatrick.vico:compose-m3", version.ref = "vico" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

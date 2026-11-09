@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "io.gutapk"
-version = "0.1.114"
+version = "0.1.115"
 
 kotlin {
     jvmToolchain(21)
@@ -21,6 +21,7 @@ dependencies {
     implementation(libs.dbus.java.core)
     implementation(libs.dbus.java.transport)
     implementation(libs.materialkolor.utilities)
+    implementation(libs.vico.compose.m3)
     testImplementation(kotlin("test"))
 }
 

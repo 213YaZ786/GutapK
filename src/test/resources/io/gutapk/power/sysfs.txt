@@ -1,0 +1,6 @@
+status=Not charging
+capacity=100
+current_now=900000
+voltage_now=5000000
+temp=250
+charge_counter=10000

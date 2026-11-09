@@ -52,7 +52,7 @@ private val TARGETS = listOf(null to "dev_r_system", "recovery" to "dev_r_recove
 // One device, read once on entry: identity, system, battery, storage and
 // users. The pill restarts it, after showing the exact command.
 @Composable
-fun DevicePage(adb: Path, d: AdbDevice, onBack: () -> Unit) {
+fun DevicePage(adb: Path, d: AdbDevice, onLive: () -> Unit, onBack: () -> Unit) {
     val state by produceState<InfoState>(InfoState.Reading, adb, d.serial) {
         value = withContext(Dispatchers.IO) {
             val read = runCatching { DeviceReader.read(adb, d.serial) }
@@ -76,7 +76,7 @@ fun DevicePage(adb: Path, d: AdbDevice, onBack: () -> Unit) {
         when (val s = state) {
             InfoState.Reading -> BodyText(t("ov_reading"))
             is InfoState.Failed -> Zone(t("ov_error")) { BodyText(s.message) }
-            is InfoState.Ready -> Details(d, s.info)
+            is InfoState.Ready -> Details(d, s.info, onLive)
         }
     }
 
@@ -95,7 +95,7 @@ fun DevicePage(adb: Path, d: AdbDevice, onBack: () -> Unit) {
 }
 
 @Composable
-private fun Details(d: AdbDevice, info: DeviceInfo) {
+private fun Details(d: AdbDevice, info: DeviceInfo, onLive: () -> Unit) {
     val p = info.props
     fun prop(key: String): String = p[key]?.takeIf { it.isNotBlank() } ?: "?"
     SelectionContainer {
@@ -133,6 +133,7 @@ private fun Details(d: AdbDevice, info: DeviceInfo) {
                     val c = b.celsius
                     if (c != null) ZoneRow(t("dev_temp"), "%.1f °C".format(c))
                 }
+                ZoneRow(t("bat_live"), t("bat_live_d"), onClick = onLive)
             }
             val s = info.storage
             Zone(t("dev_z_storage")) {

@@ -134,7 +134,9 @@ fun DeviceScreen(root: Path?, onPulled: (List<Path>) -> Unit, onBack: () -> Unit
 
     val adb = (l as? Link.Devices)?.adb
     if (current != null && adb != null && page == "dev_t_device") {
-        DevicePage(adb, current, onBack = { page = null })
+        DevicePage(adb, current, onLive = { page = "dev_t_battery" }, onBack = { page = null })
+    } else if (current != null && adb != null && page == "dev_t_battery") {
+        BatteryPage(adb, current, onWireless = { page = "dev_t_wireless" }, onBack = { page = null })
     } else if (current != null && adb != null && page == "dev_t_system") {
         SystemPage(adb, current, onBack = { page = null })
     } else if (current != null && adb != null && page == "dev_t_console") {
@@ -306,6 +308,7 @@ private fun DeviceHome(d: AdbDevice, onBack: () -> Unit, onTile: (String) -> Uni
         )
         val tiles = listOf(
             Triple("dev_t_device", GIcons.Device, true),
+            Triple("dev_t_battery", GIcons.Battery, true),
             Triple("dev_t_apps", GIcons.Apps, true),
             Triple("dev_t_install", GIcons.Install, true),
             Triple("dev_t_files", GIcons.Folder, true),
