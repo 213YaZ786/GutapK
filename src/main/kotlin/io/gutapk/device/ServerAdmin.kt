@@ -1,6 +1,6 @@
 package io.gutapk.device
 
-import io.gutapk.core.offline.ServerPack
+import io.gutapk.core.offline.Inject
 import io.gutapk.tools.Json
 import java.io.IOException
 import java.net.InetAddress
@@ -12,61 +12,79 @@ import java.net.http.HttpResponse
 import java.nio.file.Path
 import java.time.Duration
 
-// One value the server pack lets the admin change, as its list describes it.
-// type is int, bool or string. min and max bound an int, restart says the
-// pack restarts something when it changes, note is the pack's remark.
-data class Param(
-    val id: String,
-    val group: String,
-    val label: String,
-    val type: String,
-    val value: Any?,
-    val default: Any?,
-    val min: Long?,
-    val max: Long?,
-    val restart: Boolean,
-    val note: String?,
-)
+// What GET /status says: the mode of the last request (live, replay, miss or
+// none), the recordings held, the overrides set and the origin each port
+// serves. Param's job, for the state of the server.
+// https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#Param
+data class Status(val mode: String, val entries: Int, val overrides: Int, val origins: Map<String, String>)
 
-// What the pack answered to a set: 200 with ok, or 400 with an error text.
-data class Answer(val status: Int, val ok: Boolean, val error: String?, val restarted: Boolean, val applied: List<String>)
+// One JSON leaf of the latest answer of a method, origin and path: key is the
+// method, a space, the origin and the path, pointer an RFC 6901 pointer, type
+// number, bool or string, override the value the user set, when there is one.
+// Param, for a leaf.
+// https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#Param
+data class Value(val key: String, val pointer: String, val type: String, val value: Any?, val override: Any?)
 
-// The admin side of a server pack: its token from the control, a forward from
-// a local port to the pack's port, and two requests over it, GET the list
-// and POST the changed values. The pack answers only on the phone's loopback
-// and checks the token, so nothing here is reachable from the network.
+// One value to set: the key and pointer of a Value and the typed value. The
+// (id, value) pair of the old set, with the pointer that finds the leaf.
+// https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#set
+data class Change(val key: String, val pointer: String, val value: Any)
+
+// What the server answered to a set: 200 with the count it took, or 400 with
+// an error text.
+// https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#Answer
+data class Answer(val status: Int, val ok: Boolean, val error: String?, val count: Int)
+
+// The admin side of the offline server inside a game: a forward from a local
+// port to its abstract socket, and the requests over it. The server answers
+// only the adb daemon and the app itself, so nothing here is reachable from
+// the network.
+// not ported: Param (the leaves replace the list of parameters of a server app)
+// not ported: list (status and values take its place, the server has no params route)
+// not ported: printQuoted (it is quote below, with the same table and loop)
 object ServerAdmin {
     private const val TIMEOUT_S = 10L
 
     // The local port adb forwards to the phone's, found free by asking the
     // system for one.
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#freePort
     fun freePort(): Int = ServerSocket(0, 1, InetAddress.getLoopbackAddress()).use { it.localPort }
 
-    fun forwardArgs(serial: String, local: Int, remote: Int): List<String> = listOf("-s", serial, "forward", "tcp:$local", "tcp:$remote")
+    // The abstract socket the server listens on, read from the properties
+    // file GutapK writes into the game, so the two sides cannot disagree.
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#forwardArgs
+    fun socket(packageName: String): String =
+        Inject.config(packageName, emptyMap()).lines().first { it.startsWith("admin=") }.removePrefix("admin=")
 
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#forwardArgs
+    fun forwardArgs(serial: String, local: Int, socket: String): List<String> = listOf("-s", serial, "forward", "tcp:$local", "localabstract:$socket")
+
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#removeArgs
     fun removeArgs(serial: String, local: Int): List<String> = listOf("-s", serial, "forward", "--remove", "tcp:$local")
 
-    fun forward(adb: Path, serial: String, pack: ServerPack): Int {
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#forward
+    fun forward(adb: Path, serial: String, packageName: String): Int {
         val local = freePort()
-        val r = Adb.run(adb, forwardArgs(serial, local, pack.port), 15)
+        val r = Adb.run(adb, forwardArgs(serial, local, socket(packageName)), 15)
         if (r.code != 0) throw IOException("adb forward failed: ${r.out.trim()}")
         return local
     }
 
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#unforward
     fun unforward(adb: Path, serial: String, local: Int): AdbResult = Adb.run(adb, removeArgs(serial, local), 15)
 
     // Sends the request and reads the answer whole. A client of HTTP 1.1,
-    // since the pack's server speaks no upgrade, and no proxy: the address
-    // is the loopback of this computer.
-    // https://docs.oracle.com/en/java/javase/21/docs/api/java.net.http/java/net/http/HttpClient.html#send
-    fun send(local: Int, path: String, token: String, body: String? = null): HttpResponse<String> {
+    // since the server speaks no upgrade, and no proxy: the address is the
+    // loopback of this computer. A body, or post, makes a POST.
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#send
+    fun send(local: Int, path: String, body: String? = null, post: Boolean = body != null): HttpResponse<String> {
         val client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).connectTimeout(Duration.ofSeconds(TIMEOUT_S)).build()
         val uri = URI("http", null, "127.0.0.1", local, path, null, null)
-        val builder = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(TIMEOUT_S)).header("Authorization", token)
-        val request = if (body == null) {
+        val builder = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(TIMEOUT_S))
+        val request = if (!post) {
             builder.GET().build()
         } else {
-            builder.header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body)).build()
+            builder.header("Content-Type", "application/json").POST(if (body == null) HttpRequest.BodyPublishers.noBody() else HttpRequest.BodyPublishers.ofString(body)).build()
         }
         try {
             return client.send(request, HttpResponse.BodyHandlers.ofString())
@@ -76,65 +94,83 @@ object ServerAdmin {
         }
     }
 
-    // GET <list>: {"params":[{id, group, label, type, value, default, min,
-    // max, restart, note}]}. A parameter of a type GutapK cannot edit is
-    // left out.
-    fun list(local: Int, pack: ServerPack, token: String): List<Param> {
-        val path = pack.list ?: throw IOException("${pack.name} has no admin side")
-        val response = send(local, path, token)
-        if (response.statusCode() != 200) throw IOException("${pack.name} answered ${response.statusCode()} to the list: ${response.body().take(200)}")
-        return parseParams(response.body())
+    // GET /status: {"mode","entries","overrides","origins":{"<port>":"<origin>"}}
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#list
+    fun status(local: Int): Status {
+        val response = send(local, "/status")
+        if (response.statusCode() != 200) throw IOException("the server answered ${response.statusCode()} to the status: ${response.body().take(200)}")
+        return parseStatus(response.body())
     }
 
-    // POST <set> with the changed values, in one list: the pack checks them
-    // together, since a limit can depend on another value of the request.
-    fun set(local: Int, pack: ServerPack, token: String, changes: List<Pair<String, Any>>): Answer {
-        val path = pack.set ?: throw IOException("${pack.name} has no admin side")
-        val response = send(local, path, token, body(changes))
+    // GET /values: every JSON leaf of the latest answers, see Value.
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#list
+    fun values(local: Int): List<Value> {
+        val response = send(local, "/values")
+        if (response.statusCode() != 200) throw IOException("the server answered ${response.statusCode()} to the values: ${response.body().take(200)}")
+        return parseValues(response.body())
+    }
+
+    // POST /set with the changed values, in one list.
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#set
+    fun set(local: Int, changes: List<Change>): Answer {
+        val response = send(local, "/set", body(changes))
         return parseAnswer(response.statusCode(), response.body())
     }
 
-    internal fun parseParams(text: String): List<Param> {
-        val root = Json.parse(text) as? Map<*, *> ?: throw IOException("the list is not an object")
-        val items = root["params"] as? List<*> ?: throw IOException("the list has no params")
+    // POST /reset-overrides and POST /clear: {"ok":true}.
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#set
+    fun reset(local: Int): Answer = send(local, "/reset-overrides", post = true).let { parseAnswer(it.statusCode(), it.body()) }
+
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#set
+    fun clear(local: Int): Answer = send(local, "/clear", post = true).let { parseAnswer(it.statusCode(), it.body()) }
+
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#parseParams
+    internal fun parseStatus(text: String): Status {
+        val root = Json.parse(text) as? Map<*, *> ?: throw IOException("the status is not an object")
+        val origins = (root["origins"] as? Map<*, *>).orEmpty().entries.mapNotNull { (port, origin) -> (port as? String)?.let { p -> (origin as? String)?.let { p to it } } }
+        return Status(
+            mode = root["mode"] as? String ?: "none",
+            entries = (root["entries"] as? Number)?.toInt() ?: 0,
+            overrides = (root["overrides"] as? Number)?.toInt() ?: 0,
+            origins = origins.toMap(),
+        )
+    }
+
+    // A leaf of a type GutapK cannot edit is left out.
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#parseParams
+    internal fun parseValues(text: String): List<Value> {
+        val items = Json.parse(text) as? List<*> ?: throw IOException("the values are not a list")
         return items.mapNotNull { item ->
-            val p = item as? Map<*, *> ?: return@mapNotNull null
-            val id = p["id"] as? String ?: return@mapNotNull null
-            val type = p["type"] as? String ?: return@mapNotNull null
-            if (type != "int" && type != "bool" && type != "string") return@mapNotNull null
-            Param(
-                id = id,
-                group = p["group"] as? String ?: "",
-                label = p["label"] as? String ?: id,
-                type = type,
-                value = p["value"],
-                default = p["default"],
-                min = (p["min"] as? Number)?.toLong(),
-                max = (p["max"] as? Number)?.toLong(),
-                restart = p["restart"] == true,
-                note = (p["note"] as? String)?.takeIf { it.isNotBlank() },
-            )
+            val v = item as? Map<*, *> ?: return@mapNotNull null
+            val key = v["key"] as? String ?: return@mapNotNull null
+            val pointer = v["pointer"] as? String ?: return@mapNotNull null
+            val type = v["type"] as? String ?: return@mapNotNull null
+            if (type != "number" && type != "bool" && type != "string") return@mapNotNull null
+            Value(key, pointer, type, v["value"], v["override"])
         }
     }
 
-    // The body of a set, [{"id":...,"value":...},...]: an int and a bool bare,
-    // a string quoted.
-    internal fun body(changes: List<Pair<String, Any>>): String =
-        changes.joinToString(",", "[", "]") { (id, value) ->
+    // The body of a set, [{"key":...,"pointer":...,"value":...},...]: a number
+    // and a bool bare, a string quoted.
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#body
+    internal fun body(changes: List<Change>): String =
+        changes.joinToString(",", "[", "]") { (key, pointer, value) ->
             val text = when (value) {
                 is Boolean, is Long, is Int -> value.toString()
+                is Double -> if (value.isFinite()) value.toString() else throw IllegalArgumentException("not a number: $value")
                 else -> quote(value.toString())
             }
-            "{\"id\":" + quote(id) + ",\"value\":" + text + "}"
+            "{\"key\":" + quote(key) + ",\"pointer\":" + quote(pointer) + ",\"value\":" + text + "}"
         }
 
-    // 200 {"ok":true,"restarted":false,"applied":[{id, value}]} or
-    // 400 {"error":"..."}. An answer that is neither is the pack's text as is.
+    // 200 {"set":2} or {"ok":true}, 400 {"error":"bad request","message":"..."}.
+    // An answer that is neither is the server's text as is.
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#parseAnswer
     internal fun parseAnswer(status: Int, text: String): Answer {
         val root = runCatching { Json.parse(text) as? Map<*, *> }.getOrNull()
-        val applied = (root?.get("applied") as? List<*>).orEmpty().mapNotNull { (it as? Map<*, *>)?.get("id") as? String }
-        val error = root?.get("error") as? String ?: if (status == 200) null else text.take(200).ifBlank { "HTTP $status" }
-        return Answer(status, status == 200 && root?.get("ok") == true, error, root?.get("restarted") == true, applied)
+        val error = (root?.get("message") ?: root?.get("error")) as? String ?: if (status == 200) null else text.take(200).ifBlank { "HTTP $status" }
+        val count = (root?.get("set") as? Number)?.toInt() ?: 0
+        return Answer(status, status == 200 && (root?.get("ok") == true || root?.containsKey("set") == true), error, count)
     }
 
     // Escapes for a JSON string: the quote, the backslash and every control

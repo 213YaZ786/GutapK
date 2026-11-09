@@ -1,0 +1,114 @@
+package io.gutapk.offline;
+
+/*
+ * Serves a request from the origin, records the answer, and falls back on the
+ * recorded one when the origin is out of reach. OkHttp's CacheInterceptor
+ * consults the cache first and goes to the network when it must. This one asks
+ * the network first, since the game wants live data whenever there is a
+ * network, and answers from the cache when the call fails. The cache hit
+ * is the exact request first, then the latest answer for the endpoint, and a
+ * miss is a 502 and not OkHttp's 504 only-if-cached.
+ *
+ * https://github.com/square/okhttp/blob/master/okhttp/src/commonJvmAndroid/kotlin/okhttp3/internal/cache/CacheInterceptor.kt#intercept
+ * https://github.com/wiremock/wiremock/blob/master/wiremock-core/src/main/java/com/github/tomakehurst/wiremock/http/ProxyResponseRenderer.java#proxyResponseError
+ * https://github.com/NanoHttpd/nanohttpd/blob/master/core/src/main/java/org/nanohttpd/protocols/http/response/Response.java#addHeader
+ *
+ * Not ported: addHeader (it is Http.Response.addHeader, called here)
+ * Not ported: proxyResponseError (it is ProxyResponseRenderer.proxyResponseError, called here)
+ * Not ported: stripBody, combine, isEndToEnd, isContentSpecificHeader, cacheWritingResponse (a recorded body is whole in memory, and no conditional get is made)
+ * Not ported: requestForCache, trackResponse, eventListener calls (no listeners, lastSeen holds the mode)
+ *
+ * Copyright (C) 2016 Square, Inc., Apache License 2.0.
+ */
+
+import java.io.IOException;
+import java.net.ProtocolException;
+
+public class CacheInterceptor implements Http.Handler {
+
+    public static final String HEADER = "X-GutapK";
+    public static final String LIVE = "live";
+    public static final String REPLAY = "replay";
+    public static final String MISS = "miss";
+
+    /** What the last request got, for the admin status. */
+    public static volatile String lastSeen = "none";
+
+    private final String origin;
+    private final Store cache;
+    private final Overrides overrides;
+    private final ProxyResponseRenderer proceed;
+
+    public CacheInterceptor(String origin, Store cache, Overrides overrides, ProxyResponseRenderer proceed) {
+        this.origin = origin;
+        this.cache = cache;
+        this.overrides = overrides;
+        this.proceed = proceed;
+    }
+
+    @Override
+    public Http.Response handle(Http chain) throws IOException {
+        return intercept(chain);
+    }
+
+    public Http.Response intercept(Http chain) throws IOException {
+        String upgrade = chain.getHeaders().get("upgrade");
+        if (upgrade != null && upgrade.toLowerCase().contains("websocket")) {
+            return error(501, "websocket", "WebSocket upgrades are not served by the offline cache");
+        }
+        String method = chain.getMethod();
+        String bodyHash = Store.sha256(chain.getBody());
+
+        Store.Entry networkResponse = null;
+        IOException failure = null;
+        try {
+            networkResponse = proceed.render(origin, chain);
+        } catch (ProtocolException e) {
+            return error(501, "method", "HttpURLConnection cannot send " + method);
+        } catch (IOException e) {
+            failure = e;
+        }
+
+        if (networkResponse != null) {
+            if (networkResponse.code >= 200 && networkResponse.code < 400) {
+                // Offer this response to the cache.
+                cache.put(networkResponse);
+            }
+            lastSeen = LIVE;
+            return response(networkResponse, LIVE);
+        }
+
+        // The network failed: the exact request if it was seen, else the latest of its endpoint.
+        Store.Entry cacheCandidate = cache.get(method, origin, chain.getUri(), chain.getQueryParameterString(), bodyHash);
+        Store.Entry cacheResponse = cacheCandidate != null ? cacheCandidate : cache.latest(method, origin, chain.getUri());
+
+        // If the network failed and the cache is insufficient, fail.
+        if (cacheResponse == null) {
+            lastSeen = MISS;
+            Http.Response unsatisfiable = ProxyResponseRenderer.proxyResponseError("Network", chain, failure);
+            unsatisfiable.addHeader(HEADER, MISS);
+            return unsatisfiable;
+        }
+        lastSeen = REPLAY;
+        return response(cacheResponse, REPLAY);
+    }
+
+    private Http.Response response(Store.Entry cacheResponse, String via) {
+        byte[] body = overrides.apply(cacheResponse.endpoint(), cacheResponse.contentType(), cacheResponse.body);
+        Http.Response response = Http.Response.newFixedLengthResponse(cacheResponse.code, cacheResponse.contentType(), body);
+        for (java.util.Map.Entry<String, String> headers : cacheResponse.responseHeaders.entrySet()) {
+            if (!"content-type".equalsIgnoreCase(headers.getKey())) {
+                response.addHeader(headers.getKey(), headers.getValue());
+            }
+        }
+        response.addHeader(HEADER, via);
+        return response;
+    }
+
+    private Http.Response error(int code, String message, String detail) {
+        Http.Response response = Http.Response.newFixedLengthResponse(code, "application/json",
+                "{\"error\":\"" + message + "\",\"message\":\"" + detail + "\"}");
+        response.addHeader(HEADER, MISS);
+        return response;
+    }
+}

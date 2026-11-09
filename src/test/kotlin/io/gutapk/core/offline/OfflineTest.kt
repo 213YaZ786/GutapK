@@ -49,6 +49,10 @@ class OfflineTest {
 
     private fun ascii(text: String): ByteArray = text.toByteArray(Charsets.ISO_8859_1)
 
+    // The single port patches took before there was a port per origin.
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/core/offline/Redirect.kt#patches
+    private fun at(servers: List<Endpoint>, port: Int): Map<String, Int> = servers.associate { it.origin to port }
+
     // Native code: a few bytes, then each C string followed by a NUL.
     private fun lib(vararg strings: String): ByteArray {
         val out = java.io.ByteArrayOutputStream()
@@ -330,7 +334,7 @@ class OfflineTest {
     fun patchesCoverEveryOccurrenceAndApplyThroughTheRebuildPath() = withDir { d ->
         val apk = fakeApk(d)
         val servers = Endpoints.scan(apk).filter { it.likelyServer }
-        val patches = Redirect.patches(apk, servers, 4210)
+        val patches = Redirect.patches(apk, servers, at(servers, 4210))
         assertEquals(4, patches.size)
         patches.forEach { p ->
             assertEquals(p.old.length, p.new.length)
@@ -355,7 +359,7 @@ class OfflineTest {
         val dex = entryBytes(apk, "classes.dex")
         assertContentEquals(MessageDigest.getInstance("SHA-1").digest(dex.copyOfRange(32, dex.size)), dex.copyOfRange(12, 32))
         // Nothing is left to redirect, and the same list no longer fits the APK.
-        assertFailsWith<IOException> { Redirect.patches(apk, servers, 4210) }
+        assertFailsWith<IOException> { Redirect.patches(apk, servers, at(servers, 4210)) }
     }
 
     @Test
@@ -363,12 +367,12 @@ class OfflineTest {
         val apk = fakeApk(d)
         val game = Endpoints.scan(apk).first { it.origin == "https://game.example.org" }
         val shifted = game.copy(occurrences = game.occurrences.map { it.copy(start = it.start + 1) })
-        assertFailsWith<IOException> { Redirect.patches(apk, listOf(shifted), 4210) }
+        assertFailsWith<IOException> { Redirect.patches(apk, listOf(shifted), at(listOf(shifted), 4210)) }
         val elsewhere = game.copy(occurrences = listOf(Occurrence("lib/arm64-v8a/libother.so", 0)))
-        assertFailsWith<IOException> { Redirect.patches(apk, listOf(elsewhere), 4210) }
+        assertFailsWith<IOException> { Redirect.patches(apk, listOf(elsewhere), at(listOf(elsewhere), 4210)) }
         val tooShort = Endpoint("http://a.bc", listOf(Occurrence("assets/config.json", 0)), emptyList(), true)
-        assertEquals(emptyList(), Redirect.patches(apk, listOf(tooShort), 4210))
-        assertEquals(emptyList(), Redirect.patches(apk, listOf(game), 70000))
+        assertEquals(emptyList(), Redirect.patches(apk, listOf(tooShort), at(listOf(tooShort), 4210)))
+        assertEquals(emptyList(), Redirect.patches(apk, listOf(game), at(listOf(game), 70000)))
     }
 
     @Test

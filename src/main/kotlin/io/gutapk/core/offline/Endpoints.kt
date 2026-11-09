@@ -18,6 +18,11 @@ data class Endpoint(
     val likelyServer: Boolean,
 )
 
+// The servers of one game as the Offline dialog shows them: the likely ones
+// that fit, ticked, the links a game opens in a browser, the likely ones too
+// short for the phone's address, and the rest, which the dialog folds.
+data class Listing(val servers: List<Endpoint>, val links: List<Endpoint>, val short: List<Endpoint>, val rest: List<Endpoint>)
+
 // One match of parser_file: the link and where it sits in the content.
 data class Item(val link: String, val start: Int, val end: Int)
 
@@ -76,6 +81,68 @@ object Endpoints {
 
     fun likelyServer(domain: String): Boolean {
         return hosts.none { domain.lowercase() == it || domain.lowercase().endsWith(".$it") }
+    }
+
+    // Hosts a game opens in a browser (a store page, a repository, a social
+    // network, a licence or a documentation page) rather than calls. A
+    // subdomain of one is the same.
+    val links = listOf(
+        "play.google.com",
+        "market.android.com",
+        "f-droid.org",
+        "github.com",
+        "gitlab.com",
+        "codeberg.org",
+        "bitbucket.org",
+        "sourceforge.net",
+        "apps.apple.com",
+        "itunes.apple.com",
+        "discord.gg",
+        "discord.com",
+        "twitter.com",
+        "x.com",
+        "youtube.com",
+        "youtu.be",
+        "facebook.com",
+        "instagram.com",
+        "reddit.com",
+        "t.me",
+        "bsky.app",
+        "wikipedia.org",
+        "apple.com",
+        "developer.android.com",
+        "developer.mozilla.org",
+        "android.googlesource.com",
+        "scripts.sil.org",
+        "hosted.weblate.org",
+        "curl.se",
+        "curl.haxx.se",
+    )
+
+    fun linkHost(domain: String): Boolean {
+        return links.any { domain.lowercase() == it || domain.lowercase().endsWith(".$it") }
+    }
+
+    // How often an origin is held by native code and dex, the places a call
+    // to a server is made from, against the assets and the resource table
+    // that mostly hold text to read.
+    private val code = Regex("lib/[^/]+/[^/]+\\.so|classes[0-9]*\\.dex")
+
+    fun inCode(endpoint: Endpoint): Int = endpoint.occurrences.count { code.matches(it.file) }
+
+    // The origins as the Offline dialog lists them: the servers it ticks
+    // first, then the links a game opens in a browser, then the addresses too
+    // short to hold the phone's, and the rest, which only name a
+    // specification. Each group by occurrences in code, then in all.
+    // not ported: pack, served, origin, match (no server app stands in for a server here)
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/core/offline/Packs.kt#order
+    fun order(endpoints: List<Endpoint>): Listing {
+        val likely = endpoints.filter { it.likelyServer }
+        val rest = endpoints.filter { !it.likelyServer }
+        val (fitting, short) = likely.partition { Redirect.target(it.origin, port = Redirect.FITTING_PORT) != null }
+        val (links, servers) = fitting.partition { linkHost(it.origin.substringAfter("://").substringBefore(':')) }
+        val by = compareByDescending<Endpoint> { inCode(it) }.thenByDescending { it.occurrences.size }
+        return Listing(servers.sortedWith(by), links.sortedWith(by), short.sortedWith(by), rest.sortedWith(by))
     }
 
     // LinkFinder's parser_file: every match of the regex in the content, kept

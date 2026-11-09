@@ -163,7 +163,18 @@ object SetBuild {
     // Each patch goes into the part holding its file, a library of any name
     // or a classes*.dex. Every patch is placed before any part is written,
     // so one for a missing file stops the build whole.
-    internal fun writeLibs(files: List<Path>, patches: List<BytePatch>, storeLibs: Boolean, work: Path, sink: JobSink) {
+    // replaced and added go into each file in the same pass as the patches,
+    // so a big APK is not inflated and deflated twice: they are for a single
+    // APK, never a set.
+    internal fun writeLibs(
+        files: List<Path>,
+        patches: List<BytePatch>,
+        storeLibs: Boolean,
+        work: Path,
+        sink: JobSink,
+        replaced: Map<String, Path> = emptyMap(),
+        added: Map<String, Path> = emptyMap(),
+    ) {
         val byFile = files.associateWith { f ->
             ZipFile(f.toFile()).use { z -> patches.filter { z.getEntry(it.name) != null } }
         }
@@ -173,7 +184,7 @@ object SetBuild {
         }
         files.forEach { f ->
             val mine = byFile.getValue(f)
-            if (mine.isEmpty() && !(storeLibs && hasLibs(f))) return@forEach
+            if (mine.isEmpty() && replaced.isEmpty() && added.isEmpty() && !(storeLibs && hasLibs(f))) return@forEach
             Storage.deleteTree(work, work.parent)
             Files.createDirectories(work)
             // Keyed by entry name: two libraries of one ABI each get a copy.
@@ -186,15 +197,17 @@ object SetBuild {
             if (mine.isNotEmpty()) Patches.apply({ libs[it] ?: libs[LibBytes.entry(it)] }, mine) { sink.emit(JobEvent.Line(it)) }
             // ART refuses a dex whose checksum or signature no longer fits.
             libs.filterKeys { DexHeader.isDex(it) }.values.forEach { DexHeader.update(it) }
-            rewrite(f, libs, storeLibs, work.resolve("rewritten.apk"))
+            // A patched dex is a dex of the APK: a replaced entry of the same name is the caller's to avoid.
+            rewrite(f, libs + replaced, storeLibs, work.resolve("rewritten.apk"), added)
             Storage.deleteTree(work, work.parent)
         }
     }
 
     // A new zip with some entries replaced, the others inflated and written
     // again with the same method. Stored entries need their size and crc
-    // up front. apksig aligns them when it signs.
-    internal fun rewrite(apk: Path, replaced: Map<String, Path>, storeLibs: Boolean, temp: Path) {
+    // up front. apksig aligns them when it signs. added entries come after
+    // the others, deflated, and must not be in the APK already.
+    internal fun rewrite(apk: Path, replaced: Map<String, Path>, storeLibs: Boolean, temp: Path, added: Map<String, Path> = emptyMap()) {
         ZipFile(apk.toFile()).use { z ->
             ZipOutputStream(Files.newOutputStream(temp)).use { zout ->
                 z.entries().asSequence().forEach { e ->
@@ -213,6 +226,12 @@ object SetBuild {
                     }
                     zout.putNextEntry(entry)
                     if (source != null) Files.newInputStream(source).use { it.copyTo(zout) } else z.getInputStream(e).use { it.copyTo(zout) }
+                    zout.closeEntry()
+                }
+                added.forEach { (name, source) ->
+                    if (z.getEntry(name) != null) throw CheckFailed("$name is in the APK already")
+                    zout.putNextEntry(ZipEntry(name).also { it.method = ZipEntry.DEFLATED })
+                    Files.newInputStream(source).use { it.copyTo(zout) }
                     zout.closeEntry()
                 }
             }

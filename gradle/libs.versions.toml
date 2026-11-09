@@ -13,12 +13,20 @@ dbus-java = "5.2.2"
 materialkolor = "5.0.1"
 # Charts for Compose Multiplatform, Apache-2.0.
 vico = "3.3.1"
+# R8's D8 dexer, BSD-3, published on google(). Build time only: it turns the
+# offline cache server into a dex and never reaches the app's classpath.
+r8 = "8.7.18"
+# The reference org.json, test scope only. The server uses the platform's own
+# org.json on a phone, and this one stands in for it on the JVM.
+orgjson = "20260814"
 
 [libraries]
 apksig = { module = "com.android.tools.build:apksig", version.ref = "apksig" }
 dbus-java-core = { module = "com.github.hypfvieh:dbus-java-core", version.ref = "dbus-java" }
 dbus-java-transport = { module = "com.github.hypfvieh:dbus-java-transport-native-unixsocket", version.ref = "dbus-java" }
 materialkolor-utilities = { module = "com.materialkolor:material-color-utilities", version.ref = "materialkolor" }
+r8 = { module = "com.android.tools:r8", version.ref = "r8" }
+org-json = { module = "org.json:json", version.ref = "orgjson" }
 vico-compose-m3 = { module = "com.patrykandpatrick.vico:compose-m3", version.ref = "vico" }
 
 [plugins]

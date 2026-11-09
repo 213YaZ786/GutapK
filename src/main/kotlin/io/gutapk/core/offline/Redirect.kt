@@ -131,14 +131,21 @@ object Redirect {
             null
         }
 
-    // One patch per occurrence of every endpoint that can be redirected. The
-    // old bytes are read from the APK itself, so a list made from another APK
-    // is refused here and not at the rebuild.
-    fun patches(apk: Path, endpoints: List<Endpoint>, port: Int): List<BytePatch> {
+    // Any port of the range, they all have five digits: whether an origin
+    // is long enough to hold the address of the phone.
+    const val FITTING_PORT = 29999
+
+    // One patch per occurrence of every endpoint that can be redirected, at
+    // one port per origin, the way a game with several servers is served: an
+    // origin with no port in the map is left as it is. The old bytes are read
+    // from the APK itself, so a list made from another APK is refused here
+    // and not at the rebuild.
+    fun patches(apk: Path, endpoints: List<Endpoint>, ports: Map<String, Int>): List<BytePatch> {
         val items = mutableListOf<BytePatch>()
         ZipFile(apk.toFile()).use { zip ->
             val files = HashMap<String, String>()
             for (endpoint in endpoints) {
+                val port = ports[endpoint.origin] ?: continue
                 val target = target(endpoint.origin, port = port) ?: continue
                 for (item in endpoint.occurrences) {
                     val content = files.getOrPut(item.file) {

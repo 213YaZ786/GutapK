@@ -47,8 +47,6 @@ import io.gutapk.core.apk.UnityReader
 import io.gutapk.core.il2cpp.MethodEntry
 import io.gutapk.core.offline.Endpoint
 import io.gutapk.core.offline.Endpoints
-import io.gutapk.core.offline.Packs
-import io.gutapk.core.offline.ServerPack
 import io.gutapk.core.edit.Engine
 import io.gutapk.core.edit.CodeSource
 import io.gutapk.core.edit.JavaCode
@@ -183,13 +181,11 @@ fun OverviewScreen(
     val state by produceState<State>(State.Reading, dir) {
         value = State.Ready(withContext(Dispatchers.IO) { load(original) })
     }
-    // The servers the game talks to, found once the page is up, and the
-    // server pack when this package is one. Null while still looking.
+    // The servers the game talks to, found once the page is up. Null while
+    // still looking.
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/features/overview/Overview.kt#OverviewScreen
     val endpoints by produceState<List<Endpoint>?>(null, dir) {
         value = withContext(Dispatchers.IO) { runCatching { Endpoints.scan(original) }.getOrDefault(emptyList()) }
-    }
-    val own by produceState<ServerPack?>(null, dir) {
-        value = withContext(Dispatchers.IO) { Packs.read(dir) }
     }
     var dialog by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf(false) }
@@ -254,13 +250,14 @@ fun OverviewScreen(
             }
             FilledTonalButton(onClick = { dialog = "sign" }) { Text(t("sign_action")) }
             // Offline, Local and Admin need to know where the game's servers
-            // are, so they wait for the scan. A server pack has an admin side
-            // of its own.
+            // are, so they wait for the scan. Local is shown and waits for
+            // the next version.
             if (root != null && endpoints?.any { it.likelyServer } == true) {
                 FilledTonalButton(onClick = { dialog = "offline" }) { Text(t("offline_action")) }
-                FilledTonalButton(onClick = { dialog = "local" }) { Text(t("local_action")) }
-            }
-            if (root != null && (own?.admin == true || endpoints?.any { it.likelyServer } == true)) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    FilledTonalButton(enabled = false, onClick = {}) { Text(t("local_action")) }
+                    Text(t("local_soon"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 FilledTonalButton(onClick = { dialog = "admin" }) { Text(t("admin_action")) }
             }
         }
@@ -367,8 +364,7 @@ fun OverviewScreen(
             )
             // The same way the Sign dialog is opened.
             // https://github.com/213YaZ786/GutapK/blob/main/src/main/kotlin/io/gutapk/features/overview/Overview.kt#OverviewScreen
-            "offline", "local" -> if (root != null) OfflineDialog(
-                local = dialog == "local",
+            "offline" -> if (root != null) OfflineDialog(
                 root = root,
                 dir = dir,
                 original = original,
@@ -380,8 +376,6 @@ fun OverviewScreen(
             "admin" -> if (root != null) AdminDialog(
                 root = root,
                 info = info,
-                endpoints = endpoints.orEmpty(),
-                own = own,
                 onDismiss = { dialog = null },
             )
             "key" -> KeyChooser(
