@@ -254,9 +254,10 @@ fun LookupDialog(root: Path, spec: ToolSpec, onDismiss: () -> Unit, why: String?
                 l is Lookup.Failed -> TextButton(onClick = { attempt++ }) { Text(t("retry")) }
                 l is Lookup.Found && !upToDate -> TextButton(
                     onClick = {
-                        onDismiss()
+                        // onStarted first: a caller that stays open while the tool comes knows it before onDismiss.
                         startInstall(root, listOf(spec to l.release))
                         onStarted()
+                        onDismiss()
                     },
                 ) { Text(t(if (installed != null) "upd_go" else "dl_go")) }
                 else -> TextButton(onClick = onDismiss) { Text(t("close")) }
@@ -316,9 +317,9 @@ fun LookupDialog(root: Path, specs: List<ToolSpec>, onDismiss: () -> Unit, why: 
                 is Lookups.Failed -> TextButton(onClick = { attempt++ }) { Text(t("retry")) }
                 is Lookups.Found -> TextButton(
                     onClick = {
-                        onDismiss()
                         startInstall(root, l.releases)
                         onStarted()
+                        onDismiss()
                     },
                 ) { Text(t("dl_go")) }
                 Lookups.Busy -> TextButton(onClick = onDismiss) { Text(t("close")) }

@@ -156,6 +156,7 @@ class OfflineTest {
         assertFalse("https://not.scanned.example.com" in found)
         assertFalse(Endpoints.likelyServer("xmlpull.org"))
         assertFalse(Endpoints.likelyServer("sub.purl.org"))
+        assertFalse(Endpoints.likelyServer("schemas.xmlsoap.org"))
         assertTrue(Endpoints.likelyServer("purl.org.example.com"))
     }
 

@@ -43,6 +43,7 @@ import io.gutapk.ui.Fact
 import io.gutapk.ui.LookupDialog
 import io.gutapk.ui.currentJobView
 import io.gutapk.ui.installRefusal
+import io.gutapk.ui.jobTitle
 import io.gutapk.ui.showInFolder
 import io.gutapk.ui.t
 import kotlinx.coroutines.Dispatchers
@@ -139,6 +140,13 @@ fun JavaDialog(
 
     val view = currentJobView()
     LaunchedEffect(view) {
+        // The libraries in, the dex is read again, as MirrorPage looks for scrcpy again.
+        // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/features/device/MirrorPage.kt#L80-L85
+        val needs = dex
+        if (libsStarted && needs is DexRead.NeedsLibs && view != null && view.title == jobTitle(needs.specs.map { it.id }) && view.state == JobState.DONE) {
+            libsStarted = false
+            attempt++
+        }
         val job = started
         if (job != null && view != null && JobQueue.current.value === job) {
             when (view.state) {
@@ -160,7 +168,7 @@ fun JavaDialog(
         s is DexRead.NeedsLibs && !libsStarted -> LookupDialog(
             root = root,
             specs = s.specs,
-            onDismiss = onDismiss,
+            onDismiss = { if (!libsStarted) onDismiss() },
             why = t("local_java_needs_libs"),
             onStarted = { libsStarted = true },
         )

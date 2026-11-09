@@ -76,6 +76,7 @@ object Endpoints {
         "opensource.org",
         "www.opensource.org",
         "schemas.microsoft.com",
+        "schemas.xmlsoap.org",
         "schemas.openxmlformats.org",
         "java.sun.com",
         "xml.org",

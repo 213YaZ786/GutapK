@@ -46,6 +46,7 @@ import io.gutapk.ui.Fact
 import io.gutapk.ui.LookupDialog
 import io.gutapk.ui.currentJobView
 import io.gutapk.ui.installRefusal
+import io.gutapk.ui.jobTitle
 import io.gutapk.ui.showInFolder
 import io.gutapk.ui.t
 import kotlinx.coroutines.Dispatchers
@@ -129,6 +130,13 @@ fun GodotDialog(
 
     val view = currentJobView()
     LaunchedEffect(view) {
+        // The libraries in, the scripts are read again, as MirrorPage looks for scrcpy again.
+        // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/features/device/MirrorPage.kt#L80-L85
+        val needs = scripts
+        if (libsStarted && needs is Read.NeedsLibs && view != null && view.title == jobTitle(needs.specs.map { it.id }) && view.state == JobState.DONE) {
+            libsStarted = false
+            attempt++
+        }
         val job = started
         if (job != null && view != null && JobQueue.current.value === job) {
             when (view.state) {
@@ -150,7 +158,7 @@ fun GodotDialog(
         s is Read.NeedsLibs && !libsStarted -> LookupDialog(
             root = root,
             specs = s.specs,
-            onDismiss = onDismiss,
+            onDismiss = { if (!libsStarted) onDismiss() },
             why = t("godot_needs_libs"),
             onStarted = { libsStarted = true },
         )
