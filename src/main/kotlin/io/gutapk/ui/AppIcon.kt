@@ -21,8 +21,9 @@ import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.materialkolor.hct.Hct
+import com.materialkolor.dynamiccolor.ColorSpec
+import com.materialkolor.dynamiccolor.DynamicScheme
 import com.materialkolor.palettes.TonalPalette
-import com.materialkolor.scheme.DynamicScheme
 import com.materialkolor.scheme.SchemeTonalSpot
 import io.gutapk.core.apk.IconArt
 import io.gutapk.core.apk.IconColour
@@ -45,7 +46,9 @@ fun AppIcon(art: IconArt, size: Dp, shape: Shape, fallback: @Composable () -> Un
     val seed = LocalAccentSeed.current ?: REFERENCE_SEED
     val layers = remember(art, seed) {
         runCatching {
-            val scheme = SchemeTonalSpot(Hct.fromInt(seed), false, 0.0)
+            // The 2021 spec, as accentScheme, for the tones Android draws icons with.
+            // https://github.com/jordond/materialkolor/blob/6.0.0/material-color-utilities/api/jvm/material-color-utilities.api#L558
+            val scheme = SchemeTonalSpot(Hct.fromInt(seed), false, 0.0, ColorSpec.SpecVersion.SPEC_2021)
             listOfNotNull(art.background, art.foreground).map { layer ->
                 when (layer) {
                     is IconLayer.Colour -> Drawn.Fill(resolve(layer.colour, scheme))

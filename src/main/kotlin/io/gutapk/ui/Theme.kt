@@ -13,6 +13,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.materialkolor.dynamiccolor.ColorSpec
 import com.materialkolor.dynamiccolor.DynamicColor
 import com.materialkolor.dynamiccolor.MaterialDynamicColors
 import com.materialkolor.hct.Hct
@@ -51,49 +52,53 @@ fun accentSeed(accent: AccentChoice): Int? = when (accent) {
 }
 
 // Tonal spot is the variant Android uses for wallpaper colours, so a seed
-// gives the same palette the phone would.
+// gives the same palette the phone would. The 2021 spec is named since
+// materialkolor 6 defaults to the 2025 one, which would move every colour.
+// https://github.com/jordond/materialkolor/blob/6.0.0/material-color-utilities/api/jvm/material-color-utilities.api#L558
 internal fun accentScheme(seed: Int, dark: Boolean): ColorScheme {
-    val scheme = SchemeTonalSpot(Hct.fromInt(seed), dark, 0.0)
+    val scheme = SchemeTonalSpot(Hct.fromInt(seed), dark, 0.0, ColorSpec.SpecVersion.SPEC_2021)
+    // Each role is a property since materialkolor 6, read as MaterialKolors does.
+    // https://github.com/jordond/materialkolor/blob/6.0.0/material-kolor-core/src/commonMain/kotlin/com/materialkolor/MaterialKolors.kt#primary
     val roles = MaterialDynamicColors()
     fun c(role: DynamicColor) = Color(role.getArgb(scheme))
     val base = if (dark) darkColorScheme() else lightColorScheme()
     return base.copy(
-        primary = c(roles.primary()),
-        onPrimary = c(roles.onPrimary()),
-        primaryContainer = c(roles.primaryContainer()),
-        onPrimaryContainer = c(roles.onPrimaryContainer()),
-        inversePrimary = c(roles.inversePrimary()),
-        secondary = c(roles.secondary()),
-        onSecondary = c(roles.onSecondary()),
-        secondaryContainer = c(roles.secondaryContainer()),
-        onSecondaryContainer = c(roles.onSecondaryContainer()),
-        tertiary = c(roles.tertiary()),
-        onTertiary = c(roles.onTertiary()),
-        tertiaryContainer = c(roles.tertiaryContainer()),
-        onTertiaryContainer = c(roles.onTertiaryContainer()),
-        background = c(roles.background()),
-        onBackground = c(roles.onBackground()),
-        surface = c(roles.surface()),
-        onSurface = c(roles.onSurface()),
-        surfaceVariant = c(roles.surfaceVariant()),
-        onSurfaceVariant = c(roles.onSurfaceVariant()),
-        surfaceTint = c(roles.surfaceTint()),
-        inverseSurface = c(roles.inverseSurface()),
-        inverseOnSurface = c(roles.inverseOnSurface()),
-        error = c(roles.error()),
-        onError = c(roles.onError()),
-        errorContainer = c(roles.errorContainer()),
-        onErrorContainer = c(roles.onErrorContainer()),
-        outline = c(roles.outline()),
-        outlineVariant = c(roles.outlineVariant()),
-        scrim = c(roles.scrim()),
-        surfaceBright = c(roles.surfaceBright()),
-        surfaceDim = c(roles.surfaceDim()),
-        surfaceContainer = c(roles.surfaceContainer()),
-        surfaceContainerHigh = c(roles.surfaceContainerHigh()),
-        surfaceContainerHighest = c(roles.surfaceContainerHighest()),
-        surfaceContainerLow = c(roles.surfaceContainerLow()),
-        surfaceContainerLowest = c(roles.surfaceContainerLowest()),
+        primary = c(roles.primary),
+        onPrimary = c(roles.onPrimary),
+        primaryContainer = c(roles.primaryContainer),
+        onPrimaryContainer = c(roles.onPrimaryContainer),
+        inversePrimary = c(roles.inversePrimary),
+        secondary = c(roles.secondary),
+        onSecondary = c(roles.onSecondary),
+        secondaryContainer = c(roles.secondaryContainer),
+        onSecondaryContainer = c(roles.onSecondaryContainer),
+        tertiary = c(roles.tertiary),
+        onTertiary = c(roles.onTertiary),
+        tertiaryContainer = c(roles.tertiaryContainer),
+        onTertiaryContainer = c(roles.onTertiaryContainer),
+        background = c(roles.background),
+        onBackground = c(roles.onBackground),
+        surface = c(roles.surface),
+        onSurface = c(roles.onSurface),
+        surfaceVariant = c(roles.surfaceVariant),
+        onSurfaceVariant = c(roles.onSurfaceVariant),
+        surfaceTint = c(roles.surfaceTint),
+        inverseSurface = c(roles.inverseSurface),
+        inverseOnSurface = c(roles.inverseOnSurface),
+        error = c(roles.error),
+        onError = c(roles.onError),
+        errorContainer = c(roles.errorContainer),
+        onErrorContainer = c(roles.onErrorContainer),
+        outline = c(roles.outline),
+        outlineVariant = c(roles.outlineVariant),
+        scrim = c(roles.scrim),
+        surfaceBright = c(roles.surfaceBright),
+        surfaceDim = c(roles.surfaceDim),
+        surfaceContainer = c(roles.surfaceContainer),
+        surfaceContainerHigh = c(roles.surfaceContainerHigh),
+        surfaceContainerHighest = c(roles.surfaceContainerHighest),
+        surfaceContainerLow = c(roles.surfaceContainerLow),
+        surfaceContainerLowest = c(roles.surfaceContainerLowest),
     )
 }
 
