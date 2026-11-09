@@ -84,6 +84,14 @@ class OfflineModeTest {
         assertEquals(listOf(site2), molly.short)
         // No host of the company's name: every host the code calls stays a server.
         assertEquals(listOf(dawn, site, scipy, assets, socket), Endpoints.order(listOf(dawn, scipy, site, assets, socket), "io.anuke.mindustry").servers)
+        // Jungle Heat 2.2.7: its maker's hosts only in its data, a share link
+        // and an advert, its servers under another name in libgame.so.
+        val share = endpoint("http://jhtest.mail.ru", 0, elsewhere = 3)
+        val advert = endpoint("https://1l-go.mail.ru", 0, elsewhere = 2)
+        val game = endpoint("http://game1.jungleheatgame.com", 3)
+        val heat = Endpoints.order(listOf(share, advert, game), "ru.mail.games.android.JungleHeat")
+        assertEquals(listOf(game), heat.servers)
+        assertEquals(listOf(share, advert), heat.possible)
     }
 
     @Test

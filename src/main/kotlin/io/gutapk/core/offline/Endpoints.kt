@@ -176,8 +176,10 @@ object Endpoints {
     // servers, and the hosts its libraries name (a runtime's documentation)
     // only possible ones. A host of that name too short to be moved is the
     // maker's site, not a server (molly.im, Molly calling chat.signal.org): the
-    // rule then stays out of it.
+    // rule then stays out of it. So does a host of that name only in the data
+    // (a share link in a JSON file): the code never calls it.
     // https://docs.oracle.com/javase/tutorial/java/package/namingpkgs.html
+    // https://github.com/213YaZ786/GutapK/blob/ca70230/src/main/kotlin/io/gutapk/core/offline/Endpoints.kt#inCode
     fun order(endpoints: List<Endpoint>, packageName: String? = null): Listing {
         val likely = endpoints.filter { it.likelyServer }
         val rest = endpoints.filter { !it.likelyServer }
@@ -186,7 +188,7 @@ object Endpoints {
         val domain = packageName?.split('.')?.getOrNull(1)?.replace('_', '-')?.lowercase()
         val own = calls.filter { e ->
             val name = e.origin.substringAfter("://").substringBefore(':').lowercase().split('.').dropLast(1).lastOrNull()
-            domain != null && name != null && name.removePrefix(domain).let { it.length < name.length && it.all(Char::isDigit) }
+            domain != null && name != null && inCode(e) > 0 && name.removePrefix(domain).let { it.length < name.length && it.all(Char::isDigit) }
         }.toSet()
         val (servers, possible) = if (own.isNotEmpty()) calls.partition { it in own } else calls.partition { inCode(it) > 0 }
         val by = compareByDescending<Endpoint> { inCode(it) }.thenByDescending { it.occurrences.size }
