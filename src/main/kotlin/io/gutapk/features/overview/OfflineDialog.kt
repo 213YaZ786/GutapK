@@ -35,6 +35,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import io.gutapk.core.apk.ApkInfo
+import io.gutapk.core.offline.AssemblyCodecs
+import io.gutapk.core.offline.AssemblyStore
 import io.gutapk.core.offline.DexStringRewrite
 import io.gutapk.core.offline.Endpoint
 import io.gutapk.core.offline.Endpoints
@@ -63,6 +65,7 @@ import io.gutapk.ui.Fact
 import io.gutapk.ui.LookupDialog
 import io.gutapk.ui.currentJobView
 import io.gutapk.ui.installRefusal
+import io.gutapk.ui.jobTitle
 import io.gutapk.ui.showInFolder
 import io.gutapk.ui.t
 import kotlinx.coroutines.Dispatchers
@@ -70,6 +73,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.nio.file.Path
+import java.util.zip.ZipFile
 import kotlin.concurrent.thread
 
 const val OFFLINE_JOB = "offline"
@@ -132,8 +136,22 @@ fun OfflineDialog(
         value = Seen.Looking
         value = withContext(Dispatchers.IO) { runCatching { probe(root) }.getOrElse { Seen.Failed(it.message ?: "?") } }
     }
-    val listing = remember(endpoints) { Endpoints.order(endpoints, info.packageName) }
-    var chosen by remember(endpoints) { mutableStateOf<Set<String>?>(null) }
+    // A .NET game keeps its code in an assembly store, read with aircompressor:
+    // the Overview's scan leaves it out, it is scanned again here with it,
+    // once the library is in, as GodotDialog reads its scripts.
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/features/device/MirrorPage.kt#L80-L85
+    val store = remember(original) { runCatching { ZipFile(original.toFile()).use { z -> z.entries().asSequence().any { AssemblyStore.isStore(it.name) } } }.getOrDefault(false) }
+    var storeRead by remember { mutableStateOf(0) }
+    var storeLibs by remember { mutableStateOf(false) }
+    val read by produceState<List<Endpoint>?>(if (store) null else endpoints, endpoints, storeRead) {
+        value = if (!store) endpoints else withContext(Dispatchers.IO) {
+            if (Libraries.missing(root, Libraries.AIRCOMPRESSOR).isNotEmpty()) null
+            else runCatching { Endpoints.scan(original, Libraries.load(root, Libraries.AIRCOMPRESSOR, "io.gutapk.core.offline.AircompressorCodecs", AssemblyCodecs::class.java)) }.getOrDefault(endpoints)
+        }
+    }
+    val all = read.orEmpty()
+    val listing = remember(all) { Endpoints.order(all, info.packageName) }
+    var chosen by remember(all) { mutableStateOf<Set<String>?>(null) }
     val shown = chosen ?: listing.servers.map { it.origin }.toSet()
     var serial by remember { mutableStateOf<String?>(null) }
     var uninstallFirst by remember { mutableStateOf(false) }
@@ -147,7 +165,14 @@ fun OfflineDialog(
     val noDex = t("offline_no_dex")
 
     val view = currentJobView()
+    LaunchedEffect(store) {
+        if (store) askingLibs = Libraries.missing(root, Libraries.AIRCOMPRESSOR)
+    }
     LaunchedEffect(view) {
+        if (storeLibs && view != null && view.title == jobTitle(Libraries.AIRCOMPRESSOR) && view.state == JobState.DONE) {
+            storeLibs = false
+            storeRead++
+        }
         val job = started
         if (job != null && view != null && JobQueue.current.value === job) {
             when (view.state) {
@@ -169,8 +194,11 @@ fun OfflineDialog(
             root = root,
             specs = askingLibs,
             onDismiss = { askingLibs = emptyList() },
-            why = t("offline_needs_libs"),
-            onStarted = { askingLibs = emptyList() },
+            why = t(if (askingLibs.any { it.id in Libraries.AIRCOMPRESSOR }) "offline_needs_dotnet" else "offline_needs_libs"),
+            onStarted = {
+                if (askingLibs.any { it.id in Libraries.AIRCOMPRESSOR }) storeLibs = true
+                askingLibs = emptyList()
+            },
         )
         started != null -> AlertDialog(
             onDismissRequest = {},
@@ -236,7 +264,7 @@ fun OfflineDialog(
         )
         f is Seen.Ready -> {
             val host = serial?.takeIf { s -> f.phones.any { it.serial == s } } ?: f.phones.first().serial
-            val fitting = endpoints.filter { it.origin in shown && Redirect.target(it.origin, port = Redirect.FITTING_PORT) != null }
+            val fitting = all.filter { it.origin in shown && Redirect.target(it.origin, port = Redirect.FITTING_PORT) != null }
             val ready = fitting.isNotEmpty()
             // What each ticked address becomes, as OfflineBuild writes it.
             val ports = Inject.ports(info.packageName, fitting.map { it.origin })
@@ -253,6 +281,7 @@ fun OfflineDialog(
                         // Every address is listed for the user to review, none folded. Only the
                         // sure servers start ticked, the user ticks any other one.
                         Text(t("offline_servers"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                        if (store && read == null) Text(t("offline_reading_dotnet"), style = MaterialTheme.typography.bodyMedium)
                         if (listing.servers.isEmpty()) Text(t("offline_no_sure"), style = MaterialTheme.typography.bodyMedium)
                         listing.servers.forEach { e ->
                             ServerRow(e, e.origin in shown, true, t("offline_found", e.occurrences.size.toString()), changes[e.origin]) { on ->
@@ -313,16 +342,17 @@ fun OfflineDialog(
                             val remove = uninstallFirst
                             val servers = fitting
                             val phone = host
-                            askingLibs = Libraries.missing(root, Libraries.DEXLIB2)
+                            askingLibs = Libraries.missing(root, Libraries.DEXLIB2 + if (store) Libraries.AIRCOMPRESSOR else emptyList())
                             if (askingLibs.isNotEmpty()) return@TextButton
                             started = JobQueue.start(OFFLINE_JOB) { job ->
                                 job.emit(JobEvent.Step("build", 1, 3))
                                 val dex = load() ?: throw IOException(noDex)
                                 val strings = Libraries.load(root, Libraries.DEXLIB2, "io.gutapk.core.offline.DexStrings", DexStringRewrite::class.java)
+                                val codecs = if (store) Libraries.load(root, Libraries.AIRCOMPRESSOR, "io.gutapk.core.offline.AircompressorCodecs", AssemblyCodecs::class.java) else null
                                 // The test key signs, as the Sign dialog does with it: the
                                 // game is for the user's own phones.
                                 val out = output(dir, info.packageName, info.versionName, KeyChoice.TEST)
-                                OfflineBuild.run(original, servers, dex, strings, dir.resolve("work-offline"), out, TestKey.load(), info.minSdk, version, job)
+                                OfflineBuild.run(original, servers, dex, strings, dir.resolve("work-offline"), out, TestKey.load(), info.minSdk, version, job, codecs)
                                 signed = out
                                 OfflineInstall.run(f.adb, phone, out, info.packageName, remove, job, { job.cancelRequested }, first = 2, steps = 3)
                                 finished = true

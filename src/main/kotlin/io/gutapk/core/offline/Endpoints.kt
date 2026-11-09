@@ -152,8 +152,16 @@ object Endpoints {
         "libSDL2.so", "libsentry.so", "libsentry-android.so", "libcrashlytics.so", "libconscrypt_jni.so",
     )
 
+    // In a .NET store, the runtime's and the platform's own assemblies are
+    // what the engine libraries are elsewhere, any other is the game's code.
+    private val runtimeAssemblies = Regex("(System|Microsoft|Mono|Xamarin|Java\\.Interop|_Microsoft\\.Android|mscorlib|netstandard)([.].*)?\\.dll")
+
     fun inCode(endpoint: Endpoint): Int = endpoint.occurrences.count { o ->
-        code.matches(o.file) && o.file.substringAfterLast('/') !in engineLibs
+        if (AssemblyStore.SEPARATOR in o.file) {
+            !runtimeAssemblies.matches(o.file.substringAfter(AssemblyStore.SEPARATOR))
+        } else {
+            code.matches(o.file) && o.file.substringAfterLast('/') !in engineLibs
+        }
     }
 
     // The origins as the Offline dialog lists them: the servers it ticks
@@ -220,31 +228,63 @@ object Endpoints {
     // (Godot's is 70 MB) is where its addresses are, and the user reviews
     // them all. A run of printable ASCII (space to ~) shorter than 8 bytes is
     // a few letters of code, not an address.
-    fun scan(apk: Path): List<Endpoint> {
+    // A .NET assembly store holds the game's code compressed: its bytes are
+    // never read as they are, a match in them would be noise and a patch
+    // would break an assembly. With codecs each assembly is read whole, its
+    // ASCII and its UTF-16 strings (a .NET string literal is UTF-16), an
+    // occurrence's file then being store!/assembly and its start the offset
+    // in the assembly. Without, the store is left out.
+    fun scan(apk: Path, codecs: AssemblyCodecs? = null): List<Endpoint> {
         val found = LinkedHashMap<String, MutableList<Occurrence>>()
         val urls = HashMap<String, MutableList<String>>()
+        // The loop scan had over the printable runs of one entry, for any
+        // content: at says where content's char i is in the file.
+        // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/core/offline/Endpoints.kt#L121-L137
+        fun runs(content: String, file: String, at: (Int) -> Long) {
+            var start = -1
+            for (index in 0..content.length) {
+                val character = index < content.length && content[index] in ' '..'~'
+                if (character) {
+                    if (start < 0) start = index
+                } else if (start >= 0) {
+                    if (index - start >= 8) {
+                        for (item in parser_file(content.substring(start, index), regex_str, more_regex)) {
+                            val origin = more_regex.find(item.link)?.value ?: continue
+                            found.getOrPut(origin) { mutableListOf() }.add(Occurrence(file, at(start + item.start)))
+                            val list = urls.getOrPut(origin) { mutableListOf() }
+                            if (list.size < 3 && item.link !in list) list.add(item.link)
+                        }
+                    }
+                    start = -1
+                }
+            }
+        }
         ZipFile(apk.toFile()).use { zip ->
             for (file in zip.entries()) {
                 val limit = if (file.name.startsWith("lib/")) 512L * 1024 * 1024 else 64L * 1024 * 1024
                 if (file.isDirectory || !files.matches(file.name) || file.size > limit) continue
-                val content = zip.getInputStream(file).use { String(it.readAllBytes(), Charsets.ISO_8859_1) }
-                var start = -1
-                for (index in 0..content.length) {
-                    val character = index < content.length && content[index] in ' '..'~'
-                    if (character) {
-                        if (start < 0) start = index
-                    } else if (start >= 0) {
-                        if (index - start >= 8) {
-                            for (item in parser_file(content.substring(start, index), regex_str, more_regex)) {
-                                val origin = more_regex.find(item.link)?.value ?: continue
-                                found.getOrPut(origin) { mutableListOf() }.add(Occurrence(file.name, (start + item.start).toLong()))
-                                val list = urls.getOrPut(origin) { mutableListOf() }
-                                if (list.size < 3 && item.link !in list) list.add(item.link)
+                val content = zip.getInputStream(file).use { it.readAllBytes() }
+                if (AssemblyStore.isStore(file.name)) {
+                    val store = AssemblyStore.read(content)
+                    if (codecs != null && store != null) {
+                        store.descriptors.forEachIndexed { i, desc ->
+                            if (desc.data_size > 0) {
+                                val assembly = store.assembly(i, codecs)
+                                val name = file.name + AssemblyStore.SEPARATOR + store.names[i]
+                                runs(String(assembly, Charsets.ISO_8859_1), name) { it.toLong() }
+                                // UTF-16 at both parities: a string heap entry starts anywhere.
+                                for (parity in 0..1) {
+                                    val chars = CharArray((assembly.size - parity) / 2) { k ->
+                                        if (assembly[parity + 2 * k + 1].toInt() == 0) (assembly[parity + 2 * k].toInt() and 0xff).toChar() else '\u0001'
+                                    }
+                                    runs(String(chars), name) { parity + 2L * it }
+                                }
                             }
                         }
-                        start = -1
                     }
+                    continue
                 }
+                runs(String(content, Charsets.ISO_8859_1), file.name) { it.toLong() }
             }
         }
         return found.map { (origin, occurrences) ->

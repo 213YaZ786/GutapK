@@ -148,23 +148,39 @@ object Redirect {
     // origin with no port in the map is left as it is. The old bytes are read
     // from the APK itself, so a list made from another APK is refused here
     // and not at the rebuild.
-    fun patches(apk: Path, endpoints: List<Endpoint>, ports: Map<String, Int>): List<BytePatch> {
+    // An occurrence in a .NET store is in an assembly, read with codecs: the
+    // patch is for store!/assembly at the offset in the assembly, in UTF-16
+    // when the address is written so there.
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/core/offline/Redirect.kt#L137-L157
+    fun patches(apk: Path, endpoints: List<Endpoint>, ports: Map<String, Int>, codecs: AssemblyCodecs? = null): List<BytePatch> {
         val items = mutableListOf<BytePatch>()
         ZipFile(apk.toFile()).use { zip ->
             val files = HashMap<String, String>()
+            val stores = HashMap<String, AssemblyStore>()
             for (endpoint in endpoints) {
                 val port = ports[endpoint.origin] ?: continue
                 val target = target(endpoint.origin, port = port) ?: continue
                 for (item in endpoint.occurrences) {
+                    val file = item.file.substringBefore(AssemblyStore.SEPARATOR)
                     val content = files.getOrPut(item.file) {
-                        String(zip.getInputStream(zip.getEntry(item.file) ?: throw IOException("${item.file} is not in $apk")).use { it.readAllBytes() }, Charsets.ISO_8859_1)
+                        val bytes = zip.getInputStream(zip.getEntry(file) ?: throw IOException("$file is not in $apk")).use { it.readAllBytes() }
+                        if (file == item.file) {
+                            String(bytes, Charsets.ISO_8859_1)
+                        } else {
+                            val store = stores.getOrPut(file) { AssemblyStore.read(bytes) ?: throw IOException("$file is not an assembly store") }
+                            val i = store.names.indexOf(item.file.substringAfter(AssemblyStore.SEPARATOR))
+                            if (i < 0 || codecs == null) throw IOException("${item.file} cannot be read")
+                            String(store.assembly(i, codecs), Charsets.ISO_8859_1)
+                        }
                     }
-                    if (!content.startsWith(endpoint.origin, item.start.toInt())) {
-                        throw IOException("${endpoint.origin} is not at ${item.start} of ${item.file}")
+                    val charset = when {
+                        content.startsWith(endpoint.origin, item.start.toInt()) -> Charsets.ISO_8859_1
+                        content.startsWith(String(endpoint.origin.toByteArray(Charsets.UTF_16LE), Charsets.ISO_8859_1), item.start.toInt()) -> Charsets.UTF_16LE
+                        else -> throw IOException("${endpoint.origin} is not at ${item.start} of ${item.file}")
                     }
                     val path = item.file.split('/')
                     val abi = if (path.size == 3 && path[0] == "lib") path[1] else NO_ABI
-                    items.add(BytePatch(abi, item.start, Hex.format(endpoint.origin.toByteArray()), Hex.format(target.toByteArray()), "server ${endpoint.origin} -> $target", item.file))
+                    items.add(BytePatch(abi, item.start, Hex.format(endpoint.origin.toByteArray(charset)), Hex.format(target.toByteArray(charset)), "server ${endpoint.origin} -> $target", item.file))
                 }
             }
         }

@@ -4,12 +4,14 @@ import io.gutapk.core.apk.ResourceTable
 import io.gutapk.core.apk.SignatureInfo
 import io.gutapk.core.apk.SplitSet
 import io.gutapk.core.edit.SetBuild
+import io.gutapk.core.il2cpp.Hex
 import io.gutapk.core.sign.ApkSigning
 import io.gutapk.core.sign.SigningKey
 import io.gutapk.job.JobEvent
 import io.gutapk.job.JobSink
 import io.gutapk.tools.CheckFailed
 import io.gutapk.tools.Storage
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -39,6 +41,7 @@ object OfflineBuild {
         minSdk: Int?,
         appVersion: String,
         sink: JobSink,
+        codecs: AssemblyCodecs? = null,
     ): SignatureInfo {
         val part = SplitSet.part(input, "")
         if (!SplitSet.standalone(part)) {
@@ -52,11 +55,13 @@ object OfflineBuild {
         try {
             val fitting = endpoints.filter { Redirect.target(it.origin, port = Redirect.FITTING_PORT) != null }
             val ports = Inject.ports(packageName, fitting.map { it.origin })
-            val patches = Redirect.patches(input, fitting, ports)
+            val patches = Redirect.patches(input, fitting, ports, codecs)
             if (patches.isEmpty()) throw CheckFailed("no server address of ${input.fileName} can be pointed at the phone")
             sink.emit(JobEvent.Line("${patches.size} addresses of ${ports.size} servers moved to the phone, ports ${ports.values.joinToString(", ")}"))
             // A dex is written again by DexStrings, a patch in place would leave its strings out of order.
-            val (dexPatches, libPatches) = patches.partition { DexHeader.isDex(it.name) }
+            // An assembly of a .NET store is changed whole, then the store is written again.
+            val (storePatches, filePatches) = patches.partition { AssemblyStore.SEPARATOR in it.name }
+            val (dexPatches, libPatches) = filePatches.partition { DexHeader.isDex(it.name) }
             val targets = ports.mapValues { (origin, port) -> Redirect.target(origin, port = port)!! }
 
             val replaced = mutableMapOf<String, Path>()
@@ -80,6 +85,33 @@ object OfflineBuild {
                     replaced[entry] = work.resolve("dex$i.dex")
                     val changed = strings.writeTo(replaced.getValue(entry), zip.getInputStream(zip.getEntry(entry)).use { it.readAllBytes() }, targets)
                     sink.emit(JobEvent.Line("$entry written again, ${changed.size} strings pointed at the phone"))
+                }
+                // Patches.apply on the assemblies in memory: every patch checked
+                // against the old bytes, then written, the store written again.
+                // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/core/il2cpp/Patches.kt#L210-L234
+                storePatches.groupBy { it.name.substringBefore(AssemblyStore.SEPARATOR) }.entries.forEachIndexed { i, (entry, patches) ->
+                    val c = codecs ?: throw IOException("$entry is read with aircompressor, which is not loaded")
+                    val store = AssemblyStore.read(zip.getInputStream(zip.getEntry(entry)).use { it.readAllBytes() }) ?: throw IOException("$entry is not an assembly store")
+                    val libs = patches.map { it.name }.distinct().associate { name ->
+                        val k = store.names.indexOf(name.substringAfter(AssemblyStore.SEPARATOR))
+                        if (k < 0) throw IOException("patch is for $name, which is not in the APK being rebuilt")
+                        k to store.assembly(k, c)
+                    }
+                    val checked = patches.map { p ->
+                        val lib = libs.getValue(store.names.indexOf(p.name.substringAfter(AssemblyStore.SEPARATOR)))
+                        val old = Hex.parse(p.old) ?: throw IOException("patch at 0x${p.offset.toString(16)} is unreadable")
+                        val new = Hex.parse(p.new) ?: throw IOException("patch at 0x${p.offset.toString(16)} is unreadable")
+                        if (old.size != new.size) throw IOException("patch at 0x${p.offset.toString(16)} changes the length")
+                        if (p.offset + old.size > lib.size) throw IOException("patch at 0x${p.offset.toString(16)} is past the end of ${p.name}")
+                        val found = lib.copyOfRange(p.offset.toInt(), p.offset.toInt() + old.size)
+                        if (!found.contentEquals(old)) {
+                            throw IOException("patch at 0x${p.offset.toString(16)} expects ${p.old} but ${p.name} has ${Hex.format(found)}. The file is not the one the patch was made on.")
+                        }
+                        Triple(lib, p, new)
+                    }
+                    checked.forEach { (lib, p, new) -> System.arraycopy(new, 0, lib, p.offset.toInt(), new.size) }
+                    replaced[entry] = Files.write(work.resolve("store$i.so"), store.with(libs, c))
+                    sink.emit(JobEvent.Line("$entry written again, ${patches.size} addresses in ${libs.size} assemblies pointed at the phone"))
                 }
                 val name = Inject.nextDexName(names)
                 added[name] = Files.write(work.resolve("server.dex"), dex)
