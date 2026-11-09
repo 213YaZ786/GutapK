@@ -77,6 +77,21 @@ class OfflineTest {
                 ex.responseHeaders.add("Content-Encoding", "gzip")
                 reply(ex, 200, "application/json", raw.toByteArray())
             }
+            server.createContext("/moved") { ex ->
+                note(ex)
+                ex.responseHeaders.add("Location", "http://127.0.0.1:$port/text?x=1")
+                reply(ex, 302, "text/plain", ByteArray(0))
+            }
+            server.createContext("/away") { ex ->
+                note(ex)
+                ex.responseHeaders.add("Location", "https://other.example/play")
+                reply(ex, 301, "text/plain", ByteArray(0))
+            }
+            server.createContext("/out") { ex ->
+                note(ex)
+                ex.responseHeaders.add("Location", "https://other.example.net/")
+                reply(ex, 302, "text/plain", ByteArray(0))
+            }
             server.createContext("/gone") { ex ->
                 note(ex)
                 reply(ex, 404, "application/json", """{"error":"gone"}""".toByteArray())
@@ -105,7 +120,7 @@ class OfflineTest {
         val origin = "http://127.0.0.1:${upstream.port}"
         val cache = Store(File(dir, "cache"))
         val overrides = Overrides(File(dir, "overrides.json"))
-        val front = Server("127.0.0.1", 0, CacheInterceptor(origin, cache, overrides, ProxyResponseRenderer()))
+        val front = Server("127.0.0.1", 0, CacheInterceptor(origin, cache, overrides, ProxyResponseRenderer(), mapOf(origin to "http://0.0.0.0:0000020001", "https://other.example" to "http://127.0.0.1:20002")))
         val admin: Server
 
         init {
@@ -383,6 +398,25 @@ class OfflineTest {
         val reread = Overrides(File(r.dir, "overrides.json"))
         assertEquals(4, reread.get(r.key("/config"), "/level"))
         assertEquals(1, reread.count())
+    }
+
+    // A redirect to the origin stays on this server, live and replayed, one to
+    // another moved origin goes to its address, and any other is left alone.
+    // https://github.com/ktorio/ktor-samples/blob/main/reverse-proxy/src/main/kotlin/io/ktor/samples/reverseproxy/ReverseProxyApplication.kt#L41-L52
+    @Test
+    fun redirectsToAMovedOriginStayOnThePhone() {
+        val r = Rig()
+        try {
+            assertEquals("/text?x=1", r.get("/moved").headers["location"])
+            assertEquals("http://127.0.0.1:20002/play", r.get("/away").headers["location"])
+            assertEquals("https://other.example.net/", r.get("/out").headers["location"])
+            r.upstream.stop()
+            val replayed = r.get("/moved")
+            assertEquals("replay", replayed.mode)
+            assertEquals("/text?x=1", replayed.headers["location"])
+        } finally {
+            r.close()
+        }
     }
 
     @Test

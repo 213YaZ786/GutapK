@@ -407,12 +407,14 @@ object Inject {
     private const val SHORT_COUNT = 4000
 
     // The properties file of the server: a line per origin to serve, the
-    // port it listens on, and the name of the socket the admin side reaches
-    // it by (abstract, so no file is left on the phone).
+    // port it listens on, the address the app holds in its place (the server
+    // points a redirect to the origin there), and the name of the socket the
+    // admin side reaches it by (abstract, so no file is left on the phone).
     fun config(packageName: String, ports: Map<String, Int>): String {
         require(ports.keys.none { '\n' in it || '\r' in it || '\\' in it }) { "an origin cannot be written to a properties file" }
         return buildString {
             ports.forEach { (origin, port) -> append("listen.$port=$origin\n") }
+            ports.forEach { (origin, port) -> Redirect.target(origin, port = port)?.let { append("target.$port=$it\n") } }
             append("admin=gutapk.$packageName\n")
         }
     }

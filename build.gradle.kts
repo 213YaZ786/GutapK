@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "io.gutapk"
-version = "0.1.123"
+version = "0.1.124"
 
 kotlin {
     jvmToolchain(21)

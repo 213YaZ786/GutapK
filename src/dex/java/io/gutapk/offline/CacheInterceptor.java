@@ -12,17 +12,22 @@ package io.gutapk.offline;
  * https://github.com/square/okhttp/blob/master/okhttp/src/commonJvmAndroid/kotlin/okhttp3/internal/cache/CacheInterceptor.kt#intercept
  * https://github.com/wiremock/wiremock/blob/master/wiremock-core/src/main/java/com/github/tomakehurst/wiremock/http/ProxyResponseRenderer.java#proxyResponseError
  * https://github.com/NanoHttpd/nanohttpd/blob/master/core/src/main/java/org/nanohttpd/protocols/http/response/Response.java#addHeader
+ * https://github.com/ktorio/ktor-samples/blob/main/reverse-proxy/src/main/kotlin/io/ktor/samples/reverseproxy/ReverseProxyApplication.kt#L41-L52
  *
  * Not ported: addHeader (it is Http.Response.addHeader, called here)
  * Not ported: proxyResponseError (it is ProxyResponseRenderer.proxyResponseError, called here)
  * Not ported: stripBody, combine, isEndToEnd, isContentSpecificHeader, cacheWritingResponse (a recorded body is whole in memory, and no conditional get is made)
  * Not ported: requestForCache, trackResponse, eventListener calls (no listeners, lastSeen holds the mode)
+ * Not ported: the ktor sample's text/html body rewrite (a page is served as recorded, the overrides edit it)
  *
  * Copyright (C) 2016 Square, Inc., Apache License 2.0.
  */
 
 import java.io.IOException;
 import java.net.ProtocolException;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class CacheInterceptor implements Http.Handler {
 
@@ -39,8 +44,12 @@ public class CacheInterceptor implements Http.Handler {
     private final Overrides overrides;
     private final ProxyResponseRenderer proceed;
 
-    public CacheInterceptor(String origin, Store cache, Overrides overrides, ProxyResponseRenderer proceed) {
+    /** Every origin the app was moved off, to the address it holds instead. */
+    private final Map<String, String> targets;
+
+    public CacheInterceptor(String origin, Store cache, Overrides overrides, ProxyResponseRenderer proceed, Map<String, String> targets) {
         this.origin = origin;
+        this.targets = targets;
         this.cache = cache;
         this.overrides = overrides;
         this.proceed = proceed;
@@ -96,8 +105,21 @@ public class CacheInterceptor implements Http.Handler {
     private Http.Response response(Store.Entry cacheResponse, String via) {
         byte[] body = overrides.apply(cacheResponse.endpoint(), cacheResponse.contentType(), cacheResponse.body);
         Http.Response response = Http.Response.newFixedLengthResponse(cacheResponse.code, cacheResponse.contentType(), body);
-        for (java.util.Map.Entry<String, String> headers : cacheResponse.responseHeaders.entrySet()) {
-            if (!"content-type".equalsIgnoreCase(headers.getKey())) {
+        for (Map.Entry<String, String> headers : cacheResponse.responseHeaders.entrySet()) {
+            if ("location".equalsIgnoreCase(headers.getKey())) {
+                // Propagates the location header, removing the origin's domain from
+                // it as the ktor sample does with Wikipedia's, so a WebView stays on
+                // this server instead of opening the real site. A redirect to another
+                // origin the app was moved off goes to that one's address.
+                // https://github.com/ktorio/ktor-samples/blob/main/reverse-proxy/src/main/kotlin/io/ktor/samples/reverseproxy/ReverseProxyApplication.kt#L41-L52
+                String location = headers.getValue();
+                for (Map.Entry<String, String> target : targets.entrySet()) {
+                    boolean own = target.getKey().equalsIgnoreCase(origin);
+                    String domain = "(?i)^" + Pattern.quote(target.getKey()) + (own ? "(?:/|(?=[?#]|$))" : "(?=[/?#]|$)");
+                    location = location.replaceFirst(domain, own ? "/" : Matcher.quoteReplacement(target.getValue()));
+                }
+                response.addHeader(headers.getKey(), location);
+            } else if (!"content-type".equalsIgnoreCase(headers.getKey())) {
                 response.addHeader(headers.getKey(), headers.getValue());
             }
         }

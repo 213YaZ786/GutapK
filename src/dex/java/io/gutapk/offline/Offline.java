@@ -29,6 +29,9 @@ public class Offline {
 
     public static final String LISTEN = "listen.";
 
+    /** target.<port> is the address the app holds in place of that port's origin. */
+    public static final String TARGET = "target.";
+
     public final List<Server> servers = new ArrayList<Server>();
 
     public final Map<Integer, String> origins = new TreeMap<Integer, String>();
@@ -54,11 +57,20 @@ public class Offline {
         args.load(source);
 
         // Parse the config, one origin per listen.<port> line.
+        Map<Integer, String> moved = new TreeMap<Integer, String>();
         for (String name : args.stringPropertyNames()) {
             if (name.startsWith(LISTEN)) {
                 options.origins.put(Integer.parseInt(name.substring(LISTEN.length()).trim()), args.getProperty(name).trim());
+            } else if (name.startsWith(TARGET)) {
+                moved.put(Integer.parseInt(name.substring(TARGET.length()).trim()), args.getProperty(name).trim());
             } else if ("admin".equals(name)) {
                 admin = args.getProperty(name).trim();
+            }
+        }
+        Map<String, String> targets = new TreeMap<String, String>();
+        for (Map.Entry<Integer, String> origin : options.origins.entrySet()) {
+            if (moved.containsKey(origin.getKey())) {
+                targets.put(origin.getValue(), moved.get(origin.getKey()));
             }
         }
 
@@ -66,7 +78,7 @@ public class Offline {
         options.overrides = new Overrides(new File(rootDirs, "overrides.json"));
         ProxyResponseRenderer renderer = new ProxyResponseRenderer();
         for (Map.Entry<Integer, String> origin : options.origins.entrySet()) {
-            Server server = new Server(host, origin.getKey(), new CacheInterceptor(origin.getValue(), options.cache, options.overrides, renderer));
+            Server server = new Server(host, origin.getKey(), new CacheInterceptor(origin.getValue(), options.cache, options.overrides, renderer, targets));
             try {
                 server.start();
                 options.servers.add(server);

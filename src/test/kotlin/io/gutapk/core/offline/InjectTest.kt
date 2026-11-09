@@ -336,10 +336,15 @@ class InjectTest {
     fun theConfigListsEveryPortAndTheAdminSocket() {
         val ports = mapOf("https://bim-prod.jorge.st" to 24210, "wss://play.example.net:8443" to 24211)
         val text = Inject.config("bim.app", ports)
-        assertEquals("listen.24210=https://bim-prod.jorge.st\nlisten.24211=wss://play.example.net:8443\nadmin=gutapk.bim.app\n", text)
+        assertEquals(
+            "listen.24210=https://bim-prod.jorge.st\nlisten.24211=wss://play.example.net:8443\n" +
+                "target.24210=http://127.0.0.1:00024210\ntarget.24211=ws://127.0.0.1:000000024211\nadmin=gutapk.bim.app\n",
+            text,
+        )
         // Read as java does: the origin comes back whole, ':' and '/' included.
         val props = java.util.Properties().also { it.load(text.reader()) }
         assertEquals("https://bim-prod.jorge.st", props.getProperty("listen.24210"))
+        assertEquals("http://127.0.0.1:00024210", props.getProperty("target.24210"))
         assertEquals("gutapk.bim.app", props.getProperty("admin"))
         assertFailsWith<IllegalArgumentException> { Inject.config("bim.app", mapOf("https://a\nb" to 24210)) }
     }
