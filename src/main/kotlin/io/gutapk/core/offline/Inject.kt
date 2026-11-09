@@ -389,15 +389,22 @@ object Inject {
     // first from the package name, the next ones right after it. Between 20000
     // and 29999, above the well known and registered ports of common services
     // and under the range Linux and Android hand out to outgoing connections.
+    // An origin too short for five digits, https://lichess.org, takes one of
+    // four between 6000 and 9999 the same way, so its zeros stay as few as it can.
     fun ports(packageName: String, origins: List<String>): Map<String, Int> {
-        val distinct = origins.distinct()
+        val (distinct, short) = origins.distinct().partition { Redirect.target(it, port = PORT_FIRST + PORT_COUNT - 1) != null }
         require(distinct.size <= PORT_COUNT) { "${distinct.size} origins do not fit in $PORT_COUNT ports" }
-        val first = PORT_FIRST + (CRC32().also { it.update(packageName.toByteArray()) }.value % (PORT_COUNT - distinct.size + 1)).toInt()
-        return distinct.withIndex().associate { (i, origin) -> origin to first + i }
+        require(short.size <= SHORT_COUNT) { "${short.size} origins do not fit in $SHORT_COUNT ports" }
+        val value = CRC32().also { it.update(packageName.toByteArray()) }.value
+        val first = PORT_FIRST + (value % (PORT_COUNT - distinct.size + 1)).toInt()
+        val shortFirst = SHORT_FIRST + (value % (SHORT_COUNT - short.size + 1)).toInt()
+        return distinct.withIndex().associate { (i, origin) -> origin to first + i } + short.withIndex().associate { (i, origin) -> origin to shortFirst + i }
     }
 
     private const val PORT_FIRST = 20000
     private const val PORT_COUNT = 10000
+    private const val SHORT_FIRST = 6000
+    private const val SHORT_COUNT = 4000
 
     // The properties file of the server: a line per origin to serve, the
     // port it listens on, and the name of the socket the admin side reaches

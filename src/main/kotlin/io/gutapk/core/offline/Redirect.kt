@@ -123,17 +123,25 @@ object Redirect {
 
     // The address the origin becomes, or null when it does not fit in the
     // origin's length, the port is not one or the scheme is not one of
-    // Endpoints'.
-    fun target(origin: String, host: String = "127.0.0.1", port: Int): String? =
-        try {
-            Builder().scheme(origin.substringBefore("://", "")).host(host).port(port).length(origin.length).build()
-        } catch (_: IllegalArgumentException) {
-            null
+    // Endpoints'. Without a host given, the phone is 127.0.0.1, which every
+    // stack reads, or 0.0.0.0 when the origin is too short for it: Linux
+    // routes a connection to 0.0.0.0 to the loopback, where the server
+    // listens on 127.0.0.1. Checked on the API 36 emulator with toybox nc,
+    // where the name 0 and ::1 were refused.
+    // https://github.com/torvalds/linux/blob/v6.12/net/ipv4/route.c#L2722-L2731
+    // https://github.com/square/okhttp/blob/master/okhttp/src/commonJvmAndroid/kotlin/okhttp3/HttpUrl.kt#Builder
+    fun target(origin: String, host: String? = null, port: Int): String? =
+        (if (host != null) listOf(host) else listOf("127.0.0.1", "0.0.0.0")).firstNotNullOfOrNull {
+            try {
+                Builder().scheme(origin.substringBefore("://", "")).host(it).port(port).length(origin.length).build()
+            } catch (_: IllegalArgumentException) {
+                null
+            }
         }
 
-    // Any port of the range, they all have five digits: whether an origin
-    // is long enough to hold the address of the phone.
-    const val FITTING_PORT = 29999
+    // The shortest port Inject gives, four digits: whether an origin is long
+    // enough to hold the address of the phone at all.
+    const val FITTING_PORT = 9999
 
     // One patch per occurrence of every endpoint that can be redirected, at
     // one port per origin, the way a game with several servers is served: an

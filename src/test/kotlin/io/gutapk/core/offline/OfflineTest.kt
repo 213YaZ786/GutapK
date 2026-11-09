@@ -302,9 +302,13 @@ class OfflineTest {
 
     @Test
     fun targetRefusesWhatDoesNotFitOrIsNotAnAddress() {
-        // Too short for the host and the port.
+        // Too short for 127.0.0.1 and the port: 0.0.0.0, two characters shorter.
+        assertEquals("http://0.0.0.0:065535", Redirect.target("https://example.co.uk", port = 65535))
+        assertEquals("http://0.0.0.0:6123", Redirect.target("https://lichess.org", port = 6123))
+        assertNull(Redirect.target("https://lichess.org", port = 26123))
+        // Too short for any of them.
         assertNull(Redirect.target("http://a.bc", port = 4210))
-        assertNull(Redirect.target("https://example.co.uk", port = 65535))
+        assertNull(Redirect.target("https://abc.io", port = 6123))
         // A port that is not one.
         listOf(0, -1, 65536, 100000).forEach { assertNull(Redirect.target("https://game.example.org", port = it), "$it") }
         // A scheme that is not one of Endpoints'.

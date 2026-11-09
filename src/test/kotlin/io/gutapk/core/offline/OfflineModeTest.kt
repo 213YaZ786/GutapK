@@ -67,12 +67,16 @@ class OfflineModeTest {
         val scipy = endpoint("https://docs.scipy.org", 9)
         val socket = endpoint("wss://socket.lichess.org", 2)
         val listing = Endpoints.order(listOf(dawn, scipy, site, assets, socket), "org.lichess.mobileV2")
-        assertEquals(listOf(socket), listing.servers)
+        assertEquals(listOf(site, assets, socket), listing.servers)
         assertEquals(listOf(dawn, scipy), listing.possible)
-        // 19 characters cannot hold http://127.0.0.1 and a port: shown, never ticked.
-        assertEquals(listOf(site, assets), listing.short)
+        assertEquals(emptyList(), listing.short)
+        // 19 and 20 characters: 0.0.0.0, with a port of four digits for the shorter.
+        val ports = Inject.ports("org.lichess.mobileV2", listing.servers.map { it.origin })
+        assertEquals(listOf(4, 5, 5), listing.servers.map { ports.getValue(it.origin).toString().length })
+        assertEquals("http://0.0.0.0:${ports.getValue(site.origin)}", Redirect.target(site.origin, port = ports.getValue(site.origin)))
+        listing.servers.forEach { assertEquals(it.origin.length, Redirect.target(it.origin, port = ports.getValue(it.origin))?.length) }
         // No host of the company's name: every host the code calls stays a server.
-        assertEquals(listOf(dawn, scipy, socket), Endpoints.order(listOf(dawn, scipy, site, assets, socket), "io.anuke.mindustry").servers)
+        assertEquals(listOf(dawn, site, scipy, assets, socket), Endpoints.order(listOf(dawn, scipy, site, assets, socket), "io.anuke.mindustry").servers)
     }
 
     @Test

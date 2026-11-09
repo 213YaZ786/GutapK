@@ -238,6 +238,9 @@ fun OfflineDialog(
             val host = serial?.takeIf { s -> f.phones.any { it.serial == s } } ?: f.phones.first().serial
             val fitting = endpoints.filter { it.origin in shown && Redirect.target(it.origin, port = Redirect.FITTING_PORT) != null }
             val ready = fitting.isNotEmpty()
+            // What each ticked address becomes, as OfflineBuild writes it.
+            val ports = Inject.ports(info.packageName, fitting.map { it.origin })
+            val changes = ports.mapValues { (origin, port) -> Redirect.target(origin, port = port) }
             AlertDialog(
                 onDismissRequest = onDismiss,
                 title = { Text(title) },
@@ -252,28 +255,31 @@ fun OfflineDialog(
                         Text(t("offline_servers"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                         if (listing.servers.isEmpty()) Text(t("offline_no_sure"), style = MaterialTheme.typography.bodyMedium)
                         listing.servers.forEach { e ->
-                            ServerRow(e, e.origin in shown, true, t("offline_found", e.occurrences.size.toString())) { on ->
+                            ServerRow(e, e.origin in shown, true, t("offline_found", e.occurrences.size.toString()), changes[e.origin]) { on ->
                                 chosen = if (on) shown + e.origin else shown - e.origin
                             }
                         }
                         listing.possible.forEach { e ->
-                            ServerRow(e, e.origin in shown, true, t("offline_possible", e.occurrences.size.toString())) { on ->
+                            ServerRow(e, e.origin in shown, true, t("offline_possible", e.occurrences.size.toString()), changes[e.origin]) { on ->
                                 chosen = if (on) shown + e.origin else shown - e.origin
                             }
                         }
                         listing.links.forEach { e ->
-                            ServerRow(e, e.origin in shown, true, t("offline_link", e.occurrences.size.toString())) { on ->
+                            ServerRow(e, e.origin in shown, true, t("offline_link", e.occurrences.size.toString()), changes[e.origin]) { on ->
                                 chosen = if (on) shown + e.origin else shown - e.origin
                             }
                         }
+                        // The shortest the phone's address can be: the plain scheme, 0.0.0.0 and four digits.
+                        val shortText = t("offline_too_short")
+                        val tooShort: (Endpoint) -> String = { e -> shortText.format(e.origin.length, Redirect.Builder().scheme(e.origin.substringBefore("://")).host("0.0.0.0").port(Redirect.FITTING_PORT).build().length) }
                         listing.rest.forEach { e ->
                             val fits = Redirect.target(e.origin, port = Redirect.FITTING_PORT) != null
-                            ServerRow(e, e.origin in shown, fits, if (fits) t("offline_spec", e.occurrences.size.toString()) else t("offline_too_short")) { on ->
+                            ServerRow(e, e.origin in shown, fits, if (fits) t("offline_spec", e.occurrences.size.toString()) else tooShort(e), changes[e.origin]) { on ->
                                 chosen = if (on) shown + e.origin else shown - e.origin
                             }
                         }
                         listing.short.forEach { e ->
-                            ServerRow(e, false, false, t("offline_too_short")) {}
+                            ServerRow(e, false, false, tooShort(e), null) {}
                         }
                         if (!ready) {
                             Text(t("offline_none_selected"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
@@ -355,7 +361,7 @@ fun OfflineDialog(
 // One server of the game: its address, how often the game holds it, and a
 // box. An address too short to hold the phone's is shown and cannot be ticked.
 @Composable
-private fun ServerRow(endpoint: Endpoint, checked: Boolean, fits: Boolean, detail: String, onToggle: (Boolean) -> Unit) {
+private fun ServerRow(endpoint: Endpoint, checked: Boolean, fits: Boolean, detail: String, change: String?, onToggle: (Boolean) -> Unit) {
     Row(
         Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium).clickable(enabled = fits) { onToggle(!checked) }.padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -363,6 +369,8 @@ private fun ServerRow(endpoint: Endpoint, checked: Boolean, fits: Boolean, detai
         Checkbox(checked = checked && fits, onCheckedChange = null, enabled = fits)
         Column(Modifier.padding(start = 12.dp)) {
             Text(endpoint.origin, style = MaterialTheme.typography.bodyLarge, fontFamily = FontFamily.Monospace)
+            // The address written in its place, same length, or why it stays.
+            if (change != null) Text("→ $change", style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.primary)
             Text(detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
