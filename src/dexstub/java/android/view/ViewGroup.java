@@ -31,4 +31,17 @@ public abstract class ViewGroup extends View {
             throw new RuntimeException("stub");
         }
     }
+
+    // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/view/ViewGroup.java#L8514
+    // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/view/ViewGroup.java#setMargins
+    // not ported: setMarginsRelative, setMarginStart, setMarginEnd, the margin fields and the rest (the screen sets its margins whole)
+    public static class MarginLayoutParams extends ViewGroup.LayoutParams {
+        public MarginLayoutParams(int width, int height) {
+            super(width, height);
+        }
+
+        public void setMargins(int left, int top, int right, int bottom) {
+            throw new RuntimeException("stub");
+        }
+    }
 }

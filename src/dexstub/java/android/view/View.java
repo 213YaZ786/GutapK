@@ -16,7 +16,11 @@
 // Copyright (C) 2006 The Android Open Source Project, Apache License 2.0.
 package android.view;
 
+import android.animation.StateListAnimator;
 import android.content.Context;
+import android.content.res.Resources;
+import android.graphics.RenderEffect;
+import android.graphics.drawable.Drawable;
 
 public class View {
     public static final int VISIBLE = 0x00000000;
@@ -51,6 +55,26 @@ public class View {
     }
 
     public void setBackgroundColor(int color) {
+        throw new RuntimeException("stub");
+    }
+
+    // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/view/View.java#setBackground
+    public void setBackground(Drawable background) {
+        throw new RuntimeException("stub");
+    }
+
+    // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/view/View.java#setRenderEffect
+    public void setRenderEffect(RenderEffect renderEffect) {
+        throw new RuntimeException("stub");
+    }
+
+    // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/view/View.java#setStateListAnimator
+    public void setStateListAnimator(StateListAnimator stateListAnimator) {
+        throw new RuntimeException("stub");
+    }
+
+    // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/view/View.java#getResources
+    public Resources getResources() {
         throw new RuntimeException("stub");
     }
 }

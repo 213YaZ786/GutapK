@@ -13,6 +13,7 @@
 package android.widget;
 
 import android.content.Context;
+import android.graphics.Typeface;
 import android.view.View;
 
 public class TextView extends View {
@@ -37,6 +38,26 @@ public class TextView extends View {
     }
 
     public void setTextIsSelectable(boolean selectable) {
+        throw new RuntimeException("stub");
+    }
+
+    // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/widget/TextView.java#setGravity
+    public void setGravity(int gravity) {
+        throw new RuntimeException("stub");
+    }
+
+    // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/widget/TextView.java#setTypeface
+    public void setTypeface(Typeface tf) {
+        throw new RuntimeException("stub");
+    }
+
+    // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/widget/TextView.java#setLineSpacing
+    public void setLineSpacing(float add, float mult) {
+        throw new RuntimeException("stub");
+    }
+
+    // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/widget/TextView.java#setAllCaps
+    public void setAllCaps(boolean allCaps) {
         throw new RuntimeException("stub");
     }
 }

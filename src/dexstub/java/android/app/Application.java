@@ -81,6 +81,12 @@ public class Application extends Context {
         throw new RuntimeException("stub");
     }
 
+    // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/content/Context.java#getResources
+    @Override
+    public android.content.res.Resources getResources() {
+        throw new RuntimeException("stub");
+    }
+
     // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/app/Application.java#unregisterActivityLifecycleCallbacks
     public void unregisterActivityLifecycleCallbacks(ActivityLifecycleCallbacks callback) {
         throw new RuntimeException("stub");

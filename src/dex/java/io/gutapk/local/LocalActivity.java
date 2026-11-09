@@ -8,7 +8,8 @@ package io.gutapk.local;
  * invitation (gutapk://<package>/join?...) the relay to the host starts and
  * the game opens, talking to its own address as always, through its own link
  * to a server when it has one. The servers are static: they outlive the screen, the game's process
- * keeps them. Built as ShareViaHttp's activities share a file, its link shown
+ * keeps them. The screen is drawn in Material You glass (Glass): the phone's
+ * own colours, frosted panels and capsule buttons over a blurred backdrop. Built as ShareViaHttp's activities share a file, its link shown
  * as text and as a QR code, with ZXing's bitmap of the code and the views of
  * ApiDemos made in code:
  * https://github.com/marcosdiez/shareviahttp/blob/master/ShareViaHttp/app/src/main/java/com/MarcosDiez/shareviahttp/activities/BaseActivity.java#L45-L217
@@ -33,15 +34,20 @@ import android.app.Application;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.graphics.Bitmap;
+import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.RemoteException;
 import android.util.Log;
+import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 import io.gutapk.offline.Server;
@@ -70,14 +76,22 @@ public class LocalActivity extends Activity {
     protected static RemoteGodot engine = null;
     protected static String preferredServerUrl;
     protected static CharSequence message;
+    /** The host's note under the code: the port to host on, for a game that hosts from its menu. */
+    protected static CharSequence note;
+    /** A friend's relay is on its way to the host: Cancel stops it. */
+    protected static volatile boolean joining;
+    private static final String MEDIUM = "sans-serif-medium";
 
     protected Config config;
+    protected Glass glass;
     protected TextView link_msg;
+    protected TextView note_msg;
     protected TextView status;
     protected ImageView qrImage;
-    protected View startServer;
-    protected View play;
-    protected View stopServer;
+    protected View qrCard;
+    protected Button startServer;
+    protected Button play;
+    protected Button stopServer;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -94,30 +108,98 @@ public class LocalActivity extends Activity {
             finish();
             return;
         }
+        // The layout wrapped in a ScrollView as ApiDemos wraps its own, over
+        // the glass backdrop: the content scrolls on a small phone. The views
+        // are ShareViaHttp's, a capsule for each button as Kyant's liquid
+        // glass draws its own.
+        // https://android.googlesource.com/platform/development/+/refs/heads/main/samples/ApiDemos/src/com/example/android/apis/view/ScrollView2.java#L31-L52
+        // https://github.com/marcosdiez/shareviahttp/blob/master/ShareViaHttp/app/src/main/java/com/MarcosDiez/shareviahttp/activities/BaseActivity.java#L45-L217
+        // https://github.com/Kyant0/AndroidLiquidGlass/blob/kmp/app/src/commonMain/kotlin/com/kyant/backdrop/catalog/components/LiquidButton.kt#L36-L60
+        // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/widget/ScrollView.java#setFillViewport
+        // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/widget/LinearLayout.java#generateLayoutParams
+        // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/view/Gravity.java#L62-L76
+        // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/graphics/java/android/graphics/Typeface.java#L107-L113
+        // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/graphics/java/android/graphics/Typeface.java#create
+        // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/view/View.java#setBackground
+        // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/widget/TextView.java#setLineSpacing
+        // not ported: R.layout.scroll_view_2, findViewById (the views are made in code)
+        // not ported: LiquidButton, vibrancy, lens, interactiveHighlight (Compose's: the capsule is a drawable)
+        // not ported: onCreate, onClick, createViewClickListener, initHttpServer, setLinkMessageToView, generateBarCodeIfPossible (this method and the ones below)
+        // not ported: handleMessage, createChangeIpDialog, sendConnectionStartMessage, sendConnectionEndMessage, setupTextViews, setupNavigationViews, setupToolbar, populateUriPath, saveServerUrlToClipboard (left out, the head of the file says why)
+        // not ported: background, create, fillViewport, lineSpacing (the phone's views and typefaces do the work, the stubs only name the calls)
+        // not ported: generateLayoutParams (the AttributeSet one: the screen's own generateLayoutParams sizes a view and its margin)
+        glass = new Glass(getResources());
+        FrameLayout root = new FrameLayout(this);
+        root.addView(glass.backdrop(this), new FrameLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT));
+        ScrollView scrollView = new ScrollView(this);
+        scrollView.setFillViewport(true);
+        root.addView(scrollView, new FrameLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT));
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(48, 48, 48, 48);
-        layout.setBackgroundColor(WHITE);
+        layout.setPadding(glass.dp(20), glass.dp(48), glass.dp(20), glass.dp(24));
+        scrollView.addView(layout, new FrameLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        TextView textView = textView("⇄", 22, glass.onPrimary);
+        textView.setGravity(Gravity.CENTER);
+        textView.setBackground(glass.shape(glass.primary, 16, 0));
+        header.addView(textView, new LinearLayout.LayoutParams(glass.dp(48), glass.dp(48)));
+        LinearLayout titles = new LinearLayout(this);
+        titles.setOrientation(LinearLayout.VERTICAL);
+        titles.setPadding(glass.dp(14), 0, 0, 0);
+        textView = textView("Local", 22, glass.onSurface);
+        textView.setTypeface(Typeface.create(MEDIUM, Typeface.NORMAL));
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
         );
-        layout.addView(textView(fr() ? "Local : jouer avec des amis à côté" : "Local: play with friends nearby", 22), p);
-        status = textView("", 16);
-        layout.addView(status, p);
+        titles.addView(textView, p);
+        titles.addView(textView(fr() ? "Jouer avec des amis à côté" : "Play with friends nearby", 14, glass.onSurfaceVariant), p);
+        header.addView(titles, p);
+        layout.addView(header, generateLayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 20));
+
+        status = textView("", 16, glass.onSurface);
+        status.setLineSpacing(0, 1.25f);
+        status.setBackground(glass.zone());
+        status.setPadding(glass.dp(18), glass.dp(16), glass.dp(18), glass.dp(16));
+        layout.addView(status, generateLayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 12));
+
+        // The code on a white card inside a panel, its link under it.
+        LinearLayout qrPanel = new LinearLayout(this);
+        qrPanel.setOrientation(LinearLayout.VERTICAL);
+        qrPanel.setGravity(Gravity.CENTER_HORIZONTAL);
+        qrPanel.setBackground(glass.zone());
+        qrPanel.setPadding(glass.dp(16), glass.dp(16), glass.dp(16), glass.dp(14));
         qrImage = new ImageView(this);
         qrImage.setAdjustViewBounds(true);
-        layout.addView(qrImage, p);
-        link_msg = textView("", 12);
+        qrImage.setBackground(glass.shape(WHITE, 16, 0));
+        qrImage.setPadding(glass.dp(6), glass.dp(6), glass.dp(6), glass.dp(6));
+        qrPanel.addView(qrImage, generateLayoutParams(glass.dp(240), 10));
+        link_msg = textView("", 11, glass.onSurfaceVariant);
+        link_msg.setTypeface(Typeface.MONOSPACE);
+        link_msg.setGravity(Gravity.CENTER_HORIZONTAL);
         link_msg.setTextIsSelectable(true);
-        layout.addView(link_msg, p);
-        startServer = buttonView(fr() ? "Héberger une partie" : "Host a match");
-        layout.addView(startServer, p);
-        play = buttonView(fr() ? "Jouer" : "Play");
-        layout.addView(play, p);
-        stopServer = buttonView(fr() ? "Arrêter la partie" : "Stop the match");
-        layout.addView(stopServer, p);
-        setContentView(layout);
+        qrPanel.addView(link_msg, generateLayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0));
+        qrCard = qrPanel;
+        layout.addView(qrPanel, generateLayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 12));
+
+        note_msg = textView("", 13, glass.night ? glass.onSurface : glass.onPrimaryContainer);
+        note_msg.setLineSpacing(0, 1.2f);
+        note_msg.setBackground(glass.tint());
+        note_msg.setPadding(glass.dp(16), glass.dp(12), glass.dp(16), glass.dp(12));
+        layout.addView(note_msg, generateLayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 12));
+
+        // The buttons at the foot of a tall screen.
+        layout.addView(new View(this), new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        startServer = buttonView(fr() ? "Héberger une partie" : "Host a match", glass.capsule(glass.primary, false), glass.onPrimary);
+        layout.addView(startServer, generateLayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 10));
+        play = buttonView(fr() ? "Jouer" : "Play", glass.capsule(Glass.copy(glass.primaryContainer, glass.night ? 0.30f : 0.60f), true), glass.night ? glass.onSurface : glass.onPrimaryContainer);
+        layout.addView(play, generateLayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 10));
+        stopServer = buttonView(fr() ? "Arrêter la partie" : "Stop the match", glass.capsule(Glass.copy(glass.errorContainer, glass.night ? 0.45f : 0.65f), true), glass.onErrorContainer);
+        layout.addView(stopServer, generateLayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0));
+        setContentView(root);
         createViewClickListener();
 
         Uri data = getIntent() == null ? null : getIntent().getData();
@@ -175,6 +257,11 @@ public class LocalActivity extends Activity {
         setLinkMessageToView();
         final File apk = new File(getApplicationInfo().sourceDir);
         final String packageName = getPackageName();
+        // The game's name for the invitation page, as PackageItemInfo.loadLabel reads it.
+        // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/content/pm/PackageItemInfo.java#L136-L143
+        int labelRes = getApplicationInfo().labelRes;
+        CharSequence nonLocalizedLabel = getApplicationInfo().nonLocalizedLabel;
+        final String label = labelRes != 0 ? getResources().getString(labelRes) : nonLocalizedLabel != null ? nonLocalizedLabel.toString() : packageName;
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -186,12 +273,16 @@ public class LocalActivity extends Activity {
                     }
                     byte[] key = Aead.newKey();
                     tunnel = Tunnel.host(key, 0, config.getLocalPort(), config.isUdp());
-                    httpServer = new Server(null, 0, new Invite(packageName, apk));
+                    httpServer = new Server(null, 0, new Invite(packageName, apk, label, glass));
                     httpServer.start(TIMEOUT);
                     preferredServerUrl = Invite.link(listOfServerUris.get(0), httpServer.getListeningPort(), tunnel.getListeningPort(), key);
                     msg = fr() ? "Vos amis scannent ce code avec l'appareil photo, sur le même Wi-Fi ou votre point d'accès. Puis Jouer." : "Friends scan this code with their camera, on the same Wi-Fi or your hotspot. Then Play.";
                     if (ownMenu) {
-                        msg = msg + (fr() ? " Hébergez la partie depuis le menu du jeu." : " Host the match from the game's menu.");
+                        // The relay reaches the port GutapK read: another one typed in the game's menu would be out of reach.
+                        int port = config.getLocalPort();
+                        note = fr()
+                                ? "Hébergez la partie depuis le menu du jeu, sur le port " + port + " (ne le changez pas)."
+                                : "Host the match from the game's menu, on port " + port + " (leave it as it is).";
                     }
                 } catch (IOException e) {
                     Log.e(TAG, "Local cannot host", e);
@@ -218,7 +309,12 @@ public class LocalActivity extends Activity {
     /** A friend's relay to the host of the invitation, then the game. */
     protected void join(final String query) {
         stopServer();
-        message = fr() ? "Connexion à l'hôte…" : "Reaching the host…";
+        joining = true;
+        final String host = Invite.getQueryParameter(query, Invite.HOST);
+        // The steps of the join: the invitation read, the relay on its way, the game next.
+        message = fr()
+                ? "✓   Invitation lue\n◉   Connexion à " + host + "…\n○   Le jeu s'ouvre"
+                : "✓   Invitation read\n◉   Reaching " + host + "…\n○   The game opens";
         setLinkMessageToView();
         new Thread(new Runnable() {
             @Override
@@ -226,7 +322,6 @@ public class LocalActivity extends Activity {
                 CharSequence msg;
                 boolean joined = false;
                 try {
-                    String host = Invite.getQueryParameter(query, Invite.HOST);
                     String port = Invite.getQueryParameter(query, Invite.PORT);
                     String key = Invite.getQueryParameter(query, Invite.KEY);
                     if (host == null || port == null || key == null) {
@@ -234,11 +329,23 @@ public class LocalActivity extends Activity {
                     }
                     InetSocketAddress address = new InetSocketAddress(InetAddress.getByName(host), Integer.parseInt(port));
                     tunnel = Tunnel.join(Hex.decodeHex(key), Collections.singletonList(address), config.getLocalPort(), config.isUdp());
-                    msg = (fr() ? "Connecté à " : "Connected to ") + host;
+                    // Cancelled while the relay reached the host: stopServer
+                    // closes it, whether Cancel came before the relay or after.
+                    if (!joining) {
+                        stopServer();
+                        return;
+                    }
+                    joining = false;
+                    msg = fr()
+                            ? "✓   Invitation lue\n✓   Connecté à " + host + "\n✓   Le jeu s'ouvre"
+                            : "✓   Invitation read\n✓   Connected to " + host + "\n✓   The game opens";
                     joined = true;
                 } catch (IOException | RuntimeException e) {
                     Log.e(TAG, "Local cannot join", e);
-                    tunnel = null;
+                    if (!joining) {
+                        return;
+                    }
+                    joining = false;
                     msg = (fr() ? "Impossible de rejoindre : " : "Cannot join: ") + e.getMessage();
                 }
                 final CharSequence shown = msg;
@@ -275,6 +382,8 @@ public class LocalActivity extends Activity {
     }
 
     protected static synchronized void stopServer() {
+        joining = false;
+        note = null;
         Tunnel t = tunnel;
         tunnel = null;
         if (t != null) {
@@ -289,25 +398,39 @@ public class LocalActivity extends Activity {
     }
 
     /** The screen as the match stands: the message, the code and its link, the buttons that apply. */
+    // https://github.com/marcosdiez/shareviahttp/blob/master/ShareViaHttp/app/src/main/java/com/MarcosDiez/shareviahttp/activities/BaseActivity.java#setLinkMessageToView
+    // not ported: setPaintFlags, UNDERLINE_TEXT_FLAG (the link is plain text under the code)
     protected void setLinkMessageToView() {
         boolean hosting = httpServer != null && tunnel != null;
         boolean joined = httpServer == null && tunnel != null;
+        boolean idle = tunnel == null && !joining;
         status.setText(message != null ? message : (fr() ? "Hébergez, ou scannez le code d'un ami avec l'appareil photo." : "Host, or scan a friend's code with your camera."));
         link_msg.setText(hosting && preferredServerUrl != null ? preferredServerUrl : "");
         generateBarCodeIfPossible();
-        startServer.setVisibility(tunnel == null ? View.VISIBLE : View.GONE);
-        play.setVisibility(hosting || joined ? View.VISIBLE : View.GONE);
-        stopServer.setVisibility(tunnel != null ? View.VISIBLE : View.GONE);
+        // Before a match, what Local is; while hosting, the port to host on.
+        CharSequence shown = idle
+                ? (fr() ? "Tout ce qui passe entre les téléphones est chiffré, sans internet." : "Everything between the phones is encrypted, no internet needed.")
+                : hosting ? note : null;
+        note_msg.setText(shown != null ? shown : "");
+        note_msg.setVisibility(shown != null ? View.VISIBLE : View.GONE);
+        startServer.setVisibility(idle ? View.VISIBLE : View.GONE);
+        play.setText(idle ? (fr() ? "Jouer seul" : "Play alone") : (fr() ? "Jouer" : "Play"));
+        play.setVisibility(joining ? View.GONE : View.VISIBLE);
+        stopServer.setText(hosting ? (fr() ? "Arrêter la partie" : "Stop the match")
+                : joined ? (fr() ? "Quitter la partie" : "Leave the match")
+                : (fr() ? "Annuler" : "Cancel"));
+        stopServer.setVisibility(idle ? View.GONE : View.VISIBLE);
     }
 
+    // https://github.com/marcosdiez/shareviahttp/blob/master/ShareViaHttp/app/src/main/java/com/MarcosDiez/shareviahttp/activities/BaseActivity.java#generateBarCodeIfPossible
     public void generateBarCodeIfPossible() {
         String contents = link_msg.getText().toString();
         if (contents.isEmpty()) {
-            qrImage.setVisibility(View.GONE);
+            qrCard.setVisibility(View.GONE);
             return;
         }
         qrImage.setImageBitmap(encodeAsBitmap(contents));
-        qrImage.setVisibility(View.VISIBLE);
+        qrCard.setVisibility(View.VISIBLE);
     }
 
     static Bitmap encodeAsBitmap(String contents) {
@@ -329,19 +452,46 @@ public class LocalActivity extends Activity {
         return bitmap;
     }
 
-    private TextView textView(String text, float size) {
+    private TextView textView(String text, float size, int color) {
         TextView textView = new TextView(this);
         textView.setText(text);
         textView.setTextSize(size);
-        textView.setTextColor(BLACK);
-        textView.setPadding(0, 16, 0, 16);
+        textView.setTextColor(color);
         return textView;
     }
 
-    private Button buttonView(String text) {
+    // A capsule button: the background drawn by Glass, no press shadow, the
+    // label as written.
+    // https://android.googlesource.com/platform/development/+/refs/heads/main/samples/ApiDemos/src/com/example/android/apis/view/ScrollView2.java#L44-L46
+    // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/view/View.java#setStateListAnimator
+    // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/widget/TextView.java#setAllCaps
+    // not ported: onCreate, R.layout.scroll_view_2, findViewById (the sample's own screen)
+    // not ported: allCaps, stateListAnimator (the phone's Button applies them, the stub only names the calls)
+    private Button buttonView(String text, Drawable background, int color) {
         Button buttonView = new Button(this);
         buttonView.setText(text);
+        buttonView.setAllCaps(false);
+        buttonView.setTextSize(15);
+        buttonView.setTextColor(color);
+        buttonView.setTypeface(Typeface.create(MEDIUM, Typeface.NORMAL));
+        buttonView.setBackground(background);
+        buttonView.setStateListAnimator(null);
+        buttonView.setPadding(glass.dp(24), glass.dp(15), glass.dp(24), glass.dp(15));
         return buttonView;
+    }
+
+    // A view's size in the column, a margin of bottom dp under it.
+    // https://android.googlesource.com/platform/development/+/refs/heads/main/samples/ApiDemos/src/com/example/android/apis/view/ScrollView2.java#L40-L43
+    // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/view/ViewGroup.java#setMargins
+    // not ported: onCreate, R.layout.scroll_view_2, findViewById (the sample's own screen)
+    // not ported: leftMargin, topMargin, rightMargin, bottomMargin, margins, requestLayout (set by the phone's setMargins)
+    private LinearLayout.LayoutParams generateLayoutParams(int width, int bottom) {
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
+                width,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        p.setMargins(0, 0, 0, glass.dp(bottom));
+        return p;
     }
 
     private static boolean fr() {

@@ -12,6 +12,7 @@ package android.content;
 
 import android.content.pm.ApplicationInfo;
 import android.content.res.AssetManager;
+import android.content.res.Resources;
 
 import java.io.File;
 
@@ -34,4 +35,7 @@ public abstract class Context {
 
     // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/content/Context.java#getApplicationInfo
     public abstract ApplicationInfo getApplicationInfo();
+
+    // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/content/Context.java#getResources
+    public abstract Resources getResources();
 }

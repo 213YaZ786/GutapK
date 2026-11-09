@@ -260,6 +260,8 @@ fun OverviewScreen(
             if (root != null) FilledTonalButton(onClick = { dialog = "local" }) { Text(t("local_action")) }
             if (scanned) FilledTonalButton(onClick = { dialog = "admin" }) { Text(t("admin_action")) }
             if (godot) FilledTonalButton(onClick = { dialog = "godot" }) { Text(t("godot_action")) }
+            // Any other game's values are read in its dex.
+            if (root != null && !godot) FilledTonalButton(onClick = { dialog = "java" }) { Text(t("godot_action")) }
         }
     }
     val detection = if (root != null && loaded != null) rememberDetection(root, loaded.classes) else null
@@ -388,6 +390,14 @@ fun OverviewScreen(
                 onDismiss = { dialog = null },
             )
             "godot" -> if (root != null) GodotDialog(
+                root = root,
+                dir = dir,
+                original = original,
+                info = info,
+                version = version,
+                onDismiss = { dialog = null },
+            )
+            "java" -> if (root != null) JavaDialog(
                 root = root,
                 dir = dir,
                 original = original,
