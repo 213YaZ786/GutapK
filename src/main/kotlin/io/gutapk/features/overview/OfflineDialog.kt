@@ -1,5 +1,6 @@
 package io.gutapk.features.overview
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -7,6 +8,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -427,6 +430,9 @@ private fun shownValue(value: Any?): String = value?.toString() ?: ""
 // The key and the pointer name one leaf.
 private fun rowKey(v: Value): String = v.key + "\n" + v.pointer
 
+// The rows of one answer shown at most, the search finds the others.
+private const val SHOWN = 200
+
 // The typed value of a field, null when it is not one of its type.
 private fun typed(v: Value, text: String): Any? = when (v.type) {
     "number" -> text.trim().let { n -> n.toLongOrNull() ?: n.toDoubleOrNull()?.takeIf { it.isFinite() } }
@@ -460,6 +466,8 @@ fun AdminDialog(
     var status by remember { mutableStateOf<Status?>(null) }
     var values by remember { mutableStateOf<List<Value>?>(null) }
     val edits = remember { mutableStateMapOf<String, String>() }
+    var search by remember { mutableStateOf("") }
+    val opened = remember { mutableStateMapOf<String, Boolean>() }
     var working by remember { mutableStateOf(false) }
     var failure by remember { mutableStateOf<String?>(null) }
     var answer by remember { mutableStateOf<Answer?>(null) }
@@ -494,69 +502,108 @@ fun AdminDialog(
                 onDismissRequest = onDismiss,
                 title = { Text(title) },
                 text = {
-                    Column(
-                        Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState()),
+                    // Jungle Heat's recordings hold 27 000 values: the list is
+                    // lazy, each answer a header that opens on a click, and a
+                    // search narrows every answer at once. The rows are the
+                    // ones this dialog had, the sticky headers those of the
+                    // Compose sample.
+                    // https://github.com/213YaZ786/GutapK/blob/ca70230/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#L496-L512
+                    // https://github.com/androidx/androidx/blob/androidx-main/compose/foundation/foundation/samples/src/main/java/androidx/compose/foundation/samples/LazyDslSamples.kt#StickyHeaderListSample
+                    // not ported: reverseLayout, contentPadding (the list reads top down in the dialog's own padding)
+                    val needle = search.trim()
+                    val sections = list.filter { v -> needle.isEmpty() || needle in v.pointer || needle in shownValue(v.override ?: v.value) }.groupBy { it.key }
+                    LazyColumn(
+                        Modifier.heightIn(max = 560.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Fact(t("try_package"), info.packageName)
-                        Fact(t("admin_status"), t(if (s.mode in listOf("live", "replay", "miss")) "admin_mode_" + s.mode else "admin_mode_none"))
-                        Text(t("admin_counts", s.entries.toString(), s.overrides.toString()), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        item { Fact(t("try_package"), info.packageName) }
+                        item { Fact(t("admin_status"), t(if (s.mode in listOf("live", "replay", "miss")) "admin_mode_" + s.mode else "admin_mode_none")) }
+                        item { Text(t("admin_counts", s.entries.toString(), s.overrides.toString()), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                         if (list.isEmpty()) {
-                            Text(t("admin_no_values"), style = MaterialTheme.typography.bodyMedium)
-                        }
-                        list.groupBy { it.key }.forEach { (key, members) ->
-                            Text(key, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, fontFamily = FontFamily.Monospace)
-                            members.forEach { v ->
-                                ValueRow(v, edits[rowKey(v)] ?: shownValue(v.override ?: v.value)) { edits[rowKey(v)] = it }
-                            }
-                        }
-                        if (a != null) {
-                            Text(
-                                if (a.ok) (if (kind == "set") t("admin_saved", a.count.toString()) else t("admin_done")) else t("admin_refused", a.error ?: "HTTP ${a.status}"),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = if (a.ok) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error,
-                            )
-                        }
-                        failure?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error) }
-                        val sure = confirming
-                        if (sure == null) {
-                            Row {
-                                TextButton(enabled = !working, onClick = { confirming = "reset" }) { Text(t("admin_reset")) }
-                                TextButton(enabled = !working, onClick = { confirming = "clear" }) { Text(t("admin_clear")) }
-                            }
+                            item { Text(t("admin_no_values"), style = MaterialTheme.typography.bodyMedium) }
                         } else {
-                            Text(t(if (sure == "reset") "admin_confirm_reset" else "admin_confirm_clear"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
-                            Row {
-                                TextButton(
-                                    enabled = !working,
-                                    onClick = {
-                                        confirming = null
-                                        working = true
-                                        answer = null
-                                        kind = sure
-                                        scope.launch {
-                                            val reply = withContext(Dispatchers.IO) {
-                                                runCatching { if (sure == "reset") ServerAdmin.reset(l.local) else ServerAdmin.clear(l.local) }
-                                                    .getOrElse { Answer(0, false, it.message ?: it.javaClass.simpleName, 0) }
-                                            }
-                                            answer = reply
-                                            val fresh = withContext(Dispatchers.IO) { runCatching { readServer(l) }.getOrNull() }
-                                            if (fresh != null) {
-                                                status = fresh.first
-                                                values = fresh.second
-                                                edits.clear()
-                                            }
-                                            working = false
-                                        }
-                                    },
-                                ) { Text(t("admin_yes")) }
-                                TextButton(onClick = { confirming = null }) { Text(t("cancel")) }
+                            item {
+                                OutlinedTextField(
+                                    value = search,
+                                    onValueChange = { search = it },
+                                    label = { Text(t("admin_search")) },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
                             }
                         }
-                        // Values compiled into the game need a reader of the
-                        // code, which comes later.
-                        Text(t("admin_compiled"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                        Text(t("admin_compiled_d"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        sections.forEach { (section, members) ->
+                            val shown = needle.isNotEmpty() || opened[section] == true
+                            stickyHeader {
+                                Text(
+                                    (if (shown) "▾ " else "▸ ") + section + "  (" + members.size + ")",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontFamily = FontFamily.Monospace,
+                                    modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                                        .clickable { opened[section] = !shown }.padding(vertical = 4.dp),
+                                )
+                            }
+                            if (shown) {
+                                items(members.take(SHOWN), key = { rowKey(it) }) { v ->
+                                    ValueRow(v, edits[rowKey(v)] ?: shownValue(v.override ?: v.value)) { edits[rowKey(v)] = it }
+                                }
+                                if (members.size > SHOWN) {
+                                    item { Text(t("admin_more", (members.size - SHOWN).toString()), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                                }
+                            }
+                        }
+                        item {
+                            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                if (a != null) {
+                                    Text(
+                                        if (a.ok) (if (kind == "set") t("admin_saved", a.count.toString()) else t("admin_done")) else t("admin_refused", a.error ?: "HTTP ${a.status}"),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = if (a.ok) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error,
+                                    )
+                                }
+                                failure?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error) }
+                                val sure = confirming
+                                if (sure == null) {
+                                    Row {
+                                        TextButton(enabled = !working, onClick = { confirming = "reset" }) { Text(t("admin_reset")) }
+                                        TextButton(enabled = !working, onClick = { confirming = "clear" }) { Text(t("admin_clear")) }
+                                    }
+                                } else {
+                                    Text(t(if (sure == "reset") "admin_confirm_reset" else "admin_confirm_clear"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                                    Row {
+                                        TextButton(
+                                            enabled = !working,
+                                            onClick = {
+                                                confirming = null
+                                                working = true
+                                                answer = null
+                                                kind = sure
+                                                scope.launch {
+                                                    val reply = withContext(Dispatchers.IO) {
+                                                        runCatching { if (sure == "reset") ServerAdmin.reset(l.local) else ServerAdmin.clear(l.local) }
+                                                            .getOrElse { Answer(0, false, it.message ?: it.javaClass.simpleName, 0) }
+                                                    }
+                                                    answer = reply
+                                                    val fresh = withContext(Dispatchers.IO) { runCatching { readServer(l) }.getOrNull() }
+                                                    if (fresh != null) {
+                                                        status = fresh.first
+                                                        values = fresh.second
+                                                        edits.clear()
+                                                    }
+                                                    working = false
+                                                }
+                                            },
+                                        ) { Text(t("admin_yes")) }
+                                        TextButton(onClick = { confirming = null }) { Text(t("cancel")) }
+                                    }
+                                }
+                                // Values compiled into the game need a reader of the
+                                // code, which comes later.
+                                Text(t("admin_compiled"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                                Text(t("admin_compiled_d"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
                     }
                 },
                 confirmButton = {
