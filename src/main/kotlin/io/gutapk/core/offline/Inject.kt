@@ -6,6 +6,8 @@ import io.gutapk.core.apk.axml.Axml
 import io.gutapk.core.apk.axml.AxmlReader
 import io.gutapk.core.apk.axml.AxmlWriter
 import io.gutapk.core.apk.axml.NodeVisitor
+import java.io.StringWriter
+import java.util.Properties
 import java.util.zip.CRC32
 
 // What an APK needs to carry its own cache server: a provider that starts it
@@ -25,6 +27,41 @@ object Inject {
 
     // The server's dex, a resource of GutapK built by Gradle.
     const val SERVER_DEX = "/io/gutapk/offline/server.dex"
+
+    // Local: its screen, from a launcher entry of its own and from a friend's
+    // invitation gutapk://<package>/join, its properties file, and the
+    // service of every Godot 4.5+ export that runs a second engine, in a
+    // process of its own (one engine per process).
+    const val LOCAL_ACTIVITY = "io.gutapk.local.LocalActivity"
+    const val LOCAL_LABEL = "Local"
+    const val LOCAL_SCHEME = "gutapk"
+    const val LOCAL_JOIN = "/join"
+    const val LOCAL_CONFIG = "assets/gutapk/local.properties"
+    const val GODOT_SERVICE = "org.godotengine.godot.service.GodotService"
+    const val SERVER_PROCESS = ":gutapk_server"
+    // The element and intent names of bundletool's AndroidManifest.
+    // https://github.com/google/bundletool/blob/master/src/main/java/com/android/tools/build/bundletool/model/AndroidManifest.java#L76-L103
+    // https://github.com/google/bundletool/blob/master/src/main/java/com/android/tools/build/bundletool/model/AndroidManifest.java#L281-L282
+    private const val ACTIVITY_ELEMENT_NAME = "activity"
+    private const val ACTIVITY_ALIAS_ELEMENT_NAME = "activity-alias"
+    private const val INTENT_FILTER_ELEMENT_NAME = "intent-filter"
+    private const val ACTION_ELEMENT_NAME = "action"
+    private const val CATEGORY_ELEMENT_NAME = "category"
+    private const val DATA_ELEMENT_NAME = "data"
+    private const val MAIN_ACTION_NAME = "android.intent.action.MAIN"
+    private const val LAUNCHER_CATEGORY_NAME = "android.intent.category.LAUNCHER"
+    private const val VIEW_ACTION_NAME = "android.intent.action.VIEW"
+    private const val DEFAULT_CATEGORY_NAME = "android.intent.category.DEFAULT"
+    private const val BROWSABLE_CATEGORY_NAME = "android.intent.category.BROWSABLE"
+    // AOSP public-final.xml.
+    private const val SCHEME_RESOURCE_ID = 0x01010027
+    private const val HOST_RESOURCE_ID = 0x01010028
+    private const val PATH_RESOURCE_ID = 0x0101002a
+    private const val SERVICE_ELEMENT_NAME = "service"
+    private const val NAME_ATTRIBUTE_NAME = "name"
+    private const val EXPORTED_ATTRIBUTE_NAME = "exported"
+    private const val PROCESS_ATTRIBUTE_NAME = "process"
+    private const val PROCESS_RESOURCE_ID = 0x01010011
 
     // ART loads classesN.dex natively only from Android 5.
     const val MIN_SDK = 21
@@ -110,6 +147,126 @@ object Inject {
         getOrCreateAndroidAttribute(provider, "initOrder", INIT_ORDER_RESOURCE_ID).setValueAsDecimalInteger(INIT_ORDER)
         application.children.add(provider)
     }
+
+    // A service element as bundletool's Service builds one, with a process
+    // attribute too, added to application as addService adds it, unless the
+    // manifest declares that service already.
+    // https://github.com/google/bundletool/blob/master/src/main/java/com/android/tools/build/bundletool/model/manifestelements/Service.java#asXmlProtoElement
+    // https://github.com/google/bundletool/blob/master/src/main/java/com/android/tools/build/bundletool/model/ManifestEditor.java#addService
+    // not ported: builder, Builder (the name, exported and process are given straight)
+    // not ported: asXmlProtoElement (its steps are inlined: the Axml node is the element itself, there is no proto to build)
+    private fun addService(manifestElement: Axml.Node, name: String, exported: Boolean, process: String?) {
+        val application = getOrCreateChildElement(manifestElement, APPLICATION_ELEMENT_NAME)
+        if (application.children.any { it.name == SERVICE_ELEMENT_NAME && hasName(it, name) }) return
+        val elementBuilder = Axml.Node()
+        elementBuilder.name = SERVICE_ELEMENT_NAME
+        getOrCreateAndroidAttribute(elementBuilder, NAME_ATTRIBUTE_NAME, Attr.NAME).setValueAsString(name)
+        getOrCreateAndroidAttribute(elementBuilder, EXPORTED_ATTRIBUTE_NAME, EXPORTED_RESOURCE_ID).setValueAsBoolean(exported)
+        if (process != null) getOrCreateAndroidAttribute(elementBuilder, PROCESS_ATTRIBUTE_NAME, PROCESS_RESOURCE_ID).setValueAsString(process)
+        application.children.add(elementBuilder)
+    }
+
+    // The manifest of a game with Local: the engine's service in a process of
+    // its own, the Local screen from a launcher entry of its own and from a
+    // friend's invitation, gutapk://<package>/join, the internet permission
+    // and a minSdkVersion of 21 at least. A second run changes nothing more.
+    fun localManifest(bytes: ByteArray, packageName: String): ByteArray {
+        val axml = read(bytes)
+        val manifestElement = axml.firsts.firstOrNull { it.name == "manifest" } ?: throw ApkFormatError("no manifest element")
+        addService(manifestElement, GODOT_SERVICE, false, SERVER_PROCESS)
+        addActivity(
+            manifestElement, LOCAL_ACTIVITY, true, LOCAL_LABEL,
+            listOf(
+                IntentFilter(listOf(MAIN_ACTION_NAME), listOf(LAUNCHER_CATEGORY_NAME)),
+                IntentFilter(
+                    listOf(VIEW_ACTION_NAME), listOf(DEFAULT_CATEGORY_NAME, BROWSABLE_CATEGORY_NAME),
+                    mapOf(SCHEME_RESOURCE_ID to ("scheme" to LOCAL_SCHEME), HOST_RESOURCE_ID to ("host" to packageName), PATH_RESOURCE_ID to ("path" to LOCAL_JOIN)),
+                ),
+            ),
+        )
+        addUsesPermission(manifestElement, INTERNET)
+        setHasCode(manifestElement, true)
+        if (minSdkVersion(manifestElement) < MIN_SDK) {
+            if (getUsesSdkAttribute(manifestElement, Attr.TARGET_SDK) == null) setUsesSdkAttribute(manifestElement, "targetSdkVersion", Attr.TARGET_SDK, minSdkVersion(manifestElement))
+            setMinSdkVersion(manifestElement, MIN_SDK)
+        }
+        return write(axml)
+    }
+
+    // An intent filter as bundletool's IntentFilter builds one, with a data
+    // element too when data has attributes (resource id to name and value).
+    // https://github.com/google/bundletool/blob/master/src/main/java/com/android/tools/build/bundletool/model/manifestelements/IntentFilter.java#L41-L80
+    // not ported: builder, Builder, addActionName, addCategoryName (the lists are given straight)
+    class IntentFilter(val actionNames: List<String>, val categoryNames: List<String>, val data: Map<Int, Pair<String, String>> = emptyMap())
+
+    // An activity element as bundletool's Activity builds one, its intent
+    // filters as children, added to application as addActivity adds it, unless
+    // the manifest declares that activity already.
+    // https://github.com/google/bundletool/blob/master/src/main/java/com/android/tools/build/bundletool/model/manifestelements/Activity.java#L77-L145
+    // https://github.com/google/bundletool/blob/master/src/main/java/com/android/tools/build/bundletool/model/manifestelements/IntentFilter.java#L50-L79
+    // https://github.com/google/bundletool/blob/master/src/main/java/com/android/tools/build/bundletool/model/ManifestEditor.java#addActivity
+    // not ported: setThemeAttribute, setExcludeFromRecentsAttribute, setStateNotNeeded, setNoHistory, setIconAttribute, setRoundIconAttribute (the screen keeps the app's theme and icon)
+    // not ported: asXmlProtoElement, addAllActionElements, addCategoryElement, setNameAttribute, setExportedAttribute, setIntentFilterElement (their steps are inlined: the Axml node is the element itself)
+    private fun addActivity(manifestElement: Axml.Node, name: String, exported: Boolean, label: String, intentFilters: List<IntentFilter>) {
+        val application = getOrCreateChildElement(manifestElement, APPLICATION_ELEMENT_NAME)
+        if (application.children.any { it.name == ACTIVITY_ELEMENT_NAME && hasName(it, name) }) return
+        val elementBuilder = Axml.Node()
+        elementBuilder.name = ACTIVITY_ELEMENT_NAME
+        getOrCreateAndroidAttribute(elementBuilder, NAME_ATTRIBUTE_NAME, Attr.NAME).setValueAsString(name)
+        getOrCreateAndroidAttribute(elementBuilder, EXPORTED_ATTRIBUTE_NAME, EXPORTED_RESOURCE_ID).setValueAsBoolean(exported)
+        getOrCreateAndroidAttribute(elementBuilder, "label", Attr.LABEL).setValueAsString(label)
+        for (intentFilter in intentFilters) {
+            val filter = Axml.Node()
+            filter.name = INTENT_FILTER_ELEMENT_NAME
+            for (actionName in intentFilter.actionNames) {
+                val action = Axml.Node()
+                action.name = ACTION_ELEMENT_NAME
+                getOrCreateAndroidAttribute(action, NAME_ATTRIBUTE_NAME, Attr.NAME).setValueAsString(actionName)
+                filter.children.add(action)
+            }
+            for (categoryName in intentFilter.categoryNames) {
+                val category = Axml.Node()
+                category.name = CATEGORY_ELEMENT_NAME
+                getOrCreateAndroidAttribute(category, NAME_ATTRIBUTE_NAME, Attr.NAME).setValueAsString(categoryName)
+                filter.children.add(category)
+            }
+            if (intentFilter.data.isNotEmpty()) {
+                val data = Axml.Node()
+                data.name = DATA_ELEMENT_NAME
+                intentFilter.data.forEach { (resourceId, attribute) -> getOrCreateAndroidAttribute(data, attribute.first, resourceId).setValueAsString(attribute.second) }
+                filter.children.add(data)
+            }
+            elementBuilder.children.add(filter)
+        }
+        application.children.add(elementBuilder)
+    }
+
+    // The activity the launcher opens, the first activity or alias with MAIN
+    // and LAUNCHER, its name made whole with the package as Android does for
+    // one starting with a dot or without a package. Null for an app without one.
+    // https://github.com/google/bundletool/blob/master/src/main/java/com/android/tools/build/bundletool/model/AndroidManifest.java#L981-L1022
+    // not ported: hasMainTvActivity, isHeadless (a phone's launcher only)
+    // not ported: hasMainActivity, getActivities, getActivityAliases (one walk returns the activity itself, not whether there is one)
+    fun mainActivity(bytes: ByteArray): String? {
+        val manifestElement = read(bytes).firsts.firstOrNull { it.name == "manifest" } ?: throw ApkFormatError("no manifest element")
+        val packageName = getAttribute(manifestElement, "package")?.value as? String ?: ""
+        val app = manifestElement.children.firstOrNull { it.name == APPLICATION_ELEMENT_NAME } ?: return null
+        val activity = app.children.filter { it.name == ACTIVITY_ELEMENT_NAME || it.name == ACTIVITY_ALIAS_ELEMENT_NAME }.firstOrNull { activity ->
+            activity.children.filter { it.name == INTENT_FILTER_ELEMENT_NAME }.any { intent ->
+                hasChildWithNameAttribute(intent, ACTION_ELEMENT_NAME, MAIN_ACTION_NAME) &&
+                    hasChildWithNameAttribute(intent, CATEGORY_ELEMENT_NAME, LAUNCHER_CATEGORY_NAME)
+            }
+        } ?: return null
+        val name = getAndroidAttribute(activity, Attr.NAME)?.value as? String ?: return null
+        return when {
+            name.startsWith(".") -> packageName + name
+            '.' !in name -> "$packageName.$name"
+            else -> name
+        }
+    }
+
+    private fun hasChildWithNameAttribute(element: Axml.Node, childElementName: String, nameAttributeValue: String): Boolean =
+        element.children.filter { it.name == childElementName }.any { category -> hasName(category, nameAttributeValue) }
 
     // The permission, unless the manifest asks for it already. Before
     // application, where the build tools put the permissions.
@@ -228,6 +385,23 @@ object Inject {
             ports.forEach { (origin, port) -> append("listen.$port=$origin\n") }
             append("admin=gutapk.$packageName\n")
         }
+    }
+
+    // The properties file Local reads (io.gutapk.local.Config): the port the
+    // game's client connects to on 127.0.0.1, whether it speaks UDP, the
+    // game's own screen, and the arguments of the server engine in order,
+    // engine.arg.0 first, escaped by Properties.store itself.
+    // https://github.com/openjdk/jdk/blob/jdk-21%2B35/src/java.base/share/classes/java/util/Properties.java#store
+    // not ported: store0, saveConvert, writeComments (Properties.store is called, it does them)
+    fun localConfig(args: List<String>, localPort: Int, udp: Boolean, activity: String): String {
+        val properties = Properties()
+        properties.setProperty("local_port", localPort.toString())
+        properties.setProperty("udp", udp.toString())
+        properties.setProperty("activity", activity)
+        args.forEachIndexed { i, arg -> properties.setProperty("engine.arg.$i", arg) }
+        val writer = StringWriter()
+        properties.store(writer, null)
+        return writer.toString()
     }
 
     private fun read(bytes: ByteArray): Axml {

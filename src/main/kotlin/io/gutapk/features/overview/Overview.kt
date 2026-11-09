@@ -249,22 +249,23 @@ fun OverviewScreen(
                 FilledTonalButton(onClick = { editing = true }) { Text(t("rename_action")) }
             }
             FilledTonalButton(onClick = { dialog = "sign" }) { Text(t("sign_action")) }
-            // Offline, Local and Admin need to know where the game's servers
-            // are, so they wait for the scan. Local is shown and waits for
-            // the next version. Any address found opens the review, the user
-            // decides which ones are the game's servers.
-            if (root != null && endpoints?.isNotEmpty() == true) {
-                FilledTonalButton(onClick = { dialog = "offline" }) { Text(t("offline_action")) }
+            // Offline and Admin need to know where the game's servers are, so
+            // they wait for the scan. Any address found opens the review, the
+            // user decides which ones are the game's servers. Local and a
+            // Godot game's values read its own scripts: no scan to wait for.
+            val godot = root != null && info?.engines?.contains(ApkReader.GODOT) == true
+            val scanned = root != null && endpoints?.isNotEmpty() == true
+            if (scanned) FilledTonalButton(onClick = { dialog = "offline" }) { Text(t("offline_action")) }
+            if (godot) {
+                FilledTonalButton(onClick = { dialog = "local" }) { Text(t("local_action")) }
+            } else if (scanned) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     FilledTonalButton(enabled = false, onClick = {}) { Text(t("local_action")) }
-                    Text(t("local_soon"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(t("local_godot_only"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                FilledTonalButton(onClick = { dialog = "admin" }) { Text(t("admin_action")) }
             }
-            // A Godot game's values are in its own scripts: no scan to wait for.
-            if (root != null && info?.engines?.contains(ApkReader.GODOT) == true) {
-                FilledTonalButton(onClick = { dialog = "godot" }) { Text(t("godot_action")) }
-            }
+            if (scanned) FilledTonalButton(onClick = { dialog = "admin" }) { Text(t("admin_action")) }
+            if (godot) FilledTonalButton(onClick = { dialog = "godot" }) { Text(t("godot_action")) }
         }
     }
     val detection = if (root != null && loaded != null) rememberDetection(root, loaded.classes) else null
@@ -381,6 +382,14 @@ fun OverviewScreen(
             "admin" -> if (root != null) AdminDialog(
                 root = root,
                 info = info,
+                onDismiss = { dialog = null },
+            )
+            "local" -> if (root != null) LocalDialog(
+                root = root,
+                dir = dir,
+                original = original,
+                info = info,
+                version = version,
                 onDismiss = { dialog = null },
             )
             "godot" -> if (root != null) GodotDialog(

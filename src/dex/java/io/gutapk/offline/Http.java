@@ -453,6 +453,15 @@ public class Http {
             return new Response(status, mimeType, new ByteArrayInputStream(data), data.length);
         }
 
+        /**
+         * Create a response with known length, read from data as it is sent:
+         * the game's APK Local hands to a friend.
+         * https://github.com/NanoHttpd/nanohttpd/blob/master/core/src/main/java/org/nanohttpd/protocols/http/response/Response.java#newFixedLengthResponse
+         */
+        public static Response newFixedLengthResponse(int status, String mimeType, InputStream data, long totalBytes) {
+            return new Response(status, mimeType, data, totalBytes);
+        }
+
         /** Create a text response with known length, in UTF-8. */
         public static Response newFixedLengthResponse(int status, String mimeType, String txt) {
             byte[] bytes = new byte[0];

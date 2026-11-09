@@ -96,7 +96,7 @@ internal fun probe(root: Path): Seen {
     return if (phones.isEmpty()) Seen.NoPhone else Seen.Ready(adb, phones)
 }
 
-private fun phoneLabel(phone: AdbDevice): String = listOfNotNull(phone.model, phone.serial).joinToString(", ")
+internal fun phoneLabel(phone: AdbDevice): String = listOfNotNull(phone.model, phone.serial).joinToString(", ")
 
 // The resource of GutapK that holds the server's dex, built by Gradle.
 // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/core/sign/Keys.kt#resource

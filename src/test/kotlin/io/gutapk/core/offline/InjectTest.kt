@@ -75,6 +75,8 @@ class InjectTest {
         permissions: List<String> = listOf("android.permission.VIBRATE"),
         application: List<A> = emptyList(),
         root: List<A> = emptyList(),
+        // The activity's name, given a MAIN LAUNCHER filter when it is set.
+        launcher: String? = null,
     ): ByteArray {
         val w = AxmlWriter()
         w.ns("android", android, 1)
@@ -98,7 +100,16 @@ class InjectTest {
         app.attr(android, "label", 0x01010001, NodeVisitor.TYPE_STRING, "Game")
         application.forEach { app.attr(android, it.name, it.id, it.type, it.value) }
         val activity = app.child(null, "activity")!!
-        activity.attr(android, "name", 0x01010003, NodeVisitor.TYPE_STRING, "com.example.game.Main")
+        activity.attr(android, "name", 0x01010003, NodeVisitor.TYPE_STRING, launcher ?: "com.example.game.Main")
+        if (launcher != null) {
+            val filter = activity.child(null, "intent-filter")!!
+            for ((element, name) in listOf("action" to "android.intent.action.MAIN", "category" to "android.intent.category.LAUNCHER")) {
+                val child = filter.child(null, element)!!
+                child.attr(android, "name", 0x01010003, NodeVisitor.TYPE_STRING, name)
+                child.end()
+            }
+            filter.end()
+        }
         activity.end()
         app.end()
         m.end()
@@ -502,6 +513,50 @@ class InjectTest {
             assertEquals(ZipEntry.DEFLATED, z.getEntry(Inject.CONFIG).method)
             assertNotNull(z.getEntry("classes.dex"))
         }
+    }
+
+    // The game with Local, built as the offline one is: the Local screen from
+    // the launcher and from gutapk://<package>/join, the engine's service in
+    // its own process, the config the screen reads, the same dex.
+    // https://github.com/google/bundletool/blob/master/src/main/java/com/android/tools/build/bundletool/model/AndroidManifest.java#L981-L1022
+    // not ported: hasMainTvActivity, isHeadless, hasMainActivity, getActivities, getActivityAliases (mainActivity is checked through the build)
+    private fun local(d: Path, apk: Path, out: Path = d.resolve("out/local.apk"), args: List<String> = listOf("--", "--server")) =
+        io.gutapk.core.local.LocalBuild.run(apk, args, 2755, false, emptyMap(), io.gutapk.core.godot.Zstd(), serverDex, d.resolve("work"), out, TestKey.load(), 16, "test", quiet)
+
+    @Test
+    fun theLocalBuildCarriesLocal() = withDir { d ->
+        val apk = fakeApk(d, manifest(launcher = ".Main"))
+        val out = d.resolve("out/local.apk")
+        assertTrue(local(d, apk, out).verified)
+        assertTrue(ApkVerifier.Builder(out.toFile()).build().verify().isVerified)
+
+        val manifest = entry(out, "AndroidManifest.xml")
+        val application = root(manifest).firstChild("application")!!
+        val screen = application.children.single { it.name == "activity" && it.byId(0x01010003)?.value == Inject.LOCAL_ACTIVITY }
+        assertEquals(true, screen.byId(0x01010010)!!.value)
+        val filters = screen.children.filter { it.name == "intent-filter" }
+        assertEquals(listOf("android.intent.action.MAIN", "android.intent.action.VIEW"), filters.map { it.firstChild("action")!!.byId(0x01010003)!!.value })
+        val data = filters[1].firstChild("data")!!
+        assertEquals(listOf("gutapk", "com.example.game", "/join"), listOf(0x01010027, 0x01010028, 0x0101002a).map { data.byId(it)!!.value })
+        val service = application.children.single { it.name == "service" }
+        assertEquals(Inject.GODOT_SERVICE, service.byId(0x01010003)!!.value)
+        assertEquals(Inject.SERVER_PROCESS, service.byId(0x01010011)!!.value)
+        assertTrue(permissions(manifest).contains(internet))
+        assertEquals(21, root(manifest).firstChild("uses-sdk")!!.byId(0x0101020c)!!.value)
+
+        assertContentEquals(serverDex, entry(out, "classes2.dex"))
+        val config = io.gutapk.local.Config.build(entry(out, Inject.LOCAL_CONFIG).inputStream())
+        assertEquals(2755, config.localPort)
+        assertEquals(false, config.isUdp)
+        assertEquals("com.example.game.Main", config.activity)
+        assertEquals(listOf("--", "--server"), config.args)
+
+        // Once is enough, an offline game is the original's to start from,
+        // a game no launcher opens or no argument starts is refused.
+        assertFailsWith<CheckFailed> { local(d, out, d.resolve("out/again.apk")) }
+        assertFailsWith<CheckFailed> { local(d, build(d, fakeApk(d, manifest(launcher = ".Main"))).let { d.resolve("out/offline.apk") }, d.resolve("out/both.apk")) }
+        assertFailsWith<CheckFailed> { local(d, fakeApk(d), d.resolve("out/none.apk")) }
+        assertFailsWith<CheckFailed> { local(d, fakeApk(d, manifest(launcher = ".Main")), d.resolve("out/no-args.apk"), emptyList()) }
     }
 
     @Test

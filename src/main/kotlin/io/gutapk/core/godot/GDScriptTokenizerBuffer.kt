@@ -31,6 +31,8 @@ class GDScriptTokenizerBuffer(private val zstd: Decompressor) {
     val identifiers = mutableListOf<String>()
     val constants = mutableListOf<Constant>()
     val tokens = mutableListOf<Token>()
+    // By the index of a line's first token, its column.
+    val token_columns = sortedMapOf<Int, Int>()
 
     // Kept as read: the tokens keep their count and their order.
     private var identifier_bytes = ByteArray(0)
@@ -105,6 +107,14 @@ class GDScriptTokenizerBuffer(private val zstd: Decompressor) {
         // Lines then columns, a token index and a value each.
         if (token_line_count * 16L > b.remaining()) throw IOException("the line table runs past the buffer")
         token_line_bytes = ByteArray(token_line_count * 16).also { b.get(it) }
+        // The column of each line's first token, its indent as scan reads it.
+        // https://github.com/godotengine/godot/blob/4.6.3-stable/modules/gdscript/gdscript_tokenizer_buffer.cpp#L211-L219
+        val columns = ByteBuffer.wrap(token_line_bytes).order(ByteOrder.LITTLE_ENDIAN)
+        columns.position(token_line_count * 8)
+        for (i in 0 until token_line_count) {
+            val token_index = columns.getInt()
+            token_columns[token_index] = columns.getInt()
+        }
 
         for (i in 0 until token_count) {
             val token_len = if (b.get(b.position()).toInt() and TOKEN_BYTE_MASK != 0) 8 else 5
