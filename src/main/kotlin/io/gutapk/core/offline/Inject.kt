@@ -28,6 +28,22 @@ object Inject {
     // The server's dex, a resource of GutapK built by Gradle.
     const val SERVER_DEX = "/io/gutapk/offline/server.dex"
 
+    // The calls a game makes to learn whether the phone is online, answered
+    // by the server's Net in an offline build: a game that sees no network
+    // never calls its servers on loopback. Each one by its dex reference, to
+    // the class whose static method of the same name takes the receiver first.
+    // The methods FakeWifiConnection hooks that an app can call.
+    // https://github.com/lemonsqueeze/FakeWifiConnection/blob/master/FakeWifiConnection/src/com/lemonsqueeze/fakewificonnection/Main.java#L336-L406
+    // not ported: afterHookedMethod, hook_method (the calls are rewritten, not hooked)
+    // not ported: getActiveNetworkInfoForUid, getProvisioningOrActiveNetworkInfo, getActiveNetworkInfoUnfiltered (hidden from apps)
+    const val CONNECTIVITY = "Landroid/net/ConnectivityManager;"
+    val NETWORK_CALLS = listOf(
+        "getActiveNetworkInfo()Landroid/net/NetworkInfo;",
+        "getNetworkInfo(I)Landroid/net/NetworkInfo;",
+        "getAllNetworkInfo()[Landroid/net/NetworkInfo;",
+        "isActiveNetworkMetered()Z",
+    ).associate { "$CONNECTIVITY->$it" to "Lio/gutapk/offline/Net;" }
+
     // Local: its screen, from a launcher entry of its own and from a friend's
     // invitation gutapk://<package>/join, its properties file, and the
     // service of every Godot 4.5+ export that runs a second engine, in a

@@ -6,8 +6,8 @@ package io.gutapk.offline;
  * consults the cache first and goes to the network when it must. This one asks
  * the network first, since the game wants live data whenever there is a
  * network, and answers from the cache when the call fails. The cache hit
- * is the exact request first, then the latest answer for the endpoint, and a
- * miss is a 502 and not OkHttp's 504 only-if-cached.
+ * is the exact request first, then the nearest one recorded for the endpoint
+ * (Store.nearest), and a miss is a 502 and not OkHttp's 504 only-if-cached.
  *
  * https://github.com/square/okhttp/blob/master/okhttp/src/commonJvmAndroid/kotlin/okhttp3/internal/cache/CacheInterceptor.kt#intercept
  * https://github.com/wiremock/wiremock/blob/master/wiremock-core/src/main/java/com/github/tomakehurst/wiremock/http/ProxyResponseRenderer.java#proxyResponseError
@@ -81,15 +81,16 @@ public class CacheInterceptor implements Http.Handler {
         if (networkResponse != null) {
             if (networkResponse.code >= 200 && networkResponse.code < 400) {
                 // Offer this response to the cache.
-                cache.put(networkResponse);
+                cache.put(networkResponse, chain.getBody());
             }
             lastSeen = LIVE;
             return response(networkResponse, LIVE);
         }
 
-        // The network failed: the exact request if it was seen, else the latest of its endpoint.
+        // The network failed: the exact request if it was seen, else the nearest of its endpoint.
         Store.Entry cacheCandidate = cache.get(method, origin, chain.getUri(), chain.getQueryParameterString(), bodyHash);
-        Store.Entry cacheResponse = cacheCandidate != null ? cacheCandidate : cache.latest(method, origin, chain.getUri());
+        Store.Entry cacheResponse = cacheCandidate != null ? cacheCandidate
+                : cache.nearest(method, origin, chain.getUri(), chain.getQueryParameterString(), chain.getBody());
 
         // If the network failed and the cache is insufficient, fail.
         if (cacheResponse == null) {

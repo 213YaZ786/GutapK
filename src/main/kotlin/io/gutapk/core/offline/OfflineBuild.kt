@@ -81,10 +81,16 @@ object OfflineBuild {
                         replaced[file] = Files.write(work.resolve("security$i.bin"), Inject.securityConfig(zip.getInputStream(entry).use { it.readAllBytes() }))
                     }
                 }
-                dexPatches.map { it.name }.distinct().forEachIndexed { i, entry ->
+                // A dex that asks Android whether the phone is online is
+                // written again too, its calls answered by the server's Net.
+                val asking = names.filter { DexHeader.isDex(it) && it !in dexPatches.map { p -> p.name } }.filter { entry ->
+                    String(zip.getInputStream(zip.getEntry(entry)).use { it.readAllBytes() }, Charsets.ISO_8859_1).contains(Inject.CONNECTIVITY)
+                }
+                (dexPatches.map { it.name }.distinct() + asking).forEachIndexed { i, entry ->
                     replaced[entry] = work.resolve("dex$i.dex")
-                    val changed = strings.writeTo(replaced.getValue(entry), zip.getInputStream(zip.getEntry(entry)).use { it.readAllBytes() }, targets)
-                    sink.emit(JobEvent.Line("$entry written again, ${changed.size} strings pointed at the phone"))
+                    val changed = strings.writeTo(replaced.getValue(entry), zip.getInputStream(zip.getEntry(entry)).use { it.readAllBytes() }, targets, Inject.NETWORK_CALLS)
+                    val (calls, moved) = changed.partition { it in Inject.NETWORK_CALLS }
+                    sink.emit(JobEvent.Line("$entry written again, ${moved.size} strings pointed at the phone, ${calls.size} network checks answered on the phone"))
                 }
                 // Patches.apply on the assemblies in memory: every patch checked
                 // against the old bytes, then written, the store written again.

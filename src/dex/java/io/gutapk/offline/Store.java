@@ -19,7 +19,25 @@ package io.gutapk.offline;
  * Not ported: hasNext, next (urls returns a list, the cache is small)
  * Not ported: abortQuietly, update, writeAbortCount, writeSuccessCount (no DiskLruCache editor: a file is written aside and renamed)
  *
+ * A request that was never seen as such gets the answer to the nearest one
+ * recorded, as WireMock ranks its near misses: the mean of the normalised
+ * Levenshtein distances of the query and of the body, the request body kept
+ * in a third file for it.
+ * https://github.com/wiremock/wiremock/blob/master/wiremock-core/src/main/java/com/github/tomakehurst/wiremock/verification/NearMissCalculator.java#findNearestTo
+ * https://github.com/wiremock/wiremock/blob/master/wiremock-core/src/main/java/com/github/tomakehurst/wiremock/matching/EqualToPattern.java#match
+ * https://github.com/wiremock/wiremock/blob/master/wiremock-core/src/main/java/com/github/tomakehurst/wiremock/matching/MatchResult.java#aggregate
+ * https://github.com/wiremock/wiremock/blob/master/wiremock-core/src/main/java/com/github/tomakehurst/wiremock/common/Strings.java#L513-L521
+ * https://github.com/apache/commons-text/blob/master/src/main/java/org/apache/commons/text/similarity/LevenshteinDistance.java#unlimitedCompare
+ *
+ * Not ported: NEAR_MISS_COUNT, sortAndTruncate, NearMiss, MemoizingMatchResult (the nearest one is served, not a list)
+ * Not ported: getScenarioStateOrNull, customMatchers (no scenarios and no extensions)
+ * Not ported: caseInsensitive (bodies are bytes)
+ * Not ported: limitedCompare, threshold (every recorded request is ranked)
+ * Not ported: aggregateWeighted, WeightedMatchResult (query and body weigh the same, as aggregate gives them)
+ *
  * Copyright 2010 Google Inc., 2011 Square Inc., Apache License 2.0.
+ * Copyright Thomas Akehurst, Apache License 2.0.
+ * Copyright The Apache Software Foundation, Apache License 2.0.
  */
 
 import java.io.BufferedReader;
@@ -43,7 +61,11 @@ public class Store {
 
     private static final String ENTRY_METADATA = ".0";
     private static final String ENTRY_BODY = ".1";
+    private static final String ENTRY_REQUEST = ".2";
     private static final String LATEST = ".latest";
+
+    /** The bytes of a body compared at most, the distance costing their product. */
+    static final int COMPARED = 2048;
 
     /** One recorded answer, with the request that asked for it. */
     public static class Entry {
@@ -173,6 +195,11 @@ public class Store {
     }
 
     private Entry read(String key) {
+        return read(key, true);
+    }
+
+    /** The entry of the key, its answer left unread when the request alone is ranked. */
+    private Entry read(String key, boolean answer) {
         File metadata = new File(directory, key + ENTRY_METADATA);
         File body = new File(directory, key + ENTRY_BODY);
         if (!metadata.isFile() || !body.isFile()) {
@@ -181,7 +208,7 @@ public class Store {
         BufferedReader source = null;
         try {
             source = new BufferedReader(new InputStreamReader(new FileInputStream(metadata), "UTF-8"));
-            return Entry.readFrom(source, readAll(body));
+            return Entry.readFrom(source, answer ? readAll(body) : new byte[0]);
         } catch (IOException e) {
             return null; // Give up because the cache cannot be read.
         } catch (RuntimeException e) {
@@ -213,11 +240,137 @@ public class Store {
         }
     }
 
-    public synchronized void put(Entry entry) {
+    /**
+     * The recorded answer whose request is nearest to this one among those of
+     * its method, origin and path, the newest among equals. A game that adds a
+     * random number to every call and says what it wants in the body gets the
+     * answer to the same command, not the last one it was sent.
+     * https://github.com/wiremock/wiremock/blob/master/wiremock-core/src/main/java/com/github/tomakehurst/wiremock/verification/NearMissCalculator.java#findNearestTo
+     * https://github.com/wiremock/wiremock/blob/master/wiremock-core/src/main/java/com/github/tomakehurst/wiremock/matching/MatchResult.java#aggregate
+     * not ported: findNearestTo (it is this method, over the recorded requests)
+     * not ported: aggregate, MatchResult, match (the mean of the two distances is a double here)
+     * not ported: getDistance (normalisedLevenshteinDistance gives the distance)
+     * not ported: isExactMatch (get serves the exact request before nearest is asked)
+     */
+    public synchronized Entry nearest(String method, String origin, String path, String query, byte[] body) {
+        File[] serveEvents = directory.listFiles();
+        if (serveEvents == null) {
+            return null;
+        }
+        String requestPattern = method + " " + origin + path;
+        String value = latin1(body);
+        String nearMiss = null;
+        double distance = Double.MAX_VALUE;
+        long received = Long.MIN_VALUE;
+        for (File serveEvent : serveEvents) {
+            String name = serveEvent.getName();
+            if (!name.endsWith(ENTRY_METADATA)) {
+                continue;
+            }
+            String key = name.substring(0, name.length() - ENTRY_METADATA.length());
+            Entry stubMapping = read(key, false);
+            if (stubMapping == null || !stubMapping.endpoint().equals(requestPattern)) {
+                continue;
+            }
+            byte[] expectedValue = new byte[0];
+            File request = new File(directory, key + ENTRY_REQUEST);
+            if (request.isFile()) {
+                try {
+                    expectedValue = readAll(request);
+                } catch (IOException e) {
+                    Server.LOG.fine("Unreadable request " + request + ": " + e);
+                }
+            }
+            double matchResult = (normalisedLevenshteinDistance(stubMapping.query, query) + normalisedLevenshteinDistance(latin1(expectedValue), value)) / 2;
+            if (matchResult < distance || (matchResult == distance && stubMapping.receivedResponseMillis > received)) {
+                nearMiss = key;
+                distance = matchResult;
+                received = stubMapping.receivedResponseMillis;
+            }
+        }
+        return nearMiss == null ? null : read(nearMiss);
+    }
+
+    /**
+     * The first COMPARED bytes, one char each, the String that EqualToPattern
+     * matches.
+     * https://github.com/wiremock/wiremock/blob/master/wiremock-core/src/main/java/com/github/tomakehurst/wiremock/matching/EqualToPattern.java#match
+     */
+    private static String latin1(byte[] value) {
+        try {
+            return new String(value, 0, Math.min(value.length, COMPARED), "ISO-8859-1");
+        } catch (java.io.UnsupportedEncodingException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    // https://github.com/wiremock/wiremock/blob/master/wiremock-core/src/main/java/com/github/tomakehurst/wiremock/common/Strings.java#L513-L521
+    static double normalisedLevenshteinDistance(String one, String two) {
+        if (one == null || two == null) {
+            return 1.0;
+        }
+
+        double maxDistance = Math.max(one.length(), two.length());
+        if (maxDistance == 0) {
+            return 0.0; // Two empty values are the same.
+        }
+        double actualDistance = unlimitedCompare(one, two);
+        return (actualDistance / maxDistance);
+    }
+
+    // https://github.com/apache/commons-text/blob/master/src/main/java/org/apache/commons/text/similarity/LevenshteinDistance.java#unlimitedCompare
+    static int unlimitedCompare(CharSequence left, CharSequence right) {
+        int n = left.length(); // length of left
+        int m = right.length(); // length of right
+
+        if (n == 0) {
+            return m;
+        }
+        if (m == 0) {
+            return n;
+        }
+        if (n > m) {
+            // swap the input strings to consume less memory
+            final CharSequence tmp = left;
+            left = right;
+            right = tmp;
+            n = m;
+            m = right.length();
+        }
+        final int[] p = new int[n + 1];
+        // indexes into strings left and right
+        int i; // iterates through left
+        int j; // iterates through right
+        int upperLeft;
+        int upper;
+        char rightJ; // jth character of right
+        int cost; // cost
+        for (i = 0; i <= n; i++) {
+            p[i] = i;
+        }
+        for (j = 1; j <= m; j++) {
+            upperLeft = p[0];
+            rightJ = right.charAt(j - 1);
+            p[0] = j;
+
+            for (i = 1; i <= n; i++) {
+                upper = p[i];
+                cost = left.charAt(i - 1) == rightJ ? 0 : 1;
+                // minimum of cell to the left+1, to the top+1, diagonally left and up +cost
+                p[i] = Math.min(Math.min(p[i - 1] + 1, p[i] + 1), upperLeft + cost);
+                upperLeft = upper;
+            }
+        }
+        return p[n];
+    }
+
+    /** Records the answer, and the request body that asked for it for nearest. */
+    public synchronized void put(Entry entry, byte[] requestBody) {
         String key = key(entry.requestMethod, entry.origin, entry.path, entry.query, entry.requestBodyHash);
         try {
             File metadata = new File(directory, key + ENTRY_METADATA);
             File body = new File(directory, key + ENTRY_BODY);
+            writeAside(new File(directory, key + ENTRY_REQUEST), requestBody);
             writeAside(body, entry.body);
             Writer sink = null;
             File aside = new File(directory, key + ENTRY_METADATA + ".tmp");
@@ -237,6 +390,7 @@ public class Store {
     public synchronized void remove(String key) {
         new File(directory, key + ENTRY_METADATA).delete();
         new File(directory, key + ENTRY_BODY).delete();
+        new File(directory, key + ENTRY_REQUEST).delete();
     }
 
     /** Deletes all values stored in the cache. */

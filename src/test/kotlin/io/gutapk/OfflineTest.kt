@@ -244,6 +244,20 @@ class OfflineTest {
         assertEquals("beta", other.json.getString("echo"))
     }
 
+    // Jungle Heat 2.2.7 posts every command to /?r=<random>, the command in
+    // the body. The latest answer was a ping's, sent back to its login.
+    // https://github.com/wiremock/wiremock/blob/master/wiremock-core/src/main/java/com/github/tomakehurst/wiremock/verification/NearMissCalculator.java#findNearestTo
+    @Test
+    fun aRequestNeverSeenGetsTheAnswerToTheNearestOne() = rig { r ->
+        r.post("/echo?r=103634281", "cmd=login&user=7&t=100")
+        r.post("/echo?r=574844464", "cmd=ping&t=101")
+        r.upstream.stop()
+        val login = r.post("/echo?r=25577140", "cmd=login&user=7&t=205")
+        assertEquals("replay", login.mode)
+        assertEquals("cmd=login&user=7&t=100", login.json.getString("echo"))
+        assertEquals("cmd=ping&t=101", r.post("/echo?r=1206760692", "cmd=ping&t=206").json.getString("echo"))
+    }
+
     @Test
     fun overridesApplyToLiveAndReplayedJson() = rig { r ->
         r.get("/config")
