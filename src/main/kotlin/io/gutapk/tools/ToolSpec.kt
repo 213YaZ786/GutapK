@@ -13,6 +13,9 @@ enum class ToolSource(val tag: String) {
     // Microsoft's .NET release index, index is releases-index.json,
     // package the file name of one runtime archive.
     DOTNET("dotnet"),
+    // A Java library on a Maven repository, index is its
+    // maven-metadata.xml, package the pattern of the versions taken.
+    MAVEN("maven"),
 }
 
 // In the execDir column, a tool whose program is a single file, a jar, with
@@ -68,7 +71,7 @@ object Tools {
                 ?: throw IllegalArgumentException("unknown source ${f[1]}")
             // For GitHub the package column is the asset name pattern. A bad
             // pattern fails here, at load, not at the first lookup.
-            if (source == ToolSource.GITHUB || source == ToolSource.GITHUB_PRE) Regex(f[3])
+            if (source == ToolSource.GITHUB || source == ToolSource.GITHUB_PRE || source == ToolSource.MAVEN) Regex(f[3])
             if (source == ToolSource.GITHUB_NIGHTLY) require(Releases.nightlyParts(f[3]) != null) { "bad nightly package ${f[3]}" }
             ToolSpec(
                 id = f[0],

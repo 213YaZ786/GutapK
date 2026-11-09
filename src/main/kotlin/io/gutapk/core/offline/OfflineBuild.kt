@@ -32,6 +32,7 @@ object OfflineBuild {
         input: Path,
         endpoints: List<Endpoint>,
         dex: ByteArray,
+        strings: DexStringRewrite,
         work: Path,
         out: Path,
         key: SigningKey,
@@ -54,6 +55,9 @@ object OfflineBuild {
             val patches = Redirect.patches(input, fitting, ports)
             if (patches.isEmpty()) throw CheckFailed("no server address of ${input.fileName} can be pointed at the phone")
             sink.emit(JobEvent.Line("${patches.size} addresses of ${ports.size} servers moved to the phone, ports ${ports.values.joinToString(", ")}"))
+            // A dex is written again by DexStrings, a patch in place would leave its strings out of order.
+            val (dexPatches, libPatches) = patches.partition { DexHeader.isDex(it.name) }
+            val targets = ports.mapValues { (origin, port) -> Redirect.target(origin, port = port)!! }
 
             val replaced = mutableMapOf<String, Path>()
             val added = mutableMapOf<String, Path>()
@@ -72,6 +76,11 @@ object OfflineBuild {
                         replaced[file] = Files.write(work.resolve("security$i.bin"), Inject.securityConfig(zip.getInputStream(entry).use { it.readAllBytes() }))
                     }
                 }
+                dexPatches.map { it.name }.distinct().forEachIndexed { i, entry ->
+                    replaced[entry] = work.resolve("dex$i.dex")
+                    val changed = strings.writeTo(replaced.getValue(entry), zip.getInputStream(zip.getEntry(entry)).use { it.readAllBytes() }, targets)
+                    sink.emit(JobEvent.Line("$entry written again, ${changed.size} strings pointed at the phone"))
+                }
                 val name = Inject.nextDexName(names)
                 added[name] = Files.write(work.resolve("server.dex"), dex)
                 added[Inject.CONFIG] = Files.write(work.resolve("offline.properties"), Inject.config(packageName, ports).toByteArray())
@@ -81,7 +90,7 @@ object OfflineBuild {
             // The patches, the manifest and the new entries in one pass over the zip.
             val rebuilt = work.resolve("rebuilt.apk")
             Files.copy(input, rebuilt, StandardCopyOption.REPLACE_EXISTING)
-            SetBuild.writeLibs(listOf(rebuilt), patches, false, work.resolve("libs"), sink, replaced, added)
+            SetBuild.writeLibs(listOf(rebuilt), libPatches, false, work.resolve("libs"), sink, replaced, added)
 
             return ApkSigning.sign(rebuilt, out, key, maxOf(minSdk ?: Inject.MIN_SDK, Inject.MIN_SDK), appVersion, sink)
         } finally {

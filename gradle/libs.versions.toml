@@ -16,6 +16,13 @@ vico = "3.3.1"
 # R8's D8 dexer, BSD-3, published on google(). Build time only: it turns the
 # offline cache server into a dex and never reaches the app's classpath.
 r8 = "8.7.18"
+# smali's dex reader and writer, BSD-3, published on google(). It writes a
+# dex again with its strings sorted, which a patch in place cannot keep.
+# Compile and test only: the app downloads the newest one as a tool.
+dexlib2 = "3.0.10"
+# Pure Java zstd, Apache-2.0, on Maven Central. It opens Godot's compiled
+# scripts. Compile and test only, as dexlib2.
+aircompressor = "2.0.3"
 # The reference org.json, test scope only. The server uses the platform's own
 # org.json on a phone, and this one stands in for it on the JVM.
 orgjson = "20260814"
@@ -26,6 +33,8 @@ dbus-java-core = { module = "com.github.hypfvieh:dbus-java-core", version.ref = 
 dbus-java-transport = { module = "com.github.hypfvieh:dbus-java-transport-native-unixsocket", version.ref = "dbus-java" }
 materialkolor-utilities = { module = "com.materialkolor:material-color-utilities", version.ref = "materialkolor" }
 r8 = { module = "com.android.tools:r8", version.ref = "r8" }
+dexlib2 = { module = "com.android.tools.smali:smali-dexlib2", version.ref = "dexlib2" }
+aircompressor = { module = "io.airlift:aircompressor", version.ref = "aircompressor" }
 org-json = { module = "org.json:json", version.ref = "orgjson" }
 vico-compose-m3 = { module = "com.patrykandpatrick.vico:compose-m3", version.ref = "vico" }
 

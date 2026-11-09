@@ -35,6 +35,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import io.gutapk.core.apk.ApkInfo
+import io.gutapk.core.offline.DexStringRewrite
 import io.gutapk.core.offline.Endpoint
 import io.gutapk.core.offline.Endpoints
 import io.gutapk.core.offline.Inject
@@ -56,7 +57,10 @@ import io.gutapk.job.Job
 import io.gutapk.job.JobEvent
 import io.gutapk.job.JobQueue
 import io.gutapk.job.JobState
+import io.gutapk.tools.Libraries
+import io.gutapk.tools.ToolSpec
 import io.gutapk.ui.Fact
+import io.gutapk.ui.LookupDialog
 import io.gutapk.ui.currentJobView
 import io.gutapk.ui.installRefusal
 import io.gutapk.ui.showInFolder
@@ -70,7 +74,7 @@ import kotlin.concurrent.thread
 
 const val OFFLINE_JOB = "offline"
 
-private sealed interface Seen {
+internal sealed interface Seen {
     data object Looking : Seen
     data object NoTool : Seen
     data class Mismatch(val server: Int, val client: Int) : Seen
@@ -83,7 +87,7 @@ private sealed interface Seen {
 // server of another version would be restarted by the first command, and
 // that choice stays on the ADB side of Home, where it is asked.
 // https://github.com/213YaZ786/GutapK/blob/main/src/main/kotlin/io/gutapk/features/overview/TryOutDialog.kt#probe
-private fun probe(root: Path): Seen {
+internal fun probe(root: Path): Seen {
     val adb = Adb.own(root) ?: return Seen.NoTool
     val client = Adb.clientVersion(adb).first
     val server = Adb.serverVersion()
@@ -131,7 +135,6 @@ fun OfflineDialog(
     val listing = remember(endpoints) { Endpoints.order(endpoints) }
     var chosen by remember(endpoints) { mutableStateOf<Set<String>?>(null) }
     val shown = chosen ?: listing.servers.map { it.origin }.toSet()
-    var folded by remember { mutableStateOf(true) }
     var serial by remember { mutableStateOf<String?>(null) }
     var uninstallFirst by remember { mutableStateOf(false) }
     var started by remember { mutableStateOf<Job?>(null) }
@@ -139,6 +142,8 @@ fun OfflineDialog(
     var signed by remember { mutableStateOf<Path?>(null) }
     var failure by remember { mutableStateOf<String?>(null) }
     var reporting by remember { mutableStateOf(false) }
+    // dexlib2 and guava, tools like jadx for the Java view: offered when missing.
+    var askingLibs by remember { mutableStateOf<List<ToolSpec>>(emptyList()) }
     val noDex = t("offline_no_dex")
 
     val view = currentJobView()
@@ -160,6 +165,13 @@ fun OfflineDialog(
     val err = failure
     val title = t("offline_title")
     when {
+        askingLibs.isNotEmpty() -> LookupDialog(
+            root = root,
+            specs = askingLibs,
+            onDismiss = { askingLibs = emptyList() },
+            why = t("offline_needs_libs"),
+            onStarted = { askingLibs = emptyList() },
+        )
         started != null -> AlertDialog(
             onDismissRequest = {},
             title = { Text(title) },
@@ -235,9 +247,17 @@ fun OfflineDialog(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         Fact(t("try_package"), info.packageName)
+                        // Every address is listed for the user to review, none folded. Only the
+                        // sure servers start ticked, the user ticks any other one.
                         Text(t("offline_servers"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                        if (listing.servers.isEmpty()) Text(t("offline_no_sure"), style = MaterialTheme.typography.bodyMedium)
                         listing.servers.forEach { e ->
                             ServerRow(e, e.origin in shown, true, t("offline_found", e.occurrences.size.toString())) { on ->
+                                chosen = if (on) shown + e.origin else shown - e.origin
+                            }
+                        }
+                        listing.possible.forEach { e ->
+                            ServerRow(e, e.origin in shown, true, t("offline_possible", e.occurrences.size.toString())) { on ->
                                 chosen = if (on) shown + e.origin else shown - e.origin
                             }
                         }
@@ -246,21 +266,14 @@ fun OfflineDialog(
                                 chosen = if (on) shown + e.origin else shown - e.origin
                             }
                         }
+                        listing.rest.forEach { e ->
+                            val fits = Redirect.target(e.origin, port = Redirect.FITTING_PORT) != null
+                            ServerRow(e, e.origin in shown, fits, if (fits) t("offline_spec", e.occurrences.size.toString()) else t("offline_too_short")) { on ->
+                                chosen = if (on) shown + e.origin else shown - e.origin
+                            }
+                        }
                         listing.short.forEach { e ->
                             ServerRow(e, false, false, t("offline_too_short")) {}
-                        }
-                        if (listing.rest.isNotEmpty()) {
-                            TextButton(onClick = { folded = !folded }) {
-                                Text(if (folded) t("offline_rest", listing.rest.size.toString()) else t("offline_rest_hide"))
-                            }
-                            if (!folded) {
-                                listing.rest.forEach { e ->
-                                    val fits = Redirect.target(e.origin, port = Redirect.FITTING_PORT) != null
-                                    ServerRow(e, e.origin in shown, fits, if (fits) t("offline_found", e.occurrences.size.toString()) else t("offline_too_short")) { on ->
-                                        chosen = if (on) shown + e.origin else shown - e.origin
-                                    }
-                                }
-                            }
                         }
                         if (!ready) {
                             Text(t("offline_none_selected"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
@@ -294,13 +307,16 @@ fun OfflineDialog(
                             val remove = uninstallFirst
                             val servers = fitting
                             val phone = host
+                            askingLibs = Libraries.missing(root, Libraries.DEXLIB2)
+                            if (askingLibs.isNotEmpty()) return@TextButton
                             started = JobQueue.start(OFFLINE_JOB) { job ->
                                 job.emit(JobEvent.Step("build", 1, 3))
                                 val dex = load() ?: throw IOException(noDex)
+                                val strings = Libraries.load(root, Libraries.DEXLIB2, "io.gutapk.core.offline.DexStrings", DexStringRewrite::class.java)
                                 // The test key signs, as the Sign dialog does with it: the
                                 // game is for the user's own phones.
                                 val out = output(dir, info.packageName, info.versionName, KeyChoice.TEST)
-                                OfflineBuild.run(original, servers, dex, dir.resolve("work-offline"), out, TestKey.load(), info.minSdk, version, job)
+                                OfflineBuild.run(original, servers, dex, strings, dir.resolve("work-offline"), out, TestKey.load(), info.minSdk, version, job)
                                 signed = out
                                 OfflineInstall.run(f.adb, phone, out, info.packageName, remove, job, { job.cancelRequested }, first = 2, steps = 3)
                                 finished = true
@@ -353,7 +369,7 @@ private fun ServerRow(endpoint: Endpoint, checked: Boolean, fits: Boolean, detai
 }
 
 @Composable
-private fun PhoneRow(phone: AdbDevice, selected: Boolean, onClick: () -> Unit) {
+internal fun PhoneRow(phone: AdbDevice, selected: Boolean, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium).clickable { onClick() }.padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,

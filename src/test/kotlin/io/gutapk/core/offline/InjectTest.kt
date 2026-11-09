@@ -1,6 +1,18 @@
 package io.gutapk.core.offline
 
 import com.android.apksig.ApkVerifier
+import com.android.tools.smali.dexlib2.AccessFlags
+import com.android.tools.smali.dexlib2.Opcode
+import com.android.tools.smali.dexlib2.Opcodes
+import com.android.tools.smali.dexlib2.dexbacked.DexBackedDexFile
+import com.android.tools.smali.dexlib2.immutable.ImmutableClassDef
+import com.android.tools.smali.dexlib2.immutable.ImmutableMethod
+import com.android.tools.smali.dexlib2.immutable.ImmutableMethodImplementation
+import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction11x
+import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction21c
+import com.android.tools.smali.dexlib2.immutable.reference.ImmutableStringReference
+import com.android.tools.smali.dexlib2.writer.io.MemoryDataStore
+import com.android.tools.smali.dexlib2.writer.pool.DexPool
 import io.gutapk.core.apk.ResourceTable
 import io.gutapk.core.apk.axml.Axml
 import io.gutapk.core.apk.axml.AxmlReader
@@ -334,6 +346,17 @@ class InjectTest {
         return head + byteArrayOf(url.length.toByte()) + ascii(url) + byteArrayOf(0)
     }
 
+    // A real dex, the game's: one method returning the url, written by
+    // dexlib2 the way DexStringsTest writes its own.
+    // https://github.com/google/smali/blob/3.0.9/dexlib2/src/main/java/com/android/tools/smali/dexlib2/writer/pool/DexPool.java#writeTo
+    private fun appDex(url: String): ByteArray {
+        val code = ImmutableMethodImplementation(1, listOf(ImmutableInstruction21c(Opcode.CONST_STRING, 0, ImmutableStringReference(url)), ImmutableInstruction11x(Opcode.RETURN_OBJECT, 0)), null, null)
+        val method = ImmutableMethod("Lgame/Net;", "url", null, "Ljava/lang/String;", AccessFlags.STATIC.value, null, null, code)
+        val dexPool = DexPool(Opcodes.forApi(21))
+        dexPool.internClass(ImmutableClassDef("Lgame/Net;", AccessFlags.PUBLIC.value, "Ljava/lang/Object;", null, null, null, null, listOf(method)))
+        return MemoryDataStore().also { dexPool.writeTo(it) }.data
+    }
+
     // A resource table with one string, id 0x7f010000, here the path of a file.
     private fun table(value: String): ByteArray {
         fun u16(v: Int) = ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(v.toShort()).array()
@@ -396,7 +419,7 @@ class InjectTest {
             listOf(
                 "AndroidManifest.xml" to manifest,
                 "lib/arm64-v8a/libgame.so" to lib("$game/api", "libc.so"),
-                "classes.dex" to dex("$socket/socket"),
+                "classes.dex" to appDex("$socket/socket"),
                 "assets/config.json" to ascii("{\"base\":\"$game/v1\"}"),
                 "res/drawable/icon.png" to ascii("PNG not scanned https://not.scanned.example.com/x"),
             ) + extra,
@@ -413,6 +436,7 @@ class InjectTest {
         input = apk,
         endpoints = servers ?: Endpoints.scan(apk).filter { it.likelyServer },
         dex = serverDex,
+        strings = DexStrings(),
         work = d.resolve("work"),
         out = out,
         key = TestKey.load(),
@@ -452,15 +476,18 @@ class InjectTest {
         assertTrue(ports.values.all { it in 20000..29999 })
         assertEquals(ports.values.min() + 1, ports.values.max())
 
-        // The addresses moved to the phone with their length unchanged, in the library, the asset and the dex.
+        // The addresses moved to the phone with their length unchanged in the library and the asset.
         val target = Redirect.target(game, port = ports.getValue(game))!!
         assertContentEquals(ascii("$target/api"), entry(out, "lib/arm64-v8a/libgame.so").copyOfRange(8, 8 + target.length + 4))
         assertContentEquals(ascii("$target/v1"), entry(out, "assets/config.json").copyOfRange(9, 9 + target.length + 3))
+        // The dex is written again, its strings still sorted as ART checks them.
         val patched = entry(out, "classes.dex")
-        assertContentEquals(ascii(Redirect.target(socket, port = ports.getValue(socket))!!), patched.copyOfRange(0x71, 0x71 + socket.length))
-        assertEquals(entry(apk, "classes.dex").size, patched.size)
+        val strings = DexBackedDexFile(null, patched).stringSection.toList()
+        assertTrue("${Redirect.target(socket, port = ports.getValue(socket))!!}/socket" in strings, strings.toString())
+        assertTrue(strings.none { socket in it })
+        assertEquals(strings.sorted(), strings)
 
-        // The patched dex has a checksum that fits, the other entries are as they were.
+        // The dex has a checksum that fits, the other entries are as they were.
         assertEquals(Adler32().also { it.update(patched, 12, patched.size - 12) }.value, ByteBuffer.wrap(patched).order(ByteOrder.LITTLE_ENDIAN).getInt(8).toLong() and 0xffffffffL)
         assertContentEquals(entry(apk, "res/drawable/icon.png"), entry(out, "res/drawable/icon.png"))
 
@@ -529,7 +556,7 @@ class InjectTest {
     fun aDexThatIsNotOneIsRefused() = withDir { d ->
         val apk = fakeApk(d)
         val e = assertFailsWith<CheckFailed> {
-            OfflineBuild.run(apk, Endpoints.scan(apk).filter { it.likelyServer }, ByteArray(200), d.resolve("work"), d.resolve("out/o.apk"), TestKey.load(), 16, "test", quiet)
+            OfflineBuild.run(apk, Endpoints.scan(apk).filter { it.likelyServer }, ByteArray(200), DexStrings(), d.resolve("work"), d.resolve("out/o.apk"), TestKey.load(), 16, "test", quiet)
         }
         assertTrue(e.message!!.contains("dex"), e.message)
     }

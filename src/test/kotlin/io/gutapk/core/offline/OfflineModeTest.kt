@@ -40,9 +40,14 @@ class OfflineModeTest {
         val lookalike = endpoint("https://not-github.com", 1)
         val short = endpoint("http://a.bc", 9)
         val schema = endpoint("http://www.w3.org", 40, likely = false)
-        val listing = Endpoints.order(listOf(schema, store, short, cdn, forge, api, wiki, lookalike))
-        // Ticked by default: servers, the ones held by code first, a name that merely ends like a link host stays a server.
-        assertEquals(listOf(api, lookalike, cdn), listing.servers)
+        // A credit line of the Godot engine, as in Battle for Burgers: in a library, but the engine's.
+        val credit = Endpoint("https://chilliant.blogspot.com", List(8) { Occurrence("lib/arm64-v8a/libgodot_android.so", it.toLong()) }, listOf("x"), true)
+        val listing = Endpoints.order(listOf(schema, store, short, cdn, forge, api, wiki, lookalike, credit))
+        // Ticked by default: the sure servers, held by the game's own code. A name that merely ends like a link host stays one.
+        assertEquals(listOf(api, lookalike), listing.servers)
+        // Listed for review, unticked: met only in data or in an engine library.
+        assertEquals(listOf(credit, cdn), listing.possible)
+        assertEquals(0, Endpoints.inCode(credit))
         assertEquals(listOf(store, wiki), listing.links)
         // github.com is a link host, but 18 characters cannot hold the phone's address either.
         assertEquals(listOf(short, forge), listing.short)

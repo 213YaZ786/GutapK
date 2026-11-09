@@ -251,14 +251,19 @@ fun OverviewScreen(
             FilledTonalButton(onClick = { dialog = "sign" }) { Text(t("sign_action")) }
             // Offline, Local and Admin need to know where the game's servers
             // are, so they wait for the scan. Local is shown and waits for
-            // the next version.
-            if (root != null && endpoints?.any { it.likelyServer } == true) {
+            // the next version. Any address found opens the review, the user
+            // decides which ones are the game's servers.
+            if (root != null && endpoints?.isNotEmpty() == true) {
                 FilledTonalButton(onClick = { dialog = "offline" }) { Text(t("offline_action")) }
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     FilledTonalButton(enabled = false, onClick = {}) { Text(t("local_action")) }
                     Text(t("local_soon"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 FilledTonalButton(onClick = { dialog = "admin" }) { Text(t("admin_action")) }
+            }
+            // A Godot game's values are in its own scripts: no scan to wait for.
+            if (root != null && info?.engines?.contains(ApkReader.GODOT) == true) {
+                FilledTonalButton(onClick = { dialog = "godot" }) { Text(t("godot_action")) }
             }
         }
     }
@@ -376,6 +381,14 @@ fun OverviewScreen(
             "admin" -> if (root != null) AdminDialog(
                 root = root,
                 info = info,
+                onDismiss = { dialog = null },
+            )
+            "godot" -> if (root != null) GodotDialog(
+                root = root,
+                dir = dir,
+                original = original,
+                info = info,
+                version = version,
                 onDismiss = { dialog = null },
             )
             "key" -> KeyChooser(

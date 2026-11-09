@@ -224,10 +224,14 @@ object ApkReader {
 
     // Engines worth knowing before editing: they change what can be edited
     // and how. IL2CPP is the one GutapK has a dedicated path for.
+    // The engine whose compiled scripts Game values reads.
+    const val GODOT = "Godot"
+
     private fun engines(names: List<String>): List<String> = buildList {
         if (names.any { it.endsWith("/libil2cpp.so") } && names.any { it.endsWith("global-metadata.dat") }) add("Unity IL2CPP")
         else if (names.any { it.endsWith("/libunity.so") }) add("Unity Mono")
         if (names.any { it.endsWith("/libflutter.so") }) add("Flutter")
+        if (names.any { it.endsWith("/libgodot_android.so") }) add(GODOT)
         if (names.any { it.endsWith("/libreactnativejni.so") || it.endsWith("/libhermes.so") }) add("React Native")
         if (names.any { it.startsWith("assemblies/") || it.endsWith("/libmonodroid.so") }) add("Xamarin / .NET")
     }

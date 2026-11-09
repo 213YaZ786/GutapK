@@ -1,7 +1,9 @@
 package io.gutapk.tools
 
 import org.w3c.dom.Element
+import org.xml.sax.Attributes
 import org.xml.sax.InputSource
+import org.xml.sax.helpers.DefaultHandler
 import java.io.IOException
 import java.io.StringReader
 import java.net.HttpURLConnection
@@ -10,6 +12,7 @@ import java.time.Instant
 import java.time.ZoneId
 import javax.xml.XMLConstants
 import javax.xml.parsers.DocumentBuilderFactory
+import javax.xml.parsers.SAXParserFactory
 
 object Releases {
     // An index larger than this is not the file we expect.
@@ -40,6 +43,15 @@ object Releases {
             val channel = dotnetChannel(fetchText(spec.index), spec.index) ?: throw IOException("no supported long term .NET release in ${spec.index}")
             val found = parseDotnetChannel(fetchText(channel), spec.pkg, spec.index) ?: throw IOException("${spec.pkg} not found in $channel")
             found.copy(size = contentLength(found.url))
+        }
+        ToolSource.MAVEN -> {
+            // The jar sits beside the index: <base>/<version>/<artifact>-<version>.jar, with its .sha1.
+            val base = spec.index.substringBeforeLast('/')
+            val version = parseMavenMetadataInto(fetchText(spec.index), spec.pkg) ?: throw IOException("no version matching ${spec.pkg} in ${spec.index}")
+            val url = "$base/$version/${base.substringAfterLast('/')}-$version.jar"
+            val sha1 = fetchText("$url.sha1").trim().substringBefore(' ').lowercase()
+            if (!Regex("[0-9a-f]{40}").matches(sha1)) throw IOException("no sha1 published for $url")
+            Release(version = version, url = url, size = contentLength(url), sha1 = sha1, sha256 = null)
         }
         ToolSource.GITHUB_PRE -> {
             val repo = githubRepo(spec.index)
@@ -239,6 +251,58 @@ object Releases {
             }
         }
         return found.maxWithOrNull { a, b -> compare(a.version, b.version) }
+    }
+
+    // Ivy's handler Gradle reads maven-metadata.xml with: the path of the
+    // element being read, metadata/versioning/versions/version, and its text.
+    // https://github.com/apache/ant-ivy/blob/rel/2.6.0/src/java/org/apache/ivy/util/ContextualSAXHandler.java
+    open class ContextualSAXHandler : DefaultHandler() {
+        private val contextStack = ArrayDeque<String>()
+        private val buffer = StringBuilder()
+
+        override fun characters(ch: CharArray, start: Int, length: Int) {
+            buffer.appendRange(ch, start, start + length)
+        }
+
+        override fun startElement(uri: String?, localName: String?, qName: String, attributes: Attributes?) {
+            contextStack.addLast(qName)
+            buffer.setLength(0)
+        }
+
+        override fun endElement(uri: String?, localName: String?, qName: String?) {
+            contextStack.removeLast()
+            buffer.setLength(0)
+        }
+
+        protected fun getContext(): String = contextStack.joinToString("/")
+
+        protected fun getText(): String = buffer.toString()
+    }
+
+    // The versions of a maven-metadata.xml, read as Gradle reads them, and
+    // the newest whose whole text matches the package pattern (guava lists
+    // -jre and -android builds of each version).
+    // not ported: the snapshot timestamp and buildNumber (a release is never a snapshot), load and parseMavenMetadataInfo (the resource cache, fetchText reads the index each time as for the other sources), doExecute (the ErroringAction around the stream, the text is already read)
+    // https://github.com/gradle/gradle/blob/v9.8.2/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/repositories/maven/MavenMetadataLoader.java#parseMavenMetadataInto
+    fun parseMavenMetadataInto(xml: String, pkg: String): String? {
+        val versions = mutableListOf<String>()
+        val factory = SAXParserFactory.newInstance()
+        // No DTD, no external entity. The index comes from the network.
+        factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+        factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true)
+        factory.newSAXParser().parse(
+            InputSource(StringReader(xml)),
+            object : ContextualSAXHandler() {
+                override fun endElement(uri: String?, localName: String?, qName: String?) {
+                    if ("metadata/versioning/versions/version" == getContext()) {
+                        versions.add(getText().trim())
+                    }
+                    super.endElement(uri, localName, qName)
+                }
+            },
+        )
+        val pattern = Regex(pkg)
+        return versions.filter { pattern.matches(it) }.maxWithOrNull { a, b -> compare(a, b) }
     }
 
     private fun children(e: Element, name: String): List<Element> {

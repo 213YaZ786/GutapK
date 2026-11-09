@@ -18,10 +18,18 @@ data class Endpoint(
     val likelyServer: Boolean,
 )
 
-// The servers of one game as the Offline dialog shows them: the likely ones
-// that fit, ticked, the links a game opens in a browser, the likely ones too
-// short for the phone's address, and the rest, which the dialog folds.
-data class Listing(val servers: List<Endpoint>, val links: List<Endpoint>, val short: List<Endpoint>, val rest: List<Endpoint>)
+// Every address of one game as the Offline dialog shows them, all open for
+// review: the sure servers, held by the game's own code, ticked, then the
+// possible ones met only in an engine library or in data, the links a game
+// opens in a browser, the ones too short for the phone's address, and the
+// rest, which only name a specification. Only the sure ones start ticked.
+data class Listing(
+    val servers: List<Endpoint>,
+    val possible: List<Endpoint>,
+    val links: List<Endpoint>,
+    val short: List<Endpoint>,
+    val rest: List<Endpoint>,
+)
 
 // One match of parser_file: the link and where it sits in the content.
 data class Item(val link: String, val start: Int, val end: Int)
@@ -117,18 +125,35 @@ object Endpoints {
         "hosted.weblate.org",
         "curl.se",
         "curl.haxx.se",
+        // Issue trackers named in the messages of libraries every app carries
+        // (the Kotlin standard library points at youtrack.jetbrains.com).
+        "jetbrains.com",
+        "kotlinlang.org",
+        "issuetracker.google.com",
     )
 
     fun linkHost(domain: String): Boolean {
         return links.any { domain.lowercase() == it || domain.lowercase().endsWith(".$it") }
     }
 
-    // How often an origin is held by native code and dex, the places a call
-    // to a server is made from, against the assets and the resource table
-    // that mostly hold text to read.
-    private val code = Regex("lib/[^/]+/[^/]+\\.so|classes[0-9]*\\.dex")
+    // How often an origin is held by the game's own code, the places a call
+    // to its server is made from: its native libraries, its dex and Unity's
+    // metadata, where IL2CPP keeps the game's string literals. An engine or
+    // runtime library carries the engine's credits and documentation links
+    // (Godot's lists dozens), never the game's server, so it does not count.
+    // The engine names follow ApkInfo.engines.
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/core/apk/ApkInfo.kt#engines
+    private val code = Regex("lib/[^/]+/[^/]+\\.so|classes[0-9]*\\.dex|assets/bin/Data/Managed/Metadata/global-metadata\\.dat")
 
-    fun inCode(endpoint: Endpoint): Int = endpoint.occurrences.count { code.matches(it.file) }
+    val engineLibs = setOf(
+        "libgodot_android.so", "libil2cpp.so", "libunity.so", "libmain.so", "libflutter.so", "libc++_shared.so",
+        "libmonosgen-2.0.so", "libmonodroid.so", "libhermes.so", "libreactnativejni.so", "libjsc.so", "libv8.so",
+        "libSDL2.so", "libsentry.so", "libsentry-android.so", "libcrashlytics.so", "libconscrypt_jni.so",
+    )
+
+    fun inCode(endpoint: Endpoint): Int = endpoint.occurrences.count { o ->
+        code.matches(o.file) && o.file.substringAfterLast('/') !in engineLibs
+    }
 
     // The origins as the Offline dialog lists them: the servers it ticks
     // first, then the links a game opens in a browser, then the addresses too
@@ -140,9 +165,10 @@ object Endpoints {
         val likely = endpoints.filter { it.likelyServer }
         val rest = endpoints.filter { !it.likelyServer }
         val (fitting, short) = likely.partition { Redirect.target(it.origin, port = Redirect.FITTING_PORT) != null }
-        val (links, servers) = fitting.partition { linkHost(it.origin.substringAfter("://").substringBefore(':')) }
+        val (links, calls) = fitting.partition { linkHost(it.origin.substringAfter("://").substringBefore(':')) }
+        val (servers, possible) = calls.partition { inCode(it) > 0 }
         val by = compareByDescending<Endpoint> { inCode(it) }.thenByDescending { it.occurrences.size }
-        return Listing(servers.sortedWith(by), links.sortedWith(by), short.sortedWith(by), rest.sortedWith(by))
+        return Listing(servers.sortedWith(by), possible.sortedWith(by), links.sortedWith(by), short.sortedWith(by), rest.sortedWith(by))
     }
 
     // LinkFinder's parser_file: every match of the regex in the content, kept
@@ -175,15 +201,18 @@ object Endpoints {
         return filtered_items
     }
 
-    // Every entry above 64 MB is a game's data pack and is left alone. A run
-    // of printable ASCII (space to ~) shorter than 8 bytes is a few letters
-    // of code, not an address.
+    // A data entry above 64 MB is a game's data pack and is left alone. A
+    // library is read whatever its size: an engine built with the game in it
+    // (Godot's is 70 MB) is where its addresses are, and the user reviews
+    // them all. A run of printable ASCII (space to ~) shorter than 8 bytes is
+    // a few letters of code, not an address.
     fun scan(apk: Path): List<Endpoint> {
         val found = LinkedHashMap<String, MutableList<Occurrence>>()
         val urls = HashMap<String, MutableList<String>>()
         ZipFile(apk.toFile()).use { zip ->
             for (file in zip.entries()) {
-                if (file.isDirectory || !files.matches(file.name) || file.size > 64L * 1024 * 1024) continue
+                val limit = if (file.name.startsWith("lib/")) 512L * 1024 * 1024 else 64L * 1024 * 1024
+                if (file.isDirectory || !files.matches(file.name) || file.size > limit) continue
                 val content = zip.getInputStream(file).use { String(it.readAllBytes(), Charsets.ISO_8859_1) }
                 var start = -1
                 for (index in 0..content.length) {

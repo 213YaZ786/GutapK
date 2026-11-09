@@ -19,6 +19,11 @@
 #              long term channel, package is the runtime file's name.
 #              A .tar.gz is unpacked without its top folder, which carries
 #              the version.
+#              maven: a Java library, index is its maven-metadata.xml,
+#              package the pattern of the versions taken, the jar is
+#              <version>/<artifact>-<version>.jar beside the index, checked
+#              against its .sha1. GutapK loads it in its own Java, through
+#              tools/Libraries.kt.
 #
 # id	source	index	package	entry	execDir	licence	licenceUrl	what
 apkeditor	github	https://github.com/REAndroid/APKEditor	APKEditor-[0-9][0-9.]*\.jar	APKEditor.jar	-	Apache-2.0	https://github.com/REAndroid/APKEditor/blob/master/LICENSE	Decodes and rebuilds APKs, pure Java, merges split APKs. First engine.
@@ -32,3 +37,7 @@ dotnet	dotnet	https://builds.dotnet.microsoft.com/dotnet/release-metadata/releas
 il2cppinspector	github	https://github.com/LukeFZ/Il2CppInspectorRedux	Il2CppInspectorRedux\.CLI-linux-x64\.zip	Il2CppInspectorRedux.CLI-linux-x64/Il2CppInspector.Redux.CLI	Il2CppInspectorRedux.CLI-linux-x64	AGPL-3.0	https://github.com/LukeFZ/Il2CppInspectorRedux/blob/master/LICENSE	Dumps Unity IL2CPP games, metadata up to version 39 (Unity 6) and each method's exact length. Runs on the ASP.NET Core runtime.
 aspnetcore	dotnet	https://builds.dotnet.microsoft.com/dotnet/release-metadata/releases-index.json	aspnetcore-runtime-linux-x64.tar.gz	dotnet	.	MIT	https://github.com/dotnet/aspnetcore/blob/main/LICENSE.txt	The ASP.NET Core runtime for Linux, from Microsoft, the .NET runtime included, the newest long term version. Runs Il2CppInspectorRedux.
 jadx	github	https://github.com/skylot/jadx	jadx-[0-9][0-9.]*\.zip	bin/jadx	bin	Apache-2.0	https://github.com/skylot/jadx/blob/master/LICENSE	Decompiles the app's dex to Java, to read what the smali does. Runs on GutapK's own Java.
+dexlib2	maven	https://dl.google.com/android/maven2/com/android/tools/smali/smali-dexlib2/maven-metadata.xml	[0-9]+(\.[0-9]+)*	smali-dexlib2.jar	-	BSD-3-Clause	https://github.com/google/smali/blob/main/third_party/NOTICE	smali's dex reader and writer, a Java library. Offline writes a game's dex again with its addresses pointed at the phone.
+guava	maven	https://repo1.maven.org/maven2/com/google/guava/guava/maven-metadata.xml	[0-9]+(\.[0-9]+)*-jre	guava.jar	-	Apache-2.0	https://github.com/google/guava/blob/master/LICENSE	Google's core Java library, which dexlib2 is built on.
+failureaccess	maven	https://repo1.maven.org/maven2/com/google/guava/failureaccess/maven-metadata.xml	[0-9]+(\.[0-9]+)*	failureaccess.jar	-	Apache-2.0	https://github.com/google/guava/blob/master/LICENSE	A part of guava published on its own, guava needs it.
+aircompressor	maven	https://repo1.maven.org/maven2/io/airlift/aircompressor/maven-metadata.xml	[0-9]+(\.[0-9]+)*	aircompressor.jar	-	Apache-2.0	https://github.com/airlift/aircompressor/blob/master/license.txt	Pure Java zstd, a Java library. Godot Admin opens a Godot game's compiled scripts with it.

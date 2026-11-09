@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "io.gutapk"
-version = "0.1.116"
+version = "0.1.117"
 
 kotlin {
     jvmToolchain(21)
@@ -27,6 +27,12 @@ dependencies {
     // alphas on the dev repository. Declaring 1.12.0 by coordinates fails.
     implementation(compose.material3)
     implementation(libs.apksig)
+    // Built against, not carried: GutapK downloads their newest version as
+    // tools (tools.tsv, source maven) and loads them with tools/Libraries.kt.
+    compileOnly(libs.dexlib2)
+    compileOnly(libs.aircompressor)
+    testImplementation(libs.dexlib2)
+    testImplementation(libs.aircompressor)
     implementation(libs.dbus.java.core)
     implementation(libs.dbus.java.transport)
     implementation(libs.materialkolor.utilities)

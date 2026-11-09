@@ -66,6 +66,28 @@ print(best[1], best[2], best[3], best[4])
 PY
 }
 
+# Same rules as Releases.parseMavenMetadataInto: the newest version of
+# metadata/versioning/versions whose whole text matches the package.
+# https://github.com/213YaZ786/GutapK/blob/10ee6c7/scripts/check-tools.sh#google_latest
+maven_latest() {
+    python3 - "$1" "$2" <<'PY'
+import re, sys, xml.etree.ElementTree as ET
+index, pkg = sys.argv[1], sys.argv[2]
+root = ET.parse(index).getroot()
+best = None
+for v in root.findall('versioning/versions/version'):
+    version = (v.text or '').strip()
+    if not re.fullmatch(pkg, version):
+        continue
+    key = [int(x) if x.isdigit() else 0 for x in re.split(r'[.-]', version)]
+    if best is None or key > best[0]:
+        best = (key, version)
+if best is None:
+    sys.exit('package %s not found' % pkg)
+print(best[1])
+PY
+}
+
 # Same rules as Releases.parseGithub: tag without its leading v, first asset
 # whose whole name matches the pattern, GitHub's sha256 when published.
 # Prints version, url, size, sha256 or - on one line.
@@ -275,6 +297,18 @@ while IFS=$'\t' read -r id source index pkg entry execdir licence licenceurl wha
             read -r version url sha512 <<< "$line"
             size="$(curl -fsSI --retry 3 "$url" | tr -d '\r' | awk 'tolower($1)=="content-length:" {print $2}' | tail -1)"
             sha1=-
+            sha256=-
+            ;;
+        maven)
+            if ! curl -fsSL --retry 3 --retry-delay 5 -o "$SCRATCH/index.xml" "$index" \
+                    || ! version="$(maven_latest "$SCRATCH/index.xml" "$pkg")"; then
+                echo "::error::$id lookup failed in the index"
+                fail=1
+                continue
+            fi
+            url="${index%/*}/$version/$(basename "${index%/*}")-$version.jar"
+            sha1="$(curl -fsSL --retry 3 "$url.sha1" | cut -c1-40)"
+            size="$(curl -fsSI --retry 3 "$url" | tr -d '\r' | awk 'tolower($1)=="content-length:" {print $2}' | tail -1)"
             sha256=-
             ;;
         github-nightly)
