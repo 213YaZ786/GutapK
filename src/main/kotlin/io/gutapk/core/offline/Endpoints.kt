@@ -163,9 +163,11 @@ object Endpoints {
     // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/core/offline/Packs.kt#order
     // A package name begins with its maker's reversed Internet domain name,
     // a hyphen written as an underscore: org.lichess.mobileV2 is lichess.org's.
-    // When the game holds hosts of that name (lichess1.org too), those are its
+    // When the game calls hosts of that name (lichess1.org too), those are its
     // servers, and the hosts its libraries name (a runtime's documentation)
-    // only possible ones, even when its own are too short to be moved.
+    // only possible ones. A host of that name too short to be moved is the
+    // maker's site, not a server (molly.im, Molly calling chat.signal.org): the
+    // rule then stays out of it.
     // https://docs.oracle.com/javase/tutorial/java/package/namingpkgs.html
     fun order(endpoints: List<Endpoint>, packageName: String? = null): Listing {
         val likely = endpoints.filter { it.likelyServer }
@@ -173,7 +175,7 @@ object Endpoints {
         val (fitting, short) = likely.partition { Redirect.target(it.origin, port = Redirect.FITTING_PORT) != null }
         val (links, calls) = fitting.partition { linkHost(it.origin.substringAfter("://").substringBefore(':')) }
         val domain = packageName?.split('.')?.getOrNull(1)?.replace('_', '-')?.lowercase()
-        val own = likely.filter { e ->
+        val own = calls.filter { e ->
             val name = e.origin.substringAfter("://").substringBefore(':').lowercase().split('.').dropLast(1).lastOrNull()
             domain != null && name != null && name.removePrefix(domain).let { it.length < name.length && it.all(Char::isDigit) }
         }.toSet()

@@ -75,6 +75,13 @@ class OfflineModeTest {
         assertEquals(listOf(4, 5, 5), listing.servers.map { ports.getValue(it.origin).toString().length })
         assertEquals("http://0.0.0.0:${ports.getValue(site.origin)}", Redirect.target(site.origin, port = ports.getValue(site.origin)))
         listing.servers.forEach { assertEquals(it.origin.length, Redirect.target(it.origin, port = ports.getValue(it.origin))?.length) }
+        // Molly v8.19.2: its own name is only its site, too short to move, its
+        // servers are Signal's: they stay ticked.
+        val site2 = endpoint("https://molly.im", 4)
+        val chat = endpoint("https://chat.signal.org", 1)
+        val molly = Endpoints.order(listOf(site2, chat, dawn), "im.molly.app")
+        assertEquals(listOf(dawn, chat), molly.servers)
+        assertEquals(listOf(site2), molly.short)
         // No host of the company's name: every host the code calls stays a server.
         assertEquals(listOf(dawn, site, scipy, assets, socket), Endpoints.order(listOf(dawn, scipy, site, assets, socket), "io.anuke.mindustry").servers)
     }
