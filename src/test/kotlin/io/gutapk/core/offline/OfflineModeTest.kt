@@ -55,6 +55,26 @@ class OfflineModeTest {
         assertEquals(emptyList(), Endpoints.order(emptyList()).servers)
     }
 
+    // Lichess 0.30.3, counted in its libraries: its own hosts 12 and 5 times in
+    // libapp.so, a runtime's documentation hosts more often in libonnxruntime.so.
+    // https://docs.oracle.com/javase/tutorial/java/package/namingpkgs.html
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/test/kotlin/io/gutapk/core/offline/ServerPackTest.kt
+    @Test
+    fun theCompanyDomainNameInThePackageNamesTheServers() {
+        val site = endpoint("https://lichess.org", 12)
+        val assets = endpoint("https://lichess1.org", 5)
+        val dawn = endpoint("https://dawn.googlesource.com", 30)
+        val scipy = endpoint("https://docs.scipy.org", 9)
+        val socket = endpoint("wss://socket.lichess.org", 2)
+        val listing = Endpoints.order(listOf(dawn, scipy, site, assets, socket), "org.lichess.mobileV2")
+        assertEquals(listOf(socket), listing.servers)
+        assertEquals(listOf(dawn, scipy), listing.possible)
+        // 19 characters cannot hold http://127.0.0.1 and a port: shown, never ticked.
+        assertEquals(listOf(site, assets), listing.short)
+        // No host of the company's name: every host the code calls stays a server.
+        assertEquals(listOf(dawn, scipy, socket), Endpoints.order(listOf(dawn, scipy, site, assets, socket), "io.anuke.mindustry").servers)
+    }
+
     @Test
     fun theOrderCountsCodeFirstThenEverything() {
         val few = endpoint("https://a.example-game.com", 1, elsewhere = 30)

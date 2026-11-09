@@ -9,12 +9,14 @@ import com.android.tools.smali.dexlib2.immutable.ImmutableMethod
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethodImplementation
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethodParameter
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction10x
+import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction11n
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction21c
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction21ih
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction22c
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction35c
 import com.android.tools.smali.dexlib2.immutable.reference.ImmutableFieldReference
 import com.android.tools.smali.dexlib2.immutable.reference.ImmutableMethodReference
+import com.android.tools.smali.dexlib2.immutable.reference.ImmutableStringReference
 import com.android.tools.smali.dexlib2.immutable.reference.ImmutableTypeReference
 import com.android.tools.smali.dexlib2.writer.io.MemoryDataStore
 import com.android.tools.smali.dexlib2.writer.pool.DexPool
@@ -38,6 +40,7 @@ class DexValuesTest {
     private val unit = "Lgame/Unit;"
     private val bullet = "Lgame/Bullet;"
     private val anonymous = "Lgame/Units\$1;"
+    private val kind = "Lgame/Kind;"
 
     private fun method(type: String, name: String, parameters: List<String>, flags: Int, registers: Int, instructions: List<Instruction>) =
         ImmutableMethod(
@@ -100,6 +103,28 @@ class DexValuesTest {
                         ImmutableInstruction35c(Opcode.INVOKE_DIRECT, 3, 1, 2, 3, 0, 0, ImmutableMethodReference(anonymous, "<init>", listOf("F", "F"), "V")),
                         ImmutableInstruction22c(Opcode.IPUT_OBJECT, 1, 0, ImmutableFieldReference(unit, "bullet", bullet)),
                         ImmutableInstruction21c(Opcode.SPUT_OBJECT, 0, ImmutableFieldReference(units, "dagger", unit)),
+                    ),
+                ),
+            ),
+        )
+        // enum Kind { FAST }: the constant's ordinal 0 goes to Enum's constructor, it is no value.
+        // https://github.com/JesusFreke/smali/blob/master/examples/Enums/Enum.smali#L51-L55
+        val enumInit = ImmutableMethodReference(kind, "<init>", listOf("Ljava/lang/String;", "I"), "V")
+        dexPool.internClass(
+            classDef(
+                kind, "Ljava/lang/Enum;",
+                method(
+                    kind, "<init>", listOf("Ljava/lang/String;", "I"), constructor, 3,
+                    listOf(ImmutableInstruction35c(Opcode.INVOKE_DIRECT, 3, 0, 1, 2, 0, 0, ImmutableMethodReference("Ljava/lang/Enum;", "<init>", listOf("Ljava/lang/String;", "I"), "V"))),
+                ),
+                method(
+                    kind, "<clinit>", emptyList(), AccessFlags.STATIC.value or AccessFlags.CONSTRUCTOR.value, 3,
+                    listOf(
+                        ImmutableInstruction21c(Opcode.NEW_INSTANCE, 0, ImmutableTypeReference(kind)),
+                        ImmutableInstruction21c(Opcode.CONST_STRING, 1, ImmutableStringReference("FAST")),
+                        ImmutableInstruction11n(Opcode.CONST_4, 2, 0),
+                        ImmutableInstruction35c(Opcode.INVOKE_DIRECT, 3, 0, 1, 2, 0, 0, enumInit),
+                        ImmutableInstruction21c(Opcode.SPUT_OBJECT, 0, ImmutableFieldReference(kind, "FAST", kind)),
                     ),
                 ),
             ),

@@ -161,12 +161,23 @@ object Endpoints {
     // specification. Each group by occurrences in code, then in all.
     // not ported: pack, served, origin, match (no server app stands in for a server here)
     // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/core/offline/Packs.kt#order
-    fun order(endpoints: List<Endpoint>): Listing {
+    // A package name begins with its maker's reversed Internet domain name,
+    // a hyphen written as an underscore: org.lichess.mobileV2 is lichess.org's.
+    // When the game holds hosts of that name (lichess1.org too), those are its
+    // servers, and the hosts its libraries name (a runtime's documentation)
+    // only possible ones, even when its own are too short to be moved.
+    // https://docs.oracle.com/javase/tutorial/java/package/namingpkgs.html
+    fun order(endpoints: List<Endpoint>, packageName: String? = null): Listing {
         val likely = endpoints.filter { it.likelyServer }
         val rest = endpoints.filter { !it.likelyServer }
         val (fitting, short) = likely.partition { Redirect.target(it.origin, port = Redirect.FITTING_PORT) != null }
         val (links, calls) = fitting.partition { linkHost(it.origin.substringAfter("://").substringBefore(':')) }
-        val (servers, possible) = calls.partition { inCode(it) > 0 }
+        val domain = packageName?.split('.')?.getOrNull(1)?.replace('_', '-')?.lowercase()
+        val own = likely.filter { e ->
+            val name = e.origin.substringAfter("://").substringBefore(':').lowercase().split('.').dropLast(1).lastOrNull()
+            domain != null && name != null && name.removePrefix(domain).let { it.length < name.length && it.all(Char::isDigit) }
+        }.toSet()
+        val (servers, possible) = if (own.isNotEmpty()) calls.partition { it in own } else calls.partition { inCode(it) > 0 }
         val by = compareByDescending<Endpoint> { inCode(it) }.thenByDescending { it.occurrences.size }
         return Listing(servers.sortedWith(by), possible.sortedWith(by), links.sortedWith(by), short.sortedWith(by), rest.sortedWith(by))
     }

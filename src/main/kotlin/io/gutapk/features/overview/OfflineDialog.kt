@@ -132,7 +132,7 @@ fun OfflineDialog(
         value = Seen.Looking
         value = withContext(Dispatchers.IO) { runCatching { probe(root) }.getOrElse { Seen.Failed(it.message ?: "?") } }
     }
-    val listing = remember(endpoints) { Endpoints.order(endpoints) }
+    val listing = remember(endpoints) { Endpoints.order(endpoints, info.packageName) }
     var chosen by remember(endpoints) { mutableStateOf<Set<String>?>(null) }
     val shown = chosen ?: listing.servers.map { it.origin }.toSet()
     var serial by remember { mutableStateOf<String?>(null) }

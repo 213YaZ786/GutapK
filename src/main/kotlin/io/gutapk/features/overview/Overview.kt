@@ -260,8 +260,10 @@ fun OverviewScreen(
             if (root != null) FilledTonalButton(onClick = { dialog = "local" }) { Text(t("local_action")) }
             if (scanned) FilledTonalButton(onClick = { dialog = "admin" }) { Text(t("admin_action")) }
             if (godot) FilledTonalButton(onClick = { dialog = "godot" }) { Text(t("godot_action")) }
-            // Any other game's values are read in its dex.
-            if (root != null && !godot) FilledTonalButton(onClick = { dialog = "java" }) { Text(t("godot_action")) }
+            // A game without an engine is Java or Kotlin, its values are in its
+            // dex. Under any engine ApkReader names, the dex only holds the
+            // engine's glue to Android, and its numbers are nobody's values.
+            if (root != null && info?.engines?.isEmpty() == true) FilledTonalButton(onClick = { dialog = "java" }) { Text(t("godot_action")) }
         }
     }
     val detection = if (root != null && loaded != null) rememberDetection(root, loaded.classes) else null

@@ -109,6 +109,12 @@ class DexValues : JavaValueEdit {
         }
         // A constructor without names (an anonymous class's) takes the names
         // of the constructor it passes its parameters on to, down the chain.
+        // An enum's constructor passes its first two to Enum's, which names
+        // them: a constant's ordinal is its place in the enum, no value of the game.
+        // https://github.com/openjdk/jdk/blob/jdk-21+35/src/java.base/share/classes/java/lang/Enum.java#L142-L145
+        // https://github.com/JesusFreke/smali/blob/master/examples/Enums/Enum.smali#L51-L55
+        // not ported: equals, hashCode, clone, compareTo, getDeclaringClass, describeConstable, valueOf, finalize, readObject, readObjectNoData, EnumDesc, of (the rest of Enum, nothing of it is a value)
+        parameterNames["Ljava/lang/Enum;-><init>(Ljava/lang/String;I)V"] = listOf("name", "ordinal")
         repeat(MAX_DEPTH) {
             for ((methodKey, superCall) in superCalls) {
                 val (calleeKey, positions) = superCall
@@ -300,7 +306,9 @@ class DexValues : JavaValueEdit {
             val registerType = parameterType.toString()
             val sourceRegister = registers.getOrNull(register) ?: return
             register += if (registerType == "J" || registerType == "D") 2 else 1
-            if (registerType in PRIMITIVES) add(analyzedInstruction, sourceRegister, registerType, simpleName(methodReference.definingClass), names?.getOrNull(i) ?: "#${i + 1}", initRef)
+            val name = names?.getOrNull(i) ?: "#${i + 1}"
+            // Kept debug names can call the synthetic parameter $enum$ordinal instead.
+            if (registerType in PRIMITIVES && name.removePrefix("\$enum\$") != "ordinal") add(analyzedInstruction, sourceRegister, registerType, simpleName(methodReference.definingClass), name, initRef)
         }
     }
 
