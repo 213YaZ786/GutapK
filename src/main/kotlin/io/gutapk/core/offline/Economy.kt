@@ -180,6 +180,7 @@ object Economy {
         whens: Map<String, Map<String, Any?>>,
         rules: List<Map<String, Any?>> = emptyList(),
         moves: List<Map<String, Any?>> = emptyList(),
+        referenced: Set<Pair<String, String>> = emptySet(),
     ): Map<String, Any?>? {
         val latest = snapshots.lastOrNull()?.second ?: return null
         val lists = GameState.named(statics)
@@ -224,7 +225,7 @@ object Economy {
                     for ((r, keys) in names) {
                         if (keys.size < 2) continue
                         for ((yField, y) in numbers) {
-                            if (yField != xField) results.add(Effect(relation("op" to "collect", "element" to xField, "field" to yField, "list" to kind.path), mapOf(r to (y as Number).toLong())))
+                            if (yField != xField && (call.name to yField) !in referenced) results.add(Effect(relation("op" to "collect","element" to xField, "field" to yField, "list" to kind.path), mapOf(r to (y as Number).toLong())))
                         }
                     }
                     val grades = gradesOf(document) ?: continue
@@ -240,11 +241,12 @@ object Economy {
                     val cost = priced(document[key], resources)!!
                     results.add(Effect(relation("op" to "pay", "field" to xField, "price" to key.toString(), "data" to index), cost.mapValues { -it.value }))
                     for ((yField, y) in numbers) {
-                        if (yField != xField) results.add(Effect(relation("op" to "pay", "field" to xField, "price" to key.toString(), "data" to index, "times" to yField), cost.mapValues { -it.value * (y as Number).toLong() }))
+                        if (yField != xField && (call.name to yField) !in referenced) results.add(Effect(relation("op" to "pay", "field" to xField,"price" to key.toString(), "data" to index, "times" to yField), cost.mapValues { -it.value * (y as Number).toLong() }))
                     }
                 }
             }
-            for ((xField, x) in numbers) {
+            // A field that names an element of the state is an id, never a price or a spend.
+            for ((xField, x) in numbers.filterKeys { (call.name to it) !in referenced }) {
                 for (r in walletResources) results.add(Effect(relation("op" to "spend", "field" to xField, "resource" to r), mapOf(r to -(x as Number).toLong())))
             }
             for ((key, value) in call.fields) {
@@ -274,7 +276,7 @@ object Economy {
             if (call != null) state?.let { between.add(effects(call, it)) } else state = login
         }
 
-        fun error(chosen: Set<Map<String, Any?>>): Long = intervals.sumOf { i ->
+        fun error(chosen: Set<Map<String, Any?>>, within: List<Interval> = intervals): Long = within.sumOf { i ->
             val predicted = HashMap(i.source)
             for (effects in i.between) for (e in effects) if (e.relation in chosen) e.deltas.forEach { (r, d) -> predicted[r] = (predicted[r] ?: 0) + d }
             i.target.entries.sumOf { (r, v) -> kotlin.math.abs((predicted[r] ?: 0) - v) }
@@ -297,6 +299,14 @@ object Economy {
             chosen.addAll(relations)
             best = lower
         }
+        // A times factor holds in every interval its command is in: where the totals come out
+        // worse with it, or its field is already the command's spend (diamonds are not a count), it goes.
+        for (relation in chosen.filter { it["times"] != null }) {
+            val within = intervals.filter { i -> i.between.any { effects -> effects.any { it.relation == relation } } }
+            val spent = chosen.any { it["command"] == relation["command"] && it["op"] == "spend" && it["field"] == relation["times"] }
+            if (spent || within.any { i -> error(chosen, listOf(i)) > error(chosen - setOf(relation), listOf(i)) }) chosen.remove(relation)
+        }
+        best = error(chosen)
         if (chosen.isEmpty()) return null
 
         // The data the phone reads: the prices, the producers and the storages'

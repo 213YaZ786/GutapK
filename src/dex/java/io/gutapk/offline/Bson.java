@@ -13,11 +13,13 @@ package io.gutapk.offline;
  * https://github.com/bwaldvogel/mongo-java-server/blob/main/core/src/main/java/de/bwaldvogel/mongo/wire/bson/BsonDecoder.java#decodeBson
  * https://github.com/bwaldvogel/mongo-java-server/blob/main/core/src/main/java/de/bwaldvogel/mongo/wire/bson/BsonEncoder.java#encodeDocument
  * https://github.com/bwaldvogel/mongo-java-server/blob/main/core/src/main/java/de/bwaldvogel/mongo/wire/BsonConstants.java
+ * https://github.com/FasterXML/jackson-core/blob/2.x/src/main/java/com/fasterxml/jackson/core/StreamReadConstraints.java#validateNestingDepth
  *
  * Not ported: decodePattern, decodeObjectId, BsonTimestamp, Decimal128, MaxKey, MinKey, BsonJavaScript, LegacyUUID and UUID subtypes (no game recorded so far sends them, they are refused as unknown and the body is then not handled)
  * Not ported: Assert.isNull on a repeated field (the last value wins, as a map keeps it)
  * Not ported: Instant for TYPE_UTC_DATETIME (java.time needs Android 8, a Date holds the same milliseconds)
  * Not ported: Missing, Document (a LinkedHashMap is the document)
+ * Not ported: StreamReadConstraints builder, withMaxNestingDepth, getMaxNestingDepth, _constrainRef, _constructException and the other constraints (number, string, name length, token count: only the nesting depth overflows the stack, and its limit is one constant)
  *
  * Copyright (c) 2012-2024 Benedikt Waldvogel, BSD-3-Clause.
  */
@@ -37,6 +39,15 @@ public final class Bson {
     private static final Charset UTF_8 = Charset.forName("UTF-8");
 
     static final int MAX_BSON_OBJECT_SIZE = 16 * 1024 * 1024;
+
+    /**
+     * How deep documents and arrays may nest. Any phone app can write to the game port, and about
+     * 70 KB of nested documents would otherwise overflow the stack, an Error no caller catches.
+     * The deepest nesting recorded is 9.
+     */
+    public static final int DEFAULT_MAX_DEPTH = 1000;
+
+    private static final int maxNestingDepth = DEFAULT_MAX_DEPTH;
 
     static final byte TERMINATING_BYTE = 0x00;
     static final byte TYPE_DOUBLE = 0x01;
@@ -81,6 +92,21 @@ public final class Bson {
     }
 
     public static LinkedHashMap<String, Object> decodeBson(ByteBuffer buffer) {
+        return decodeBson(buffer, 1);
+    }
+
+    /**
+     * Throws past the limit, IllegalArgumentException being what callers read as "not BSON".
+     * https://github.com/FasterXML/jackson-core/blob/2.x/src/main/java/com/fasterxml/jackson/core/StreamReadConstraints.java#validateNestingDepth
+     */
+    static void validateNestingDepth(int depth) {
+        if (depth > maxNestingDepth) {
+            throw new IllegalArgumentException("Document nesting depth (" + depth + ") exceeds the maximum allowed (" + maxNestingDepth + ", from Bson.DEFAULT_MAX_DEPTH)");
+        }
+    }
+
+    private static LinkedHashMap<String, Object> decodeBson(ByteBuffer buffer, int depth) {
+        validateNestingDepth(depth);
         buffer.order(ByteOrder.LITTLE_ENDIAN);
         final int totalObjectLength = buffer.getInt();
         final int length = totalObjectLength - 4;
@@ -102,22 +128,27 @@ public final class Bson {
                 return document;
             }
             String name = decodeCString(buffer);
-            Object value = decodeValue(type, buffer);
+            Object value = decodeValue(type, buffer, depth);
             document.put(name, value);
         }
         throw new IllegalArgumentException("illegal BSON object. Terminating byte not found. totalObjectLength = " + totalObjectLength);
     }
 
     public static Object decodeValue(byte type, ByteBuffer buffer) {
+        return decodeValue(type, buffer, 1);
+    }
+
+    /** The depth is that of the document holding the value. */
+    private static Object decodeValue(byte type, ByteBuffer buffer, int depth) {
         switch (type) {
             case TYPE_DOUBLE:
                 return Double.valueOf(Double.longBitsToDouble(buffer.getLong()));
             case TYPE_UTF8_STRING:
                 return decodeString(buffer);
             case TYPE_EMBEDDED_DOCUMENT:
-                return decodeBson(buffer);
+                return decodeBson(buffer, depth + 1);
             case TYPE_ARRAY:
-                return decodeArray(buffer);
+                return decodeArray(buffer, depth + 1);
             case TYPE_DATA:
                 return decodeBinary(buffer);
             case TYPE_UNDEFINED:
@@ -136,9 +167,9 @@ public final class Bson {
         }
     }
 
-    private static List<Object> decodeArray(ByteBuffer buffer) {
+    private static List<Object> decodeArray(ByteBuffer buffer, int depth) {
         List<Object> array = new ArrayList<Object>();
-        LinkedHashMap<String, Object> arrayObject = decodeBson(buffer);
+        LinkedHashMap<String, Object> arrayObject = decodeBson(buffer, depth);
         for (String key : arrayObject.keySet()) {
             array.add(arrayObject.get(key));
         }

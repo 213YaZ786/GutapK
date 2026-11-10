@@ -59,6 +59,66 @@ object Releases {
             parseGithubList(fetchText(api, githubHeaders()), spec.pkg)
                 ?: throw IOException("no asset matching ${spec.pkg} in the recent releases of $repo")
         }
+        ToolSource.ADOPTIUM -> {
+            val lts = adoptiumLts(fetchText(spec.index)) ?: throw IOException("no long term release in ${spec.index}")
+            resolvePackage(fetchText(availableVersionsUrl(spec.index, lts, spec.pkg)))
+                ?: throw IOException("no Linux x64 ${spec.pkg} of Java $lts in ${spec.index}")
+        }
+    }
+
+    // The newest long term Java the API lists, 25 on 2026-11-10.
+    fun adoptiumLts(json: String): Int? = ((Json.parse(json) as? Map<*, *>)?.get("most_recent_lts") as? Long)?.toInt()
+
+    // Ported from actions/setup-java,
+    // https://github.com/actions/setup-java/blob/main/src/distributions/temurin/installer.ts#getAvailableVersions
+    // for one major version and the computer's platform, on the index's own host.
+    // Not ported: getPlatformOption and distributionArchitecture (GutapK is
+    // one Linux x64 AppImage), the pagination loop (the newest release sits on
+    // the first page, sorted newest first).
+    fun availableVersionsUrl(index: String, major: Int, imageType: String): String {
+        val versionRange = java.net.URLEncoder.encode("[$major,${major + 1})", Charsets.UTF_8)
+        val baseRequestArguments = listOf(
+            "project=jdk",
+            "vendor=adoptium",
+            "heap_size=normal",
+            "sort_method=DEFAULT",
+            "sort_order=DESC",
+            "os=linux",
+            "architecture=x64",
+            "image_type=$imageType",
+            "release_type=ga",
+            "jvm_impl=hotspot",
+        ).joinToString("&")
+        val host = URI(index).let { "${it.scheme}://${it.host}" }
+        return "$host/v3/assets/version/$versionRange?$baseRequestArguments&page_size=20&page=0"
+    }
+
+    // Ported from https://github.com/actions/setup-java/blob/main/src/distributions/temurin/installer.ts#resolvePackage
+    // the newest release with a binary, its link, size and sha256, named by
+    // its OpenJDK version.
+    fun resolvePackage(json: String): Release? {
+        val availableVersionsRaw = (Json.parse(json) as? List<*>)?.filterIsInstance<Map<*, *>>() ?: return null
+        val availableVersionsWithBinaries = availableVersionsRaw.mapNotNull { item ->
+            val pkg = ((item["binaries"] as? List<*>)?.firstOrNull() as? Map<*, *>)?.get("package") as? Map<*, *> ?: return@mapNotNull null
+            val version = getOpenJdkSemverVersion(item["version_data"] as? Map<*, *> ?: return@mapNotNull null) ?: return@mapNotNull null
+            val url = (pkg["link"] as? String)?.takeIf { it.startsWith("https://") } ?: return@mapNotNull null
+            val checksum = (pkg["checksum"] as? String)?.lowercase()?.takeIf { Regex("[0-9a-f]{64}").matches(it) } ?: return@mapNotNull null
+            val size = pkg["size"] as? Long ?: return@mapNotNull null
+            Release(version = version, url = url, size = size, sha1 = null, sha256 = checksum)
+        }
+        return availableVersionsWithBinaries.maxWithOrNull { a, b -> compare(a.version, b.version) }
+    }
+
+    // Ported from https://github.com/actions/setup-java/blob/main/src/distributions/temurin/installer.ts#getOpenJdkSemverVersion
+    // 26.0.2.1+1 gives 26.0.2+1.1, 25.0.4+7-LTS gives 25.0.4+7.
+    fun getOpenJdkSemverVersion(versionData: Map<*, *>): String? {
+        val major = versionData["major"] as? Long ?: return null
+        val minor = versionData["minor"] as? Long ?: return null
+        val security = versionData["security"] as? Long ?: return null
+        val build = versionData["build"] as? Long ?: return null
+        val patch = versionData["patch"] as? Long
+        val buildMetadata = if (patch != null && patch != 0L) "$patch.$build" else "$build"
+        return "$major.$minor.$security+$buildMetadata"
     }
 
     // Enough to reach past a few releases without the asset, one lookup.
@@ -96,8 +156,9 @@ object Releases {
     private fun githubRelease(root: Map<*, *>, pattern: String, preAllowed: Boolean): Release? {
         if (root["draft"] == true || (root["prerelease"] == true && !preAllowed)) return null
         val tag = (root["tag_name"] as? String)?.trim() ?: return null
-        val version = tag.removePrefix("v").removePrefix("V")
-        if (version.isEmpty() || !version[0].isDigit()) return null
+        // A tag around its version, Ghidra_12.2_build, gives the dotted run inside.
+        val version = tag.removePrefix("v").removePrefix("V").takeIf { it.firstOrNull()?.isDigit() == true }
+            ?: Regex("""\d+(\.\d+)+""").find(tag)?.value ?: return null
         val want = Regex(pattern)
         val assets = (root["assets"] as? List<*>)?.filterIsInstance<Map<*, *>>() ?: return null
         val asset = assets.firstOrNull { a -> (a["name"] as? String)?.let { want.matches(it) } == true } ?: return null
@@ -190,10 +251,10 @@ object Releases {
     }
 
     // Dotted numeric versions, compared part by part. A missing part is 0,
-    // so 37.0 equals 37.0.0.
+    // so 37.0 equals 37.0.0. A JDK's build follows a plus, 25.0.5+8.
     fun compare(a: String, b: String): Int {
-        val x = a.split('.', '-').map { it.toIntOrNull() ?: 0 }
-        val y = b.split('.', '-').map { it.toIntOrNull() ?: 0 }
+        val x = a.split('.', '-', '+').map { it.toIntOrNull() ?: 0 }
+        val y = b.split('.', '-', '+').map { it.toIntOrNull() ?: 0 }
         for (i in 0 until maxOf(x.size, y.size)) {
             val d = (x.getOrElse(i) { 0 }).compareTo(y.getOrElse(i) { 0 })
             if (d != 0) return d

@@ -4,11 +4,18 @@
 // and every method but onCreate answers null or 0.
 //
 // https://github.com/firebase/firebase-android-sdk/blob/bb62df1b4c1c3337734c6a4bc63534bed6f138f7/firebase-common/src/main/java/com/google/firebase/provider/FirebaseInitProvider.java
+// https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/content/ContentProvider.java#L2753-L2755
+//
+// The bound name of the admin socket is new at each launch. dump prints it, and
+// "adb shell dumpsys activity provider <package>/<this class>" reaches dump in
+// the game's own process, so the PC reads the name from the process that holds it.
 //
 // Not ported: getStartupTime (no startup time is reported)
 // Not ported: attachInfo, checkContentProviderAuthority (the authority is written into the manifest by GutapK, and a crash here would take the game down)
+// Not ported: the "nothing to dump" line of dump (this one prints the admin name)
 //
 // Copyright 2018 Google LLC, Apache License 2.0.
+// Copyright (C) 2006 The Android Open Source Project, Apache License 2.0.
 package io.gutapk.offline;
 
 import android.content.ContentProvider;
@@ -20,8 +27,10 @@ import android.net.Uri;
 import android.util.Log;
 
 import java.io.File;
+import java.io.FileDescriptor;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.PrintWriter;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Starts the offline cache server at app startup time. */
@@ -32,6 +41,9 @@ public class CacheProvider extends ContentProvider {
   static final String CONFIG = "gutapk/offline.properties";
 
   private static AtomicBoolean currentlyInitializing = new AtomicBoolean(false);
+
+  /** The offline server of this process, for dump. */
+  private static volatile Offline started;
 
   public static boolean isCurrentlyInitializing() {
     return currentlyInitializing.get();
@@ -47,8 +59,12 @@ public class CacheProvider extends ContentProvider {
         Log.w(TAG, "No application context, the offline cache is not started");
         return false;
       }
-      start(context);
+      started = start(context);
       return false;
+    } catch (Offline.Squatted e) {
+      // A port is held by another app: the game would send its tokens there, so it must not start.
+      Log.e(TAG, "Offline cache refused, a port is held by another app", e);
+      throw e;
     } catch (Throwable e) {
       // The game must start even if the cache cannot.
       Log.e(TAG, "Offline cache initialization unsuccessful", e);
@@ -64,7 +80,7 @@ public class CacheProvider extends ContentProvider {
   /** Where the local game server's rules.bson and state.bson sit in the game's assets. */
   static final String SERVER = "gutapk/server";
 
-  private static void start(final Context context) throws IOException {
+  private static Offline start(final Context context) throws IOException {
     InputStream source = context.getAssets().open(CONFIG);
     try {
       File root = new File(context.getFilesDir(), "gutapk-offline");
@@ -96,10 +112,21 @@ public class CacheProvider extends ContentProvider {
         new File(new File(root, "server"), "rules.bson").delete();
         Seed.copyAssetFolder(seed, SERVER, new File(root, "server").getPath());
       }
-      Offline.start(source, root);
+      return Offline.start(source, root);
     } finally {
       source.close();
     }
+  }
+
+  /**
+   * Print the Provider's state: one line, the admin socket's bound name.
+   * https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/content/ContentProvider.java#L2753-L2755
+   */
+  @Override
+  public void dump(FileDescriptor fd, PrintWriter writer, String[] args) {
+    Offline offline = started;
+    String name = offline == null ? null : offline.adminName;
+    writer.println("admin " + (name == null ? "none" : name));
   }
 
   @Override

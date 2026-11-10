@@ -180,6 +180,106 @@ object GameState {
         return out
     }
 
+    // The parameters of a data document: the numbers of its lists of one name
+    // each ([{"HEALTH": 140}]), the names in lower case.
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/main/kotlin/io/gutapk/core/offline/GameState.kt#resources
+    // not ported: resources (the count of the documents a name is met in, one document is read here)
+    private fun parameters(document: Map<*, *>): Map<String, Number> {
+        val out = LinkedHashMap<String, Number>()
+        for (v in document.values) {
+            if (v is List<*>) v.filterIsInstance<Map<*, *>>().filter { it.size == 1 }.forEach { p -> p.forEach { (pk, pv) -> if (pv is Number) out[pk.toString().lowercase()] = pv } }
+        }
+        return out
+    }
+
+    // instances: a list of the state whose elements are each the instance of a
+    // document of one data list, the element's id the document's and one of its
+    // numbers the document's parameter of that name (a hero's health, its
+    // HEALTH). Each comes with an element for every document of that data list,
+    // made like the first element: the document's id, those numbers the document's.
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/main/kotlin/io/gutapk/core/offline/GameState.kt#naming
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/main/kotlin/io/gutapk/core/offline/GameState.kt#fields
+    // not ported: naming (an instance is named by its id, not by a field holding a document's id)
+    // not ported: fields, keys, label, resource (the labels, the groups and the resources, only the lists are walked)
+    fun instances(state: Map<String, Any?>, statics: List<Any?>): List<Map<String, Any?>> {
+        val all = messages(state)
+        val nameField = nameField(all) ?: return emptyList()
+        val lists = named(statics)
+        val out = mutableListOf<Map<String, Any?>>()
+        fun walk(node: Any?, path: String) {
+            when (node) {
+                is Map<*, *> -> node.forEach { (k, v) -> walk(v, "$path/$k") }
+                is List<*> -> {
+                    if (node.isEmpty() || !node.all { it is Map<*, *> && it["id"] != null }) {
+                        node.forEachIndexed { index, item -> walk(item, "$path/$index") }
+                        return
+                    }
+                    val elements = node.map { it as Map<*, *> }
+                    val first = elements.first()
+                    for (documents in lists) {
+                        if (!elements.all { e -> documents.any { it["id"].toString() == e["id"].toString() } }) continue
+                        // As naming: documents holding the elements' fields are another list of such
+                        // elements (the second base's layout in the data), not what they are made from.
+                        if (documents.any { d -> first.keys.any { it != "id" && d.containsKey(it) } }) continue
+                        // A number every element holds as its own document gives it.
+                        val shared = first.keys.map { it.toString() }.filter { k ->
+                            k != "id" && elements.all { e ->
+                                val own = parameters(documents.first { it["id"].toString() == e["id"].toString() })
+                                e[k] is Number && own[k.lowercase()]?.toString() == e[k].toString()
+                            }
+                        }
+                        if (shared.isEmpty()) continue
+                        val entries = documents.map { d ->
+                            val given = parameters(d)
+                            LinkedHashMap<String, Any?>().apply {
+                                first.forEach { (k, v) -> put(k.toString(), v) }
+                                // In the type the element holds, an int32 when it does.
+                                put("id", if (first["id"] is Int) (d["id"] as Number).toInt() else d["id"])
+                                for (k in shared) given[k.lowercase()]?.let { put(k, if (first[k] is Int) it.toInt() else it) }
+                            }
+                        }
+                        out.add(linkedMapOf("path" to path, "entries" to entries))
+                        return
+                    }
+                    elements.forEach { e -> walk(e, "$path/#${e["id"]}") }
+                }
+            }
+        }
+        for (message in all) {
+            val name = message[nameField] as String
+            message.forEach { (k, v) -> if (k != nameField) walk(v, "$name/$k") }
+        }
+        return out
+    }
+
+    // The state with the elements of the instances it lacks added to their lists.
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/main/kotlin/io/gutapk/core/offline/GameState.kt#with
+    // not ported: the type of a number changed (the elements are added whole, in the types instances gave)
+    fun added(state: Map<String, Any?>, instances: List<Map<String, Any?>>): Map<String, Any?> {
+        @Suppress("UNCHECKED_CAST")
+        val copy = Bson.document(Bson.encode(state)) as MutableMap<String, Any?>
+        val all = messages(copy)
+        val nameField = nameField(all) ?: return copy
+        for (instance in instances) {
+            val segments = instance["path"].toString().split('/')
+            var node: Any? = all.firstOrNull { it[nameField] == segments.first() }
+            for (segment in segments.drop(1)) {
+                node = when {
+                    segment.startsWith("#") -> (node as? List<*>)?.firstOrNull { it is Map<*, *> && it["id"].toString() == segment.substring(1) }
+                    node is Map<*, *> -> node[segment]
+                    node is List<*> -> segment.toIntOrNull()?.let { node.getOrNull(it) }
+                    else -> null
+                }
+            }
+            @Suppress("UNCHECKED_CAST")
+            val elements = node as? MutableList<Any?> ?: continue
+            for (entry in (instance["entries"] as? List<*>).orEmpty().filterIsInstance<Map<*, *>>()) {
+                if (elements.none { it is Map<*, *> && it["id"].toString() == entry["id"].toString() }) elements.add(entry)
+            }
+        }
+        return copy
+    }
+
     // The state with the values changed, each at its path, in the type the phone held.
     // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/core/offline/ServerRules.kt#valueAt
     fun with(state: Map<String, Any?>, changes: Map<String, Any?>): Map<String, Any?> {

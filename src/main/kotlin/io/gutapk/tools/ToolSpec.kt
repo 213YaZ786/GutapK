@@ -16,6 +16,9 @@ enum class ToolSource(val tag: String) {
     // A Java library on a Maven repository, index is its
     // maven-metadata.xml, package the pattern of the versions taken.
     MAVEN("maven"),
+    // Eclipse Adoptium's API, index is its available_releases answer,
+    // package the image type of the newest long term release.
+    ADOPTIUM("adoptium"),
 }
 
 // In the execDir column, a tool whose program is a single file, a jar, with

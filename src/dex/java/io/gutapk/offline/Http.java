@@ -151,6 +151,12 @@ public class Http {
 
             String uri = st.nextToken();
 
+            // Origin-form only (RFC 9112 section 3.2.1). ProxyResponseRenderer builds new URL(origin + uri),
+            // so "@evil.example/x" would make the game fetch another host.
+            if (!uri.startsWith("/")) {
+                throw new ResponseException(400, "BAD REQUEST: The request target must start with /. Usage: GET /example/file.html");
+            }
+
             int qmi = uri.indexOf('?');
             if (qmi >= 0) {
                 this.queryParameterString = uri.substring(qmi + 1);

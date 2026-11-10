@@ -10,6 +10,7 @@ package io.gutapk
 // https://github.com/flipkart-incubator/zjsonpatch/blob/master/src/test/java/com/flipkart/zjsonpatch/JsonPatchTest.java
 
 import io.gutapk.core.offline.Inject
+import io.gutapk.device.ServerAdmin
 import io.gutapk.offline.Bson
 import io.gutapk.offline.GameServer
 import io.gutapk.offline.Offline
@@ -259,6 +260,93 @@ class GameServerTest {
         dir.deleteRecursively()
     }
 
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/test/kotlin/io/gutapk/GameServerTest.kt#anAnswerRuleEditsTheAnswerOfTheClosestExample
+    // https://www.rfc-editor.org/rfc/rfc6901 (a token names a member of the object it is evaluated on, from the root)
+    @Test
+    fun anAnswerNamedLikeItsKeyIsEditedThroughTheKey() {
+        // As Jungle Heat answers a mission: the answer is named location and holds
+        // location/locationId, the map the game loads.
+        val rules = rules()
+        (rules["answers"] as MutableMap<String, Any?>)["attack_mission"] = listOf(
+            example(doc("name" to "attack_mission", "missionId" to 3), doc("name" to "location", "location" to doc("locationId" to 3), "defenderData" to doc("level" to 3))),
+        )
+        rules["answerRules"] = listOf(rule("attack_mission", "set", "location/locationId", "\$missionId"), rule("attack_mission", "set", "defenderData/level", "\$missionId"))
+        val dir = folder(rules)
+        val back = GameServer(dir).ask("attack_mission", "missionId" to 4)
+        assertEquals(4, back.dig("location", "locationId"))
+        assertEquals(4, back.dig("defenderData", "level"))
+        assertEquals(null, back["locationId"])
+        dir.deleteRecursively()
+    }
+
+    // A state with two buildings holding units in their queue, and heroes in the first.
+    private fun troops() = state().also { s ->
+        (s["messages"].list()[1].map()["location"] as MutableMap<String, Any?>)["location"] = listOf(
+            doc("id" to 88, "state" to doc("heroes" to listOf(doc("id" to 1000001, "grade" to 1, "health" to 140)), "unitQueue" to listOf(doc("unit" to 10002, "count" to 3)))),
+            doc("id" to 89, "state" to doc("unitQueue" to listOf(doc("unit" to 10003, "count" to 2), doc("unit" to 10004, "count" to 1)))),
+            doc("id" to 90, "articleId" to 5),
+        )
+    }
+
+    // The answer of a mission as Jungle Heat gives it, flat and named location: the heroes and
+    // the units of the recording, which the player's state replaces when it is served.
+    private fun mission(vararg rules: Map<String, Any?>): File {
+        val all = rules()
+        (all["answers"] as MutableMap<String, Any?>)["attack_mission"] = listOf(
+            example(doc("name" to "attack_mission", "missionId" to 3), doc("name" to "location", "location" to doc("locationId" to 3), "heroes" to listOf(doc("id" to 7)), "units" to listOf(listOf(1, 1, 1, 0)), "wallet" to doc("DIAMOND" to 1))),
+        )
+        all["answerRules"] = rules.toList()
+        (all["rules"] as MutableList<Any?>).add(rule("set_tutorial_step", "increment", "character/data/wallet/DIAMOND", null, "by" to 5))
+        return folder(all, troops())
+    }
+
+    // https://github.com/wiremock/wiremock-state-extension/blob/HEAD/src/main/java/org/wiremock/extensions/state/extensions/StateHandlerbarHelper.java#apply
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/test/kotlin/io/gutapk/GameServerTest.kt#anAnswerRuleEditsTheAnswerOfTheClosestExample
+    @Test
+    fun anAnswerRuleReadsTheStateWhenItIsServed() {
+        val dir = mission(
+            rule("attack_mission", "state", "heroes", null, "from" to "location/location/location/#88/state/heroes"),
+            rule("attack_mission", "state", "units", null, "from" to "location/location/location/*/state/unitQueue", "each" to listOf("\$unit", 1, "\$count", 0)),
+            rule("attack_mission", "state", "wallet", null, "from" to "character/data/wallet"),
+        )
+        val game = GameServer(dir)
+        val back = game.ask("attack_mission", "missionId" to 3)
+        assertEquals(listOf(doc("id" to 1000001, "grade" to 1, "health" to 140)), back["heroes"])
+        // The lists of every building in order, each document turned into the template.
+        assertEquals(listOf(listOf(10002, 1, 3, 0), listOf(10003, 1, 2, 0), listOf(10004, 1, 1, 0)), back["units"])
+        assertEquals(doc("DIAMOND" to 500), back["wallet"])
+        assertEquals(3, back.dig("location", "locationId"))
+        // The state of the next call, and what was served was a copy of it.
+        (back["heroes"] as MutableList<Any?>).clear()
+        game.ask("set_tutorial_step", "tutorial_step" to 4)
+        val again = game.ask("attack_mission", "missionId" to 3)
+        assertEquals(doc("DIAMOND" to 505), again["wallet"])
+        assertEquals(1, again["heroes"].list().size)
+        dir.deleteRecursively()
+    }
+
+    // https://github.com/wiremock/wiremock-state-extension/blob/HEAD/src/main/java/org/wiremock/extensions/state/extensions/StateHandlerbarHelper.java#getList
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/test/kotlin/io/gutapk/GameServerTest.kt#aRuleWhoseWayCannotBeWalkedIsSkippedWithOneLine
+    @Test
+    fun aValueTheStateCannotGiveLeavesTheAnswerAsItIsWithOneLine() {
+        val dir = mission(
+            rule("attack_mission", "state", "heroes", null, "from" to "nobody/data/heroes"),
+            rule("attack_mission", "state", "heroes", null, "from" to "character/data/missing"),
+            rule("attack_mission", "state", "units", null, "from" to "character/data/tutor", "each" to listOf("\$unit")),
+            rule("attack_mission", "state", "units", null, "from" to "location/location/location/*/state/unitQueue", "each" to listOf("\$nothing")),
+            rule("attack_mission", "state", "units", null, "from" to "location/location/location/#88/articleId"),
+            rule("attack_mission", "state", "nowhere/units", null, "from" to "character/data/wallet"),
+            rule("attack_mission", "state", "wallet", null),
+        )
+        val (back, lines) = logged { GameServer(dir).ask("attack_mission", "missionId" to 3) }
+        assertEquals(listOf(doc("id" to 7)), back["heroes"])
+        assertEquals(listOf(listOf(1, 1, 1, 0)), back["units"])
+        assertEquals(doc("DIAMOND" to 1), back["wallet"])
+        assertEquals(7, lines.size, lines.joinToString("\n"))
+        assertTrue(lines.all { it.startsWith("Local game server: state ") && "skipped" in it })
+        dir.deleteRecursively()
+    }
+
     @Test
     fun theExampleSharingTheMostFieldsIsChosenAndItsTypeIsSent() {
         val rules = rules()
@@ -321,11 +409,73 @@ class GameServerTest {
         }
         assertTrue(lines[1].endsWith("kept in tutorial_progress/progress [4, 2]"), lines.toString())
         assertTrue(lines[2].endsWith("kept in location/location/location #88 [cellI, cellJ]"), lines.toString())
+        // No rule of its own: the fields were kept by family, as MoveBuildingCommand sets the position a command carries, and the log says so.
+        assertTrue("(deduced by family)" in lines[2] && "(deduced by family)" !in lines[1], lines.toString())
         assertTrue(lines[3].endsWith("answered status"), lines.toString())
 
         val messages = Bson.decode(GameServer(dir).stateBytes())["messages"].list().associateBy { it.map()["name"] }
         assertEquals(listOf(listOf(4, 2)), messages["tutorial_progress"].dig("progress"))
         assertEquals(listOf(5, 6), listOf("cellI", "cellJ").map { messages["location"].dig("location", "location", 0, it) })
+        dir.deleteRecursively()
+    }
+
+    // A refusal of the server goes without its reason, the stars of a mission won
+    // stay in the answer of the missions, a hero unlocked joins the list of heroes once.
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/test/kotlin/io/gutapk/GameServerTest.kt#anUnknownCommandIsAnsweredStatusAndLoggedOnce
+    @Test
+    fun aMissionWonARefusalAndAHeroUnlockedAreKept() {
+        val rules = rules()
+        @Suppress("UNCHECKED_CAST")
+        val answers = rules["answers"] as MutableMap<String, Any?>
+        answers["attack_random"] = listOf(example(doc("name" to "attack_random"), doc("name" to "commands_pack", "data" to listOf(doc("reason_code" to 8, "name" to "attack_failed")))))
+        answers["get_missions_info"] = listOf(example(doc("name" to "get_missions_info", "zoneId" to 1), doc("data" to listOf(listOf(1, 0, 500, 500), listOf(2, 0, 600, 600)))))
+        rules["answerRules"] = rules["answerRules"].list() + rule("attack_random", "remove", "attack_failed/reason_code")
+        rules["progress"] = listOf(doc("command" to "attack_finish", "answer" to "get_missions_info", "path" to "data", "key" to doc("command" to "attack_mission", "field" to "missionId"), "values" to doc("1" to "\$starsCount", "2" to 0, "3" to 0)))
+        rules["instances"] = listOf(doc("path" to "location/location/location/#88/heroes", "entries" to listOf(doc("id" to 1000001, "health" to 140), doc("id" to 1000002, "health" to 195))))
+        rules["refusals"] = listOf(doc("command" to "attack_random", "fields" to listOf("sig")))
+        rules["results"] = doc("hero_unlocked" to "hero_unlocked_result")
+        val state = doc("messages" to listOf(
+            doc("name" to "location", "location" to doc("location" to listOf(doc("id" to 88, "articleId" to 3, "heroes" to listOf(doc("id" to 1000001, "health" to 140)))))),
+            doc("name" to "duel_battle_state", "data" to doc("status" to "NONE")),
+        ))
+        val dir = folder(rules, state)
+        val game = GameServer(dir)
+        val (refused, lines) = logged { game.ask("attack_random") }
+        assertEquals(listOf(doc("name" to "attack_failed")), refused["data"])
+        assertTrue(lines.single().endsWith("attack_random refused as the server did, without attack_failed/reason_code"), lines.toString())
+        // A command never recorded carrying the signature of the refused one is refused
+        // alike, a get_ of a message of the state is answered with it.
+        assertEquals(listOf(doc("name" to "attack_failed")), game.ask("create_duel_battle_bid", "sig" to "ab")["data"])
+        assertEquals(doc("name" to "duel_battle_state", "data" to doc("status" to "NONE")), game.ask("get_duel_battle_state"))
+        assertEquals(doc("name" to "status"), game.ask("cancel_duel_battle_bid"))
+        game.ask("attack_mission", "missionId" to 2)
+        game.ask("attack_finish", "starsCount" to 3)
+        assertEquals(doc("name" to "hero_unlocked_result", "result" to true, "heroId" to 1000002), game.ask("hero_unlocked", "heroId" to 1000002))
+        game.ask("hero_unlocked", "heroId" to 1000002)
+        assertEquals(doc("name" to "hero_unlocked_result", "result" to false, "heroId" to 9), game.ask("hero_unlocked", "heroId" to 9))
+
+        val fresh = GameServer(dir)
+        assertEquals(listOf(listOf(1, 0, 500, 500), listOf(2, 3, 0, 0)), fresh.ask("get_missions_info", "zoneId" to 1)["data"])
+        val messages = Bson.decode(fresh.stateBytes())["messages"].list().associateBy { it.map()["name"] }
+        assertEquals(listOf(1000001, 1000002), messages["location"].dig("location", "location", 0, "heroes").list().map { it.map()["id"] })
+        dir.deleteRecursively()
+    }
+
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/test/kotlin/io/gutapk/GameServerTest.kt#anUnknownCommandIsAnsweredStatusAndLoggedOnce
+    // https://github.com/flipkart-incubator/zjsonpatch/blob/master/src/main/java/com/flipkart/zjsonpatch/InPlaceApplyProcessor.java#remove (a field of an object removed)
+    @Test
+    fun aHeroHeldLockedLosesTheFieldsAnUnlockedOneLacks() {
+        val rules = rules()
+        rules["instances"] = listOf(doc("path" to "location/location/location/#88/heroes", "entries" to listOf(doc("id" to 1000002, "health" to 195, "exp" to 0))))
+        rules["results"] = doc("hero_unlocked" to "hero_unlocked_result")
+        val state = doc("messages" to listOf(
+            doc("name" to "location", "location" to doc("location" to listOf(doc("id" to 88, "articleId" to 3, "heroes" to listOf(doc("id" to 1000002, "health" to 195, "exp" to 4, "restriction" to emptyList<Any?>())))))),
+        ))
+        val dir = folder(rules, state)
+        val (_, lines) = logged { GameServer(dir).ask("hero_unlocked", "heroId" to 1000002) }
+        assertTrue(lines.any { it.endsWith("#1000002, held already, without restriction") }, lines.toString())
+        val messages = Bson.decode(GameServer(dir).stateBytes())["messages"].list().associateBy { it.map()["name"] }
+        assertEquals(listOf(doc("id" to 1000002, "health" to 195, "exp" to 4)), messages["location"].dig("location", "location", 0, "heroes"))
         dir.deleteRecursively()
     }
 
@@ -498,11 +648,356 @@ class GameServerTest {
         }
     }
 
+    // A barracks (85), a far camp and a near camp (the articleId 11 of both), the production rule as the PC learns it
+    // from the recordings of Jungle Heat: the units of a barracks leave its queue head first, one each duration.
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Component/UnitProductionComponent.cs#ProductionCompleted
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/test/kotlin/io/gutapk/GameServerTest.kt#anAnswerRuleReadsTheStateWhenItIsServed
+    private fun training(elements: List<Map<String, Any?>>, vararg more: Map<String, Any?>): File {
+        val all = rules()
+        (all["rules"] as MutableList<Any?>).addAll(
+            listOf(
+                rule("start_train", "set", "location/location/location/#\$trainId/state/type", "TRAIN"),
+                rule("force_train", "set", "location/location/location/#\$trainId/state/type", "NORMAL"),
+                rule("force_train", "set", "location/location/location/#\$trainId/state/trainFinishTime", 0),
+            ),
+        )
+        all["production"] = listOf(
+            doc(
+                "list" to "location/location/location", "queue" to "state/unitQueue", "unit" to "unit", "count" to "count", "finish" to "state/trainFinishTime",
+                "durations" to doc("10001" to 20, "10002" to 30),
+                "camp" to doc("key" to "articleId", "value" to 11, "near" to listOf("cellI", "cellJ")),
+                "train" to doc("command" to "start_train", "element" to "trainId", "unit" to "unitId", "count" to "amount"),
+                "force" to doc("command" to "force_train", "element" to "trainId", "idle" to doc("state/type" to "NORMAL", "state/trainFinishTime" to 0)),
+                "left" to doc("command" to "attack_finish", "path" to "attacker/units", "unit" to "id", "count" to "count"),
+            ),
+        )
+        all["answerRules"] = more.toList()
+        (all["answers"] as MutableMap<String, Any?>)["attack_mission"] = listOf(
+            example(doc("name" to "attack_mission", "missionId" to 3), doc("name" to "location", "location" to doc("locationId" to 3), "units" to listOf(listOf(1, 1, 1, 0)))),
+        )
+        val saved = state()
+        (saved["messages"].list()[1].map()["location"] as MutableMap<String, Any?>)["location"] = elements
+        return folder(all, saved)
+    }
+
+    private fun barracks(type: String, finish: Int, queue: List<Map<String, Any?>>) =
+        doc("id" to 85, "articleId" to 10, "cellI" to 22, "cellJ" to 25, "state" to doc("type" to type, "trainFinishTime" to finish, "unitQueue" to queue, "updateTime" to 1))
+
+    private fun camp(id: Int, cellI: Int, cellJ: Int, queue: List<Map<String, Any?>>? = null) =
+        doc("id" to id, "articleId" to 11, "cellI" to cellI, "cellJ" to cellJ, "state" to doc("type" to "NORMAL").also { if (queue != null) it["unitQueue"] = queue })
+
+    private fun slot(unit: Int, count: Int) = doc("unit" to unit, "count" to count)
+
+    private fun GameServer.element(id: Int): Map<*, *> {
+        val location = Bson.decode(stateBytes())["messages"].list()[1].dig("location", "location").list()
+        return location.single { it.map()["id"] == id }.map()
+    }
+
+    private fun Map<*, *>.queue(): Any? = this.dig("state", "unitQueue")
+
+    @Test
+    fun unitsTrainedReachTheClosestCampHeadFirstAsTimePasses() {
+        val now = (System.currentTimeMillis() / 1000).toInt()
+        // The camp 96 is the closest to the barracks, then the camp 180 with no unitQueue yet is.
+        for ((near, far) in listOf(96 to 180, 180 to 96)) {
+            val dir = training(listOf(barracks("NORMAL", 0, listOf()), camp(near, 23, 26, if (near == 96) listOf() else null), camp(far, 10, 15, if (far == 96) listOf() else null)))
+            val game = GameServer(dir)
+            // 65 s ago: the first unit ended 35 s ago, the second 5 s ago, the third ends in 25 s.
+            game.ask("start_train", "unitId" to 10002, "trainId" to 85, "amount" to 3, "optime" to now - 65)
+            assertEquals(listOf(slot(10002, 3)), game.element(85).queue())
+            assertEquals("TRAIN", game.element(85).dig("state", "type"))
+            assertEquals(now - 35, game.element(85).dig("state", "trainFinishTime"))
+            val (_, lines) = logged { game.ask("change_nick", "nick" to "x") }
+            assertEquals(listOf(slot(10002, 1)), game.element(85).queue())
+            assertEquals(now + 25, game.element(85).dig("state", "trainFinishTime"))
+            assertEquals(listOf(slot(10002, 2)), game.element(near).queue())
+            assertEquals(if (far == 96) listOf<Any?>() else null, game.element(far).queue())
+            assertEquals(2, lines.count { "unit 10002 of #85 moved to #$near" in it }, lines.joinToString("\n"))
+            // The next ones come as time passes, the queue of the barracks being the state.
+            assertEquals(listOf(slot(10002, 1)), GameServer(dir).element(85).queue())
+            dir.deleteRecursively()
+        }
+    }
+
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Component/UnitProductionComponent.cs#StartProducingNextUnit
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/test/kotlin/io/gutapk/GameServerTest.kt#anAnswerRuleReadsTheStateWhenItIsServed
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Component/UnitProductionComponent.cs#AddUnitToProductionQueue
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/test/kotlin/io/gutapk/GameServerTest.kt#anAnswerRuleReadsTheStateWhenItIsServed
+    @Test
+    fun aUnitAskedForJoinsTheSlotOfItsUnitAndTheTimerStartsOnce() {
+        val now = (System.currentTimeMillis() / 1000).toInt()
+        val dir = training(listOf(barracks("NORMAL", 0, listOf()), camp(96, 23, 26, listOf())))
+        val game = GameServer(dir)
+        game.ask("start_train", "unitId" to 10002, "trainId" to 85, "amount" to 2, "optime" to now)
+        game.ask("start_train", "unitId" to 10002, "trainId" to 85, "amount" to 3, "optime" to now + 5)
+        game.ask("start_train", "unitId" to 10001, "trainId" to 85, "amount" to 1, "optime" to now + 6)
+        assertEquals(listOf(slot(10002, 5), slot(10001, 1)), game.element(85).queue())
+        assertEquals(now + 30, game.element(85).dig("state", "trainFinishTime"))
+        // A unit the data gives no duration is refused with one line, the queue as it was.
+        val (_, lines) = logged { game.ask("start_train", "unitId" to 99999, "trainId" to 85, "amount" to 1, "optime" to now + 7) }
+        assertEquals(1, lines.count { "production" in it && "skipped" in it }, lines.joinToString("\n"))
+        assertEquals(listOf(slot(10002, 5), slot(10001, 1)), game.element(85).queue())
+        dir.deleteRecursively()
+    }
+
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Component/UnitProductionComponent.cs#StartProducingNextUnit
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/test/kotlin/io/gutapk/GameServerTest.kt#anAnswerRuleReadsTheStateWhenItIsServed
+    @Test
+    fun aQueueThatEmptiesByTimeLeavesTheElementIdleAndMergesTheUnitsByUnit() {
+        val now = (System.currentTimeMillis() / 1000).toInt()
+        // Two slots: the first unit ended 80 s ago (20 s each), the next one 60 s ago, the last (30 s) 30 s ago.
+        val dir = training(listOf(barracks("TRAIN", now - 80, listOf(slot(10001, 2), slot(10002, 1))), camp(96, 23, 26, listOf(slot(10001, 1), slot(10002, 4)))))
+        val game = GameServer(dir)
+        game.ask("change_nick", "nick" to "x")
+        assertEquals(listOf<Any?>(), game.element(85).queue())
+        assertEquals(listOf(slot(10001, 3), slot(10002, 5)), game.element(96).queue())
+        assertEquals<Any?>(mapOf("type" to "NORMAL", "trainFinishTime" to 0, "updateTime" to 1), game.element(85)["state"].map().filterKeys { it != "unitQueue" })
+        dir.deleteRecursively()
+    }
+
+    @Test
+    fun aForceTrainMovesTheWholeQueueIntoTheCampAndSetsTheIdleValues() {
+        val now = (System.currentTimeMillis() / 1000).toInt()
+        val dir = training(listOf(barracks("TRAIN", now + 100, listOf(slot(10002, 22))), camp(96, 23, 26, listOf(slot(10002, 3)))))
+        val game = GameServer(dir)
+        val (_, lines) = logged { game.ask("force_train", "trainId" to 85, "amount" to 4) }
+        assertEquals(22, lines.count { "unit 10002 of #85 moved to #96" in it }, lines.joinToString("\n"))
+        assertEquals(listOf<Any?>(), game.element(85).queue())
+        assertEquals("NORMAL", game.element(85).dig("state", "type"))
+        assertEquals(0, game.element(85).dig("state", "trainFinishTime"))
+        assertEquals(listOf(slot(10002, 25)), game.element(96).queue())
+        dir.deleteRecursively()
+    }
+
+    @Test
+    fun withNoCampTheUnitStaysInTheQueueAndTheProductionWaitsWithOneLine() {
+        val now = (System.currentTimeMillis() / 1000).toInt()
+        val dir = training(listOf(barracks("TRAIN", now - 10, listOf(slot(10002, 2)))))
+        val (_, lines) = logged { GameServer(dir).ask("change_nick", "nick" to "x") }
+        assertEquals(1, lines.count { "unit 10002 of #85 waits, no camp" in it }, lines.joinToString("\n"))
+        assertEquals(listOf(slot(10002, 2)), GameServer(dir).element(85).queue())
+        dir.deleteRecursively()
+    }
+
+    @Test
+    fun anAttackFinishSetsTheCampsFromTheUnitsLeft() {
+        val dir = training(listOf(barracks("NORMAL", 0, listOf()), camp(96, 23, 26, listOf(slot(10002, 25))), camp(180, 10, 15, listOf(slot(10001, 4)))))
+        val game = GameServer(dir)
+        val left = doc("units" to listOf(doc("id" to 10002, "grade" to 1, "count" to 10)), "additionalUnits" to listOf<Any?>(), "heroes" to listOf<Any?>())
+        val (_, lines) = logged { game.ask("attack_finish", "attacker" to left, "starsCount" to 3) }
+        assertEquals(listOf(slot(10002, 10)), game.element(96).queue())
+        assertEquals(listOf<Any?>(), game.element(180).queue())
+        assertEquals(1, lines.count { "10 of unit 10002 left, kept in #96" in it }, lines.joinToString("\n"))
+        assertTrue(lines.none { "unknown command" in it }, lines.joinToString("\n"))
+        // A battle lost: nothing is left.
+        game.ask("attack_finish", "attacker" to doc("units" to listOf<Any?>()), "starsCount" to 0)
+        assertEquals(listOf<Any?>(), game.element(96).queue())
+        dir.deleteRecursively()
+    }
+
+    // https://github.com/wiremock/wiremock-state-extension/blob/HEAD/src/main/java/org/wiremock/extensions/state/extensions/StateHandlerbarHelper.java#getList
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/test/kotlin/io/gutapk/GameServerTest.kt#anAnswerRuleReadsTheStateWhenItIsServed
+    @Test
+    fun theUnitsOfAMissionAreReadFromEveryCamp() {
+        val all = training(
+            listOf(barracks("TRAIN", System.currentTimeMillis().div(1000).toInt() + 100, listOf(slot(10002, 7))), camp(96, 23, 26, listOf(slot(10002, 3))), camp(180, 10, 15, listOf(slot(10001, 2))), camp(181, 5, 5)),
+            rule("attack_mission", "state", "units", null, "from" to "location/location/location/*articleId=11/state/unitQueue", "each" to listOf("\$unit", 1, "\$count", 0)),
+        )
+        val back = GameServer(all).ask("attack_mission", "missionId" to 1)
+        // The camps in order, a camp with no list passed over, the barracks left out.
+        assertEquals(listOf(listOf(10002, 1, 3, 0), listOf(10001, 1, 2, 0)), back["units"])
+        all.deleteRecursively()
+    }
+
+    // The works as the PC learns them from the recordings of Jungle Heat: a clearing that takes its element
+    // out of its list (its time by article), the research of a unit on the first free laboratory (its time by
+    // unit and grade, the grade an entry of a list the laboratory holds), the price of a clearing a pay effect.
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Obstacle.cs#CancelClearing
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Component/UnitUpgradeComponent.cs#StartUpgrading
+    private fun working(elements: List<Map<String, Any?>>): File {
+        val all = rules()
+        val list = "location/location/location"
+        all["works"] = listOf(
+            doc(
+                "list" to list, "field" to "state/type", "value" to "REMOVE", "idle" to "NORMAL", "since" to "state/updateTime",
+                "start" to doc("command" to "remove_obstacle", "element" to "id", "sets" to doc("state/type" to "REMOVE", "state/updateTime" to "\$optime")),
+                "key" to listOf("articleId"), "time" to "clearTimeSeconds", "durations" to doc("60" to 60, "52" to 300),
+                "then" to listOf(doc("op" to "remove")),
+                "ends" to listOf(
+                    doc("command" to "force_remove_obstacle", "role" to "force", "element" to "id"),
+                    doc("command" to "cancel_remove_obstacle", "role" to "cancel", "element" to "id", "deduced" to true),
+                ),
+            ),
+            doc(
+                "list" to list, "field" to "state/type", "value" to "RESEARCH", "idle" to "NORMAL", "since" to "state/updateTime",
+                "start" to doc("command" to "unit_upgrade_start", "at" to "*articleId=40", "sets" to doc("state/type" to "RESEARCH", "state/updateTime" to "\$optime", "state/resunit" to "\$unitId", "state/resfinish" to "\$end")),
+                "key" to listOf("state/resunit"), "grade" to doc("list" to "state/grades", "match" to "unit", "field" to "grade"), "default" to 1, "time" to "upgradeTime",
+                "durations" to doc("10001,1" to 100, "10001,2" to 300, "10001,3" to 1000),
+                "then" to listOf(
+                    doc("op" to "merge", "path" to "state/grades", "match" to "unit", "from" to "state/resunit", "field" to "grade", "default" to 1),
+                    doc("op" to "set", "path" to "state/type", "value" to "NORMAL"),
+                    doc("op" to "set", "path" to "state/resunit", "value" to 0),
+                    doc("op" to "set", "path" to "state/resfinish", "value" to 0),
+                    doc("op" to "set", "path" to "state/updateTime", "value" to "\$end"),
+                ),
+                "ends" to listOf(doc("command" to "unit_upgrade_force", "role" to "force", "element" to "unitId", "by" to "state/resunit")),
+            ),
+        )
+        all["economy"] = doc(
+            "resources" to listOf("DIAMOND"), "wallet" to "character/data/wallet", "storages" to listOf<Any?>(),
+            "effects" to mutableListOf<Any?>(doc("command" to "remove_obstacle", "op" to "pay", "field" to "id", "prices" to doc("2" to doc("DIAMOND" to 4)))),
+        )
+        // The level of each unit a mission sends is the one the laboratory holds for it.
+        all["answerRules"] = listOf(
+            rule(
+                "attack_mission", "state", "units", null, "from" to "$list/*articleId=11/state/unitQueue",
+                "each" to listOf("\$unit", doc("grade" to doc("of" to "unit", "list" to "$list/*articleId=40/state/grades", "match" to "unit", "field" to "grade", "default" to 1)), "\$count", 0),
+            ),
+        )
+        (all["answers"] as MutableMap<String, Any?>)["attack_mission"] = listOf(
+            example(doc("name" to "attack_mission", "missionId" to 3), doc("name" to "location", "location" to doc("locationId" to 3), "units" to listOf(listOf(1, 1, 1, 0)))),
+        )
+        val saved = state()
+        (saved["messages"].list()[1].map()["location"] as MutableMap<String, Any?>)["location"] = elements
+        return folder(all, saved)
+    }
+
+    private fun obstacle(id: Int, articleId: Int) = doc("id" to id, "articleId" to articleId, "cellI" to id, "cellJ" to 3, "state" to doc("type" to "NORMAL", "updateTime" to 1))
+
+    private fun laboratory(id: Int) = doc("id" to id, "articleId" to 40, "cellI" to 4, "cellJ" to 4, "state" to doc("type" to "NORMAL", "updateTime" to 1, "resunit" to 0, "resfinish" to 0, "grades" to listOf<Any?>()))
+
+    private fun GameServer.ids(): List<Any?> = Bson.decode(stateBytes())["messages"].list()[1].dig("location", "location").list().map { it.map()["id"] }
+
+    private fun GameServer.diamonds(): Any? = Bson.decode(stateBytes())["messages"].list()[0].dig("data", "wallet", "DIAMOND")
+
+    // An obstacle cleared is gone once the time of its article is up, at once when forced, back as it was when cancelled
+    // with the price of its start given back. The cancel is a name the PC deduced by family, the log says so.
+    @Test
+    fun aClearingEndsByItsTimeByForceOrByCancelAndTheStartPriceComesBack() {
+        val now = System.currentTimeMillis() / 1000
+        val dir = working(listOf(obstacle(1, 60), obstacle(2, 52), obstacle(3, 60)))
+        val game = GameServer(dir)
+        val (_, started) = logged { game.ask("remove_obstacle", "id" to 1, "optime" to now - 100) }
+        assertEquals("REMOVE", game.element(1).dig("state", "type"))
+        assertTrue(started.any { "work started: remove_obstacle" in it && "ends in 60 s" in it }, started.toString())
+        // The 60 s of a bush are over: the next request ends the clearing.
+        val (_, ended) = logged { game.ask("change_nick", "nick" to "x") }
+        assertEquals(listOf<Any?>(2, 3), game.ids())
+        assertTrue(ended.any { "state/type REMOVE of location/location/location #1 ended" in it }, ended.toString())
+
+        game.ask("remove_obstacle", "id" to 2, "optime" to now - 10)
+        assertEquals(496, game.diamonds())
+        val (_, cancelled) = logged { game.ask("cancel_remove_obstacle", "id" to 2, "optime" to now) }
+        assertEquals(500, game.diamonds())
+        assertEquals("NORMAL", game.element(2).dig("state", "type"))
+        assertEquals(now.toInt(), game.element(2).dig("state", "updateTime"))
+        assertTrue(cancelled.any { "cancel_remove_obstacle cancels the work of remove_obstacle (deduced by family)" in it }, cancelled.toString())
+        // Nothing is under way any more: a cancel is skipped with one line, the element stays.
+        val (_, again) = logged { game.ask("cancel_remove_obstacle", "id" to 2, "optime" to now) }
+        assertEquals(1, again.count { "skipped" in it && "nothing under way in #2" in it }, again.toString())
+
+        game.ask("remove_obstacle", "id" to 3, "optime" to now - 10)
+        assertEquals("REMOVE", game.element(3).dig("state", "type"))
+        game.ask("force_remove_obstacle", "id" to 3, "amount" to 3, "optime" to now)
+        assertEquals(listOf<Any?>(2), game.ids())
+        assertTrue(game.unknown().isEmpty(), game.unknown().toString())
+        dir.deleteRecursively()
+    }
+
+    // A research starts on the first laboratory with nothing under way, ends by its time or by force, and the
+    // list of the laboratory holds the unit's grade: the next research takes the time of that grade, and a
+    // mission sends the units at it.
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Component/UnitUpgradeComponent.cs#FinishUpgrading
+    @Test
+    fun aResearchStartsOnTheFirstFreeLaboratoryAndMergesItsGradeWhenItEnds() {
+        val now = System.currentTimeMillis() / 1000
+        val dir = working(listOf(laboratory(181), camp(96, 23, 26, listOf(slot(10001, 3)))))
+        val game = GameServer(dir)
+        fun lab() = game.element(181)["state"].map()
+        assertEquals(listOf(listOf(10001, 1, 3, 0)), game.ask("attack_mission", "missionId" to 3)["units"])
+        // 150 s ago, 100 s for the first grade: over at the next request, the grade 2 held.
+        game.ask("unit_upgrade_start", "unitId" to 10001, "optime" to now - 150)
+        assertEquals("RESEARCH", lab()["type"])
+        assertEquals(10001, lab()["resunit"])
+        assertEquals((now - 50).toInt(), lab()["resfinish"])
+        game.ask("change_nick", "nick" to "x")
+        assertEquals(mapOf("type" to "NORMAL", "updateTime" to (now - 50).toInt(), "resunit" to 0, "resfinish" to 0, "grades" to listOf(mapOf("unit" to 10001, "grade" to 2))), lab())
+        assertEquals(listOf(listOf(10001, 2, 3, 0)), game.ask("attack_mission", "missionId" to 3)["units"])
+        // The grade 2 takes 300 s: 350 s ago is over, the grade 3 held.
+        game.ask("unit_upgrade_start", "unitId" to 10001, "optime" to now - 350)
+        game.ask("change_nick", "nick" to "x")
+        assertEquals(listOf(mapOf("unit" to 10001, "grade" to 3)), lab()["grades"])
+        // The grade 3 takes 1000 s: still under way, and forced to its end by a command that names the unit.
+        game.ask("unit_upgrade_start", "unitId" to 10001, "optime" to now - 20)
+        game.ask("change_nick", "nick" to "x")
+        assertEquals("RESEARCH", lab()["type"])
+        val (_, busy) = logged { game.ask("unit_upgrade_start", "unitId" to 10001, "optime" to now - 10) }
+        assertEquals(1, busy.count { "skipped" in it && "no element *articleId=40 is free" in it }, busy.toString())
+        game.ask("unit_upgrade_force", "unitId" to 10001, "amount" to 5, "optime" to now)
+        assertEquals(mapOf("type" to "NORMAL", "updateTime" to now.toInt(), "resunit" to 0, "resfinish" to 0, "grades" to listOf(mapOf("unit" to 10001, "grade" to 4))), lab())
+        // A unit the data gives no time for still starts, with one line and no end: its sets are applied
+        // (UnitUpgradeComponent.StartUpgrading starts the unit whatever GetTotalSeconds finds), so the force ends it.
+        val (_, none) = logged { game.ask("unit_upgrade_start", "unitId" to 99999, "optime" to now) }
+        assertEquals(1, none.count { "work started without a time" in it && "the data gives none" in it }, none.toString())
+        assertEquals(listOf("RESEARCH", now.toInt(), 99999, 0), listOf(lab()["type"], lab()["updateTime"], lab()["resunit"], lab()["resfinish"]))
+        game.ask("change_nick", "nick" to "x")
+        assertEquals("RESEARCH", lab()["type"])
+        game.ask("unit_upgrade_force", "unitId" to 99999, "amount" to 5, "optime" to now + 1)
+        assertEquals(mapOf("type" to "NORMAL", "updateTime" to (now + 1).toInt(), "resunit" to 0, "resfinish" to 0, "grades" to listOf(mapOf("unit" to 10001, "grade" to 4), mapOf("unit" to 99999, "grade" to 2))), lab())
+        dir.deleteRecursively()
+    }
+
+    // The commands nothing recorded and nothing saved are counted for the admin, which says them.
+    @Test
+    fun theCommandsThatCannotBeSavedAreCountedForTheAdmin() {
+        val dir = folder()
+        val game = GameServer(dir)
+        game.ask("nobody_knows")
+        game.ask("nobody_knows")
+        game.ask("nobody_either", "x" to 1)
+        assertEquals(mapOf("nobody_knows" to 2, "nobody_either" to 1), game.unknown())
+        // A command the rules know is never counted.
+        game.ask("change_nick", "nick" to "x")
+        assertEquals(setOf("nobody_knows", "nobody_either"), game.unknown().keys)
+        val admin = Server("127.0.0.1", 0, Routes(Store(File(dir, "cache")), Overrides(File(dir, "overrides.json")), TreeMap<Int, String>(), game))
+        admin.start()
+        try {
+            // The admin routes answer a request that carries the admin header, as ServerAdmin sends it.
+            val connection = URL("http://127.0.0.1:${admin.listeningPort}/status").openConnection() as HttpURLConnection
+            connection.setRequestProperty("x-gutapk-admin", "1")
+            val status = ServerAdmin.parseStatus(connection.inputStream.use { String(it.readBytes()) })
+            assertEquals(mapOf("nobody_knows" to 2, "nobody_either" to 1), status.unknown)
+        } finally {
+            admin.stop()
+            dir.deleteRecursively()
+        }
+    }
+
+    // An effect that cannot be read fails alike every time: it is dropped with one line, the others stay.
+    @Test
+    fun anEconomyEffectThatFailsIsDroppedWithOneLine() {
+        val all = rules()
+        all["economy"] = doc(
+            "resources" to listOf("DIAMOND"), "wallet" to "character/data/wallet", "storages" to listOf<Any?>(),
+            "effects" to mutableListOf<Any?>(doc("command" to "change_nick", "op" to "teleport"), doc("command" to "change_nick", "op" to "spend", "field" to "cost", "resource" to "DIAMOND")),
+        )
+        val dir = folder(all)
+        val game = GameServer(dir)
+        val (_, first) = logged { game.ask("change_nick", "nick" to "x", "cost" to 5) }
+        assertEquals(1, first.count { "economy teleport" in it && "dropped" in it }, first.toString())
+        assertEquals(495, game.diamonds())
+        val (_, second) = logged { game.ask("change_nick", "nick" to "y", "cost" to 5) }
+        assertTrue(second.none { "teleport" in it }, second.toString())
+        assertEquals(490, game.diamonds())
+        dir.deleteRecursively()
+    }
+
     private fun call(port: Int, method: String, path: String, body: ByteArray? = null): Triple<Int, ByteArray, Map<String, String>> {
         val c = URL("http://127.0.0.1:$port$path").openConnection() as HttpURLConnection
         c.requestMethod = method
         c.connectTimeout = 5000
         c.readTimeout = 20000
+        c.setRequestProperty(ServerAdmin.ADMIN_HEADER, "1")
         if (body != null) {
             c.doOutput = true
             c.outputStream.use { it.write(body) }

@@ -15,7 +15,9 @@ import java.nio.ByteOrder
 // https://github.com/bwaldvogel/mongo-java-server/blob/main/core/src/main/java/de/bwaldvogel/mongo/wire/bson/BsonEncoder.java#encodeDocument
 // not ported: decodePattern, decodeObjectId, BsonTimestamp, Decimal128, MaxKey, MinKey, BsonJavaScript, LegacyUUID and UUID subtypes (no game recorded so far sends them, they are refused as unknown)
 // not ported: Assert.isNull on a repeated field (the last value wins, as a map keeps it)
+// https://github.com/FasterXML/jackson-core/blob/2.x/src/main/java/com/fasterxml/jackson/core/StreamReadConstraints.java#validateNestingDepth
 // not ported: MAX_BSON_OBJECT_SIZE (a recording is already on disk, its size is the file's)
+// not ported: StreamReadConstraints builder, withMaxNestingDepth, getMaxNestingDepth, _constrainRef, _constructException and the other constraints (only the nesting depth overflows the stack, and its limit is one constant)
 // Copyright (c) 2012-2024 Benedikt Waldvogel, BSD-3-Clause.
 object Bson {
     private const val TERMINATING_BYTE: Byte = 0x00
@@ -31,6 +33,12 @@ object Bson {
     private const val TYPE_INT32: Byte = 0x10
     private const val TYPE_INT64: Byte = 0x12
     private const val BINARY_SUBTYPE_GENERIC: Byte = 0x00
+
+    // How deep documents and arrays may nest. A recording is a file the user may have got from anywhere,
+    // and a deep one would overflow the stack, an Error that documents() does not catch. The deepest
+    // nesting recorded is 9.
+    const val DEFAULT_MAX_DEPTH = 1000
+    private const val maxNestingDepth = DEFAULT_MAX_DEPTH
 
     /** The documents of a body one after the other, empty when it is not BSON. */
     fun documents(body: ByteArray): List<Map<String, Any?>> {
@@ -48,7 +56,18 @@ object Bson {
     fun document(body: ByteArray): Map<String, Any?>? = documents(body).singleOrNull()
 
     // https://github.com/bwaldvogel/mongo-java-server/blob/main/core/src/main/java/de/bwaldvogel/mongo/wire/bson/BsonDecoder.java#decodeBson
-    fun decodeBson(buffer: ByteBuffer): LinkedHashMap<String, Any?> {
+    fun decodeBson(buffer: ByteBuffer): LinkedHashMap<String, Any?> = decodeBson(buffer, 1)
+
+    // Throws past the limit, IllegalArgumentException being a RuntimeException that documents() reads as "not BSON".
+    // https://github.com/FasterXML/jackson-core/blob/2.x/src/main/java/com/fasterxml/jackson/core/StreamReadConstraints.java#validateNestingDepth
+    internal fun validateNestingDepth(depth: Int) {
+        if (depth > maxNestingDepth) {
+            throw IllegalArgumentException("Document nesting depth ($depth) exceeds the maximum allowed ($maxNestingDepth, from Bson.DEFAULT_MAX_DEPTH)")
+        }
+    }
+
+    private fun decodeBson(buffer: ByteBuffer, depth: Int): LinkedHashMap<String, Any?> {
+        validateNestingDepth(depth)
         val totalObjectLength = buffer.int
         val length = totalObjectLength - 4
         if (length < 1 || buffer.remaining() < length) {
@@ -62,17 +81,18 @@ object Bson {
                 return document
             }
             val name = decodeCString(buffer)
-            document[name] = decodeValue(type, buffer)
+            document[name] = decodeValue(type, buffer, depth)
         }
         throw IllegalArgumentException("illegal BSON object. Terminating byte not found. totalObjectLength = $totalObjectLength")
     }
 
     // https://github.com/bwaldvogel/mongo-java-server/blob/main/core/src/main/java/de/bwaldvogel/mongo/wire/bson/BsonDecoder.java#decodeValue
-    private fun decodeValue(type: Byte, buffer: ByteBuffer): Any? = when (type) {
+    // The depth is that of the document holding the value.
+    private fun decodeValue(type: Byte, buffer: ByteBuffer, depth: Int): Any? = when (type) {
         TYPE_DOUBLE -> java.lang.Double.longBitsToDouble(buffer.long)
         TYPE_UTF8_STRING -> decodeString(buffer)
-        TYPE_EMBEDDED_DOCUMENT -> decodeBson(buffer)
-        TYPE_ARRAY -> decodeArray(buffer)
+        TYPE_EMBEDDED_DOCUMENT -> decodeBson(buffer, depth + 1)
+        TYPE_ARRAY -> decodeArray(buffer, depth + 1)
         TYPE_DATA -> decodeBinary(buffer)
         TYPE_UNDEFINED, TYPE_NULL -> null
         TYPE_BOOLEAN -> decodeBoolean(buffer)
@@ -83,8 +103,8 @@ object Bson {
     }
 
     // https://github.com/bwaldvogel/mongo-java-server/blob/main/core/src/main/java/de/bwaldvogel/mongo/wire/bson/BsonDecoder.java#decodeArray
-    private fun decodeArray(buffer: ByteBuffer): List<Any?> {
-        val arrayObject = decodeBson(buffer)
+    private fun decodeArray(buffer: ByteBuffer, depth: Int): List<Any?> {
+        val arrayObject = decodeBson(buffer, depth)
         return arrayObject.keys.mapTo(ArrayList()) { arrayObject[it] }
     }
 

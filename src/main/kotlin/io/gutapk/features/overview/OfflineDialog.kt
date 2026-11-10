@@ -177,6 +177,7 @@ fun OfflineDialog(
         value = withContext(Dispatchers.IO) { runCatching { ServerRules.learn(ServerRules.read(OfflineBuild.recordings(dir)), dir.resolve("original.apk")) }.getOrDefault(emptyList()) }
     }
     var keepProgress by remember { mutableStateOf(true) }
+    var unlockAll by remember { mutableStateOf(true) }
     val blocked = refused ?: advised.keys
     val shown = chosen ?: (listing.servers.map { it.origin } + advised.keys).toSet()
     var serial by remember { mutableStateOf<String?>(null) }
@@ -393,6 +394,17 @@ fun OfflineDialog(
                                 }
                                 Switch(checked = keepProgress, onCheckedChange = { keepProgress = it })
                             }
+                            // The documents a new player can be given, found by the learning.
+                            val unlockable = (game.rules["instances"] as? List<*>).orEmpty().sumOf { ((it as? Map<*, *>)?.get("entries") as? List<*>)?.size ?: 0 }
+                            if (keepProgress && unlockable > 0) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(t("offline_unlock"), style = MaterialTheme.typography.bodyLarge)
+                                        Text(t("offline_unlock_d", unlockable.toString()), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    Switch(checked = unlockAll, onCheckedChange = { unlockAll = it })
+                                }
+                            }
                         }
                         Text(t("try_phone"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                         f.phones.forEach { phone ->
@@ -430,6 +442,7 @@ fun OfflineDialog(
                             val skipping = skipConsent && windows.isNotEmpty()
                             val signing = skipSignIn && helpers.isNotEmpty()
                             val serving = if (keepProgress) learned else emptyList()
+                            val unlocking = unlockAll
                             val phone = host
                             askingLibs = Libraries.missing(root, Libraries.DEXLIB2 + if (store) Libraries.AIRCOMPRESSOR else emptyList())
                             if (askingLibs.isNotEmpty()) return@TextButton
@@ -441,7 +454,7 @@ fun OfflineDialog(
                                 // The test key signs, as the Sign dialog does with it: the
                                 // game is for the user's own phones.
                                 val out = output(dir, info.packageName, info.versionName, KeyChoice.TEST)
-                                OfflineBuild.run(original, servers, dex, strings, dir.resolve("work-offline"), out, TestKey.load(), info.minSdk, version, job, codecs, OfflineBuild.recordings(dir), refusing, skipping, signing, serving)
+                                OfflineBuild.run(original, servers, dex, strings, dir.resolve("work-offline"), out, TestKey.load(), info.minSdk, version, job, codecs, OfflineBuild.recordings(dir), refusing, skipping, signing, if (unlocking) serving.map { ServerRules.unlocked(it, original) } else serving)
                                 signed = out
                                 OfflineInstall.run(f.adb, phone, out, info.packageName, remove, job, { job.cancelRequested }, first = 2, steps = 3)
                                 finished = true
@@ -697,6 +710,8 @@ fun AdminDialog(
                         item { Fact(t("try_package"), info.packageName) }
                         item { Fact(t("admin_status"), t(if (s.mode in listOf("live", "replay", "miss")) "admin_mode_" + s.mode else "admin_mode_none")) }
                         item { Text(t("admin_counts", s.entries.toString(), s.overrides.toString()), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        // The commands the game sent that the local server cannot save yet.
+                        items(s.unknown.entries.toList()) { (name, count) -> Text(t("admin_unknown", name, count.toString()), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                         if (list.isNotEmpty() || g != null) {
                             item {
                                 OutlinedTextField(

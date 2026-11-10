@@ -5,6 +5,7 @@ import io.gutapk.tools.RootProblem
 import io.gutapk.tools.Storage
 import java.nio.file.Files
 import java.nio.file.Paths
+import java.nio.file.attribute.PosixFilePermissions
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -75,6 +76,12 @@ class StorageTest {
             assertEquals(null, Storage.prepare(fresh))
             assertTrue(Storage.SUBDIRS.all { Files.isDirectory(fresh.resolve(it)) })
             assertTrue(Storage.isMarked(fresh))
+            // The root holds credentials: closed to other accounts, an old open one too.
+            assertEquals("rwx------", PosixFilePermissions.toString(Files.getPosixFilePermissions(fresh)))
+            assertTrue(Storage.SUBDIRS.all { PosixFilePermissions.toString(Files.getPosixFilePermissions(fresh.resolve(it))) == "rwx------" })
+            Files.setPosixFilePermissions(legacy, PosixFilePermissions.fromString("rwxrwxr-x"))
+            assertEquals(null, Storage.adopt(legacy))
+            assertEquals("rwx------", PosixFilePermissions.toString(Files.getPosixFilePermissions(legacy)))
 
             // The saved root is kept even when busy, but never marked.
             assertEquals(null, Storage.adopt(busy))

@@ -5,6 +5,7 @@ import java.nio.file.Files
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.nio.file.attribute.PosixFilePermissions
 import java.time.LocalDateTime
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
@@ -85,13 +86,27 @@ object Storage {
     // It is used as it is, the marker only lands where the folder is ours.
     fun adopt(root: Path): RootProblem? = runCatching {
         val own = isOwnRoot(root)
-        Files.createDirectories(root)
-        SUBDIRS.forEach { Files.createDirectories(root.resolve(it)) }
+        // A folder the user owns keeps the rights it has, only GutapK's own root is closed.
+        if (own) ensureDir(root) else Files.createDirectories(root)
+        SUBDIRS.forEach { if (own) ensureDir(root.resolve(it)) else Files.createDirectories(root.resolve(it)) }
         if (own && !Files.exists(root.resolve(MARKER))) Files.writeString(root.resolve(MARKER), "GutapK root\n")
         if (!Files.isWritable(root)) RootProblem.NOT_WRITABLE else null
     }.getOrElse { RootProblem.NOT_WRITABLE }
 
     fun isMarked(root: Path): Boolean = Files.isRegularFile(root.resolve(MARKER))
+
+    // 700 from creation. The root holds the recordings (a player's credentials) and the
+    // tools GutapK runs: created later, a folder inherits the umask and other accounts
+    // can read it. An existing root is tightened too.
+    // https://github.com/213YaZ786/GutapK/blob/main/src/main/kotlin/io/gutapk/settings/Settings.kt#ensureDir
+    private fun ensureDir(dir: Path) {
+        Files.createDirectories(dir)
+        try {
+            Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("rwx------"))
+        } catch (e: UnsupportedOperationException) {
+            // A file system without POSIX rights (Windows) has nothing to tighten.
+        }
+    }
 
     fun runDirName(pid: Long, startMs: Long) = "run-$pid-$startMs"
 

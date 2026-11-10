@@ -18,7 +18,11 @@
 #              dotnet: Microsoft's .NET release index, the newest supported
 #              long term channel, package is the runtime file's name.
 #              A .tar.gz is unpacked without its top folder, which carries
-#              the version.
+#              the version. A .zip too, when its single top folder holds
+#              the entry.
+#              adoptium: Eclipse Adoptium's API, index is its
+#              available_releases answer, package the image type (jdk) of
+#              the newest long term Java, Linux x64, its sha256 checked.
 #              maven: a Java library, index is its maven-metadata.xml,
 #              package the pattern of the versions taken, the jar is
 #              <version>/<artifact>-<version>.jar beside the index, checked
@@ -41,3 +45,5 @@ dexlib2	maven	https://dl.google.com/android/maven2/com/android/tools/smali/smali
 guava	maven	https://repo1.maven.org/maven2/com/google/guava/guava/maven-metadata.xml	[0-9]+(\.[0-9]+)*-jre	guava.jar	-	Apache-2.0	https://github.com/google/guava/blob/master/LICENSE	Google's core Java library, which dexlib2 is built on.
 failureaccess	maven	https://repo1.maven.org/maven2/com/google/guava/failureaccess/maven-metadata.xml	[0-9]+(\.[0-9]+)*	failureaccess.jar	-	Apache-2.0	https://github.com/google/guava/blob/master/LICENSE	A part of guava published on its own, guava needs it.
 aircompressor	maven	https://repo1.maven.org/maven2/io/airlift/aircompressor/maven-metadata.xml	[0-9]+(\.[0-9]+)*	aircompressor.jar	-	Apache-2.0	https://github.com/airlift/aircompressor/blob/master/license.txt	Pure Java zstd, a Java library. Godot Admin opens a Godot game's compiled scripts with it.
+temurin	adoptium	https://api.adoptium.net/v3/info/available_releases	jdk	bin/java	bin	GPL-2.0-with-Classpath-exception	https://openjdk.org/legal/gplv2+ce.html	Eclipse Temurin, the Java development kit, the newest long term version. Runs Ghidra.
+ghidra	github	https://github.com/NationalSecurityAgency/ghidra	ghidra_[0-9][0-9.]*_PUBLIC_[0-9]+\.zip	support/analyzeHeadless	support	Apache-2.0	https://github.com/NationalSecurityAgency/ghidra/blob/master/LICENSE	Decompiles a native library to C, libgame.so for one, without a window. Runs on Temurin.

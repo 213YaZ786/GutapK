@@ -417,10 +417,14 @@ object Inject {
 
     // The network security config of the app, binary xml, with the loopback
     // allowed in plain text. An app that has one ignores usesCleartextTraffic.
+    // 0.0.0.0 is a domain of its own: the targets of offline.properties use it
+    // (http://0.0.0.0:<port>) and Android reads only the loopback addresses
+    // (InetAddress.isLoopback) as localhost, a domain matches its exact host.
+    // https://developer.android.com/privacy-and-security/security-config
     fun securityConfig(bytes: ByteArray): ByteArray {
         val axml = read(bytes)
         val root = axml.firsts.firstOrNull { it.name == "network-security-config" } ?: throw ApkFormatError("no network-security-config element")
-        val hosts = listOf("127.0.0.1", "localhost")
+        val hosts = listOf("127.0.0.1", "localhost", "0.0.0.0")
         val there = root.children.any { c ->
             c.name == "domain-config" && getAttribute(c, "cleartextTrafficPermitted")?.value == true &&
                 hosts.all { h -> c.children.any { it.name == "domain" && it.text?.text == h } }

@@ -103,7 +103,10 @@ for p in ('v', 'V'):
     if version.startswith(p):
         version = version[1:]
 if not version or not version[0].isdigit():
-    sys.exit('tag %s is not a version' % d['tag_name'])
+    m = re.search(r'\d+(\.\d+)+', d['tag_name'])
+    if not m:
+        sys.exit('tag %s is not a version' % d['tag_name'])
+    version = m.group(0)
 for a in d.get('assets', []):
     if re.fullmatch(pattern, a['name']):
         url = a['browser_download_url']
@@ -134,7 +137,10 @@ for d in json.load(open(path)):
         if version.startswith(p):
             version = version[1:]
     if not version or not version[0].isdigit():
-        continue
+        m = re.search(r'\d+(\.\d+)+', d['tag_name'])
+        if not m:
+            continue
+        version = m.group(0)
     for a in d.get('assets', []):
         if re.fullmatch(pattern, a['name']):
             url = a['browser_download_url']
@@ -220,6 +226,37 @@ for r in d['releases']:
                 print(rt['version'], f['url'], h)
                 sys.exit(0)
 sys.exit('%s not in the latest runtime' % name)
+PY
+}
+
+# Same rules as Releases.resolvePackage: the newest release with a binary,
+# named by its OpenJDK version. Prints version, url, size, sha256.
+# https://github.com/actions/setup-java/blob/main/src/distributions/temurin/installer.ts#getOpenJdkSemverVersion
+adoptium_latest() {
+    python3 - "$1" <<'PY'
+import json, re, sys
+def getOpenJdkSemverVersion(versionData):
+    major, minor, security, patch, build = (versionData.get(k) for k in ('major', 'minor', 'security', 'patch', 'build'))
+    if build is None:
+        return None
+    buildMetadata = '%s.%s' % (patch, build) if patch else '%s' % build
+    return '%s.%s.%s+%s' % (major, minor, security, buildMetadata)
+def key(v):
+    return [int(x) if x.isdigit() else 0 for x in re.split(r'[.+-]', v)]
+best = None
+for item in json.load(open(sys.argv[1])):
+    if not item.get('binaries'):
+        continue
+    pkg = item['binaries'][0]['package']
+    version = getOpenJdkSemverVersion(item['version_data'])
+    checksum = (pkg.get('checksum') or '').lower()
+    if version is None or not pkg['link'].startswith('https://') or not re.fullmatch(r'[0-9a-f]{64}', checksum):
+        continue
+    if best is None or key(version) > key(best[0]):
+        best = (version, pkg['link'], pkg['size'], checksum)
+if best is None:
+    sys.exit('no release with a binary')
+print(*best)
 PY
 }
 
@@ -311,6 +348,20 @@ while IFS=$'\t' read -r id source index pkg entry execdir licence licenceurl wha
             size="$(curl -fsSI --retry 3 "$url" | tr -d '\r' | awk 'tolower($1)=="content-length:" {print $2}' | tail -1)"
             sha256=-
             ;;
+        adoptium)
+            host="$(echo "$index" | cut -d/ -f1-3)"
+            if ! curl -fsSL --retry 3 --retry-delay 5 -o "$SCRATCH/index.json" "$index" \
+                    || ! lts="$(python3 -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["most_recent_lts"]))' "$SCRATCH/index.json")" \
+                    || ! curl -fsSL --retry 3 --retry-delay 5 -o "$SCRATCH/channel.json" \
+                        "$host/v3/assets/version/%5B$lts%2C$((lts + 1))%29?project=jdk&vendor=adoptium&heap_size=normal&sort_method=DEFAULT&sort_order=DESC&os=linux&architecture=x64&image_type=$pkg&release_type=ga&jvm_impl=hotspot&page_size=20&page=0" \
+                    || ! line="$(adoptium_latest "$SCRATCH/channel.json")"; then
+                echo "::error::$id lookup failed in the Adoptium API"
+                fail=1
+                continue
+            fi
+            read -r version url size sha256 <<< "$line"
+            sha1=-
+            ;;
         github-nightly)
             repo="${index#https://github.com/}"
             workflow="${pkg%%@*}"
@@ -395,7 +446,10 @@ while IFS=$'\t' read -r id source index pkg entry execdir licence licenceurl wha
     # A single native program must be an ELF file.
     case "$url" in
         *.zip)
-            if ! unzip -l "$file" "$entry" > /dev/null 2>&1; then
+            # The app drops a single top folder holding the entry, as for a .tar.gz.
+            if ! unzip -l "$file" "$entry" > /dev/null 2>&1 \
+                    && ! { [ "$(unzip -Z1 "$file" | cut -d/ -f1 | sort -u | wc -l)" -eq 1 ] \
+                        && unzip -Z1 "$file" | cut -d/ -f2- | grep -x "$entry" > /dev/null; }; then
                 echo "::error::$id $version archive has no $entry"
                 fail=1
             fi

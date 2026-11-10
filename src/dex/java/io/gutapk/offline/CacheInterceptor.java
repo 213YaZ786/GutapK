@@ -18,7 +18,13 @@ package io.gutapk.offline;
  * https://github.com/wiremock/wiremock/blob/master/wiremock-core/src/main/java/com/github/tomakehurst/wiremock/http/ProxyResponseRenderer.java#proxyResponseError
  * https://github.com/NanoHttpd/nanohttpd/blob/master/core/src/main/java/org/nanohttpd/protocols/http/response/Response.java#addHeader
  * https://github.com/ktorio/ktor-samples/blob/main/reverse-proxy/src/main/kotlin/io/ktor/samples/reverseproxy/ReverseProxyApplication.kt#L41-L52
+ * https://github.com/jupyter/jupyter_client/blob/main/jupyter_client/session.py#sign
  *
+ * The proof route answers first of all: GET /.gutapk/proof?nonce=<32 hex> is
+ * signed with the key of the app and this server's port, so the app that finds
+ * its port taken can tell its own server from a squatter.
+ *
+ * Not ported: sign (it is Offline.sign, called here)
  * Not ported: addHeader (it is Http.Response.addHeader, called here)
  * Not ported: proxyResponseError (it is ProxyResponseRenderer.proxyResponseError, called here)
  * Not ported: stripBody, combine, isEndToEnd, isContentSpecificHeader, cacheWritingResponse (a recorded body is whole in memory, and no conditional get is made)
@@ -26,6 +32,7 @@ package io.gutapk.offline;
  * Not ported: the ktor sample's text/html body rewrite (a page is served as recorded, the overrides edit it)
  *
  * Copyright (C) 2016 Square, Inc., Apache License 2.0.
+ * Copyright (c) 2015-, Jupyter Development Team, BSD 3-Clause.
  */
 
 import java.io.IOException;
@@ -63,6 +70,13 @@ public class CacheInterceptor implements Http.Handler {
      */
     private final GameServer game;
 
+    /** The key of the app and this server's port, the proof route's. The key is null when the route is absent. */
+    private final byte[] key;
+    private final int port;
+
+    /** The nonce of a challenge: 16 random bytes as lowercase hex. */
+    private static final Pattern NONCE = Pattern.compile("^nonce=([0-9a-f]{32})$");
+
     /** Set once the log line that says the origin is served locally was written. */
     private volatile boolean announced;
 
@@ -75,6 +89,17 @@ public class CacheInterceptor implements Http.Handler {
     }
 
     public CacheInterceptor(String origin, Store cache, Overrides overrides, ProxyResponseRenderer proceed, Map<String, String> targets, int status_code, GameServer game) {
+        this(origin, cache, overrides, proceed, targets, status_code, game, null, 0);
+    }
+
+    /**
+     * With the key of the app and the port this server listens on, the proof
+     * route is served. Without a key the route is absent: the path is an
+     * ordinary request.
+     */
+    public CacheInterceptor(String origin, Store cache, Overrides overrides, ProxyResponseRenderer proceed, Map<String, String> targets, int status_code, GameServer game, byte[] key, int port) {
+        this.key = key;
+        this.port = port;
         this.origin = origin;
         this.targets = targets;
         this.cache = cache;
@@ -90,6 +115,15 @@ public class CacheInterceptor implements Http.Handler {
     }
 
     public Http.Response intercept(Http chain) throws IOException {
+        // The proof comes before the block list, the game server, the network and the cache, and is never recorded.
+        // The signature of this server's port and the nonce asked, as Session.sign makes one, only when a key is held.
+        // https://github.com/jupyter/jupyter_client/blob/main/jupyter_client/session.py#sign
+        if (key != null && "GET".equals(chain.getMethod()) && Offline.PROOF.equals(chain.getUri())) {
+            Matcher check = NONCE.matcher(chain.getQueryParameterString());
+            return check.matches()
+                    ? Http.Response.newFixedLengthResponse(200, "text/plain", Offline.sign(key, port, check.group(1)))
+                    : Http.Response.newFixedLengthResponse(400, "text/plain", "Invalid nonce");
+        }
         // A blocked origin is answered before anything else: no upgrade check, no network, no record.
         Http.Response blocked = request(chain);
         if (blocked != null) {

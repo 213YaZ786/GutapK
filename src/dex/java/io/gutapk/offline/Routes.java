@@ -12,6 +12,17 @@ package io.gutapk.offline;
  * https://github.com/NanoHttpd/nanohttpd/blob/master/nanolets/src/main/java/org/nanohttpd/router/RouterNanoHTTPD.java#L642-L651
  * https://github.com/NanoHttpd/nanohttpd/blob/master/nanolets/src/main/java/org/nanohttpd/router/RouterNanoHTTPD.java#L670-L674
  *
+ * The Host and Origin header rule of webpack-dev-server, which keeps a web page of the user's browser from reaching a
+ * server on 127.0.0.1 (a cross-site request, or a rebound DNS name)
+ * https://github.com/webpack/webpack-dev-server/blob/main/lib/Server.js#isValidHost
+ * https://github.com/webpack/webpack-dev-server/blob/main/lib/Server.js#parseHostnameFromHeader
+ *
+ * Not ported: isValidHost allowedHosts ("all" and the list: the hosts allowed are fixed to IP literals and localhost) and options.host
+ * (the address listened on is not known here, and it is an IP literal)
+ * Not ported: DEFAULT_ALLOWED_PROTOCOLS (file: and browser extension origins: no caller of ours, they get the hostname rule)
+ * Not ported: isHostAllowed, isSameOrigin, isOriginAllowed, checkCrossOriginRequest, isUserCORSWildcardEnabled, the :authority header,
+ * the Sec-Fetch-Mode and Sec-Fetch-Site tests (allowedOrigins and CORS options; the x-gutapk-admin header does their work)
+ * Not ported: the websocket upgrade, the hot and client paths of Server.js (no websocket, no injected client here)
  * Not ported: toString, getUri, initParameter, match, compareTo, setPriority, createUriPattern, parse (url patterns and priorities)
  * Not ported: removeRoute, setRoutePrioritizer, setNotImplemented, setNotImplementedHandler (the table is fixed)
  *
@@ -24,6 +35,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.zip.ZipEntry;
@@ -113,6 +125,131 @@ public final class Routes implements Http.Handler {
         return value;
     }
 
+    /** The header the PC client sends. A page cannot add it to a cross-site request without a preflight, which nothing here answers. */
+    static final String ADMIN_HEADER = "x-gutapk-admin";
+
+    static final String ADMIN_HEADER_VALUE = "1";
+
+    /**
+     * Extracts and normalizes the hostname from a header, removing brackets for IPv6.
+     * https://github.com/webpack/webpack-dev-server/blob/main/lib/Server.js#parseHostnameFromHeader
+     *
+     * @param header header value
+     * @return hostname or null
+     */
+    static String parseHostnameFromHeader(String header) {
+        if (header == null || header.isEmpty()) return null;
+
+        // If the header does not have a scheme, prepend // so it parses as an authority
+        String parseUrl = header.matches("^(.+:)?//.*") ? header : "//" + header;
+        // new URL(parseUrl, "http://localhost/").hostname, by hand: java.net.URL does not read an authority alone
+        String authority = parseUrl.substring(parseUrl.indexOf("//") + 2);
+        for (int i = 0; i < authority.length(); i++) {
+            char c = authority.charAt(i);
+            if (c == '/' || c == '?' || c == '#' || c == '\\') {
+                authority = authority.substring(0, i);
+                break;
+            }
+        }
+        int at = authority.lastIndexOf('@');
+        if (at >= 0) {
+            authority = authority.substring(at + 1);
+        }
+
+        String hostname;
+        String port;
+        if (authority.startsWith("[")) {
+            int close = authority.indexOf(']');
+            if (close < 0) return null;
+            hostname = authority.substring(0, close + 1);
+            port = authority.substring(close + 1);
+            if (!port.isEmpty() && !port.startsWith(":")) return null;
+        } else {
+            int colon = authority.indexOf(':');
+            hostname = colon < 0 ? authority : authority.substring(0, colon);
+            port = colon < 0 ? "" : authority.substring(colon);
+        }
+        if (!port.isEmpty() && !port.substring(1).matches("[0-9]*")) return null;
+        // A special scheme has no empty host
+        if (hostname.isEmpty()) return null;
+
+        hostname = hostname.toLowerCase(Locale.US);
+        // Normalize IPv6: remove brackets if present
+        if (hostname.startsWith("[") && hostname.endsWith("]")) {
+            hostname = hostname.substring(1, hostname.length() - 1);
+        }
+
+        return hostname;
+    }
+
+    /** ipaddr.IPv4.isValid, the dotted form only: four numbers of 0 to 255. */
+    private static boolean isIPv4(String hostname) {
+        String[] parts = hostname.split("\\.", -1);
+        if (parts.length != 4) return false;
+        for (String part : parts) {
+            if (!part.matches("[0-9]{1,3}") || Integer.parseInt(part) > 255) return false;
+        }
+        return true;
+    }
+
+    /** ipaddr.IPv6.isValid. The characters are checked first so that no name is ever looked up. */
+    private static boolean isIPv6(String hostname) {
+        if (!hostname.matches("[0-9a-f:.]+") || hostname.indexOf(':') < 0) return false;
+        try {
+            return java.net.InetAddress.getByName(hostname) instanceof java.net.Inet6Address;
+        } catch (java.net.UnknownHostException e) {
+            return false;
+        }
+    }
+
+    /**
+     * True when the Host (or Origin) header names an IP address, localhost or a subdomain of it, whatever the port.
+     * https://github.com/webpack/webpack-dev-server/blob/main/lib/Server.js#isValidHost
+     *
+     * @param headers headers, their names in lower case
+     * @param headerToCheck header to check
+     * @param validateHost need to validate host
+     * @return true when host is valid, otherwise false
+     */
+    static boolean isValidHost(Map<String, String> headers, String headerToCheck, boolean validateHost) {
+        boolean isOrigin = "origin".equals(headerToCheck);
+
+        // get the Host header and extract hostname
+        // we don't care about port not matching
+        String header = headers.get(headerToCheck);
+
+        if (header == null || header.isEmpty()) {
+            return false;
+        }
+
+        // Host and :authority contain a hostname and optional port, never a URL.
+        if (!isOrigin && header.matches("(?s).*[/\\\\?#@\\s].*")) {
+            return false;
+        }
+
+        String hostname = parseHostnameFromHeader(header);
+
+        if (hostname == null) {
+            return false;
+        }
+
+        // always allow requests with explicit IPv4 or IPv6-address.
+        // A note on IPv6 addresses:
+        // header will always contain the brackets denoting
+        // an IPv6-address in URLs,
+        // these are removed from the hostname by parseHostnameFromHeader.
+        // For convenience, always allow localhost (hostname == "localhost")
+        // and its subdomains (hostname.endsWith(".localhost")).
+        boolean isValidHostname = validateHost
+            ? isIPv4(hostname)
+                || isIPv6(hostname)
+                || hostname.equals("localhost")
+                || hostname.endsWith(".localhost")
+            : false;
+
+        return isValidHostname;
+    }
+
     @Override
     public Http.Response handle(Http session) throws IOException {
         return serve(session);
@@ -124,6 +261,19 @@ public final class Routes implements Http.Handler {
     }
 
     public Http.Response process(Http session) {
+        // The PC reaches this through adb forward on 127.0.0.1, where a page in the user's browser can reach it
+        // too: a simple no-cors POST to /clear, or a read of /state through a rebound DNS name. The Host and the
+        // Origin must name this machine, and the PC client adds a header no page can send without a preflight.
+        Map<String, String> headers = session.getHeaders();
+        if (!isValidHost(headers, "host", true)) {
+            return json(403, error("forbidden", "Invalid Host header"));
+        }
+        if (headers.containsKey("origin") && !isValidHost(headers, "origin", true)) {
+            return json(403, error("forbidden", "Cross-Origin request blocked"));
+        }
+        if (!ADMIN_HEADER_VALUE.equals(headers.get(ADMIN_HEADER))) {
+            return json(403, error("forbidden", "Missing header " + ADMIN_HEADER + ": " + ADMIN_HEADER_VALUE));
+        }
         String work = normalizeUri(session.getUri());
         UriResponder responder = router.get(work);
         if (responder == null) {
@@ -182,6 +332,15 @@ public final class Routes implements Http.Handler {
                     ports.put(String.valueOf(origin.getKey()), origin.getValue());
                 }
                 out.put("origins", ports);
+                // The commands nothing recorded and nothing saved yet, by name with how many times each came.
+                // https://raw.githubusercontent.com/213YaZ786/GutapK/c52520a/src/dex/java/io/gutapk/offline/Routes.java#status
+                JSONObject unknown = new JSONObject();
+                if (game != null) {
+                    for (Map.Entry<String, Integer> command : game.unknown().entrySet()) {
+                        unknown.put(command.getKey(), command.getValue().intValue());
+                    }
+                }
+                out.put("unknown", unknown);
                 return json(200, out);
             } catch (JSONException e) {
                 throw new IllegalStateException(e);

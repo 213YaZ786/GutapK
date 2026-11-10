@@ -7,6 +7,7 @@ import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URI
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
@@ -177,6 +178,7 @@ object Installer {
         try {
             if (release.fileName.endsWith(".zip")) {
                 unzip(archive, staging, cancelled)
+                verifyDistributionRoot(staging, spec.entry)
                 spec.execDirOrNull?.let { markExecutable(staging.resolve(it)) }
             } else if (release.fileName.endsWith(".tar.gz")) {
                 Untar.extract(archive, staging, cancelled)
@@ -216,7 +218,8 @@ object Installer {
         if (!Files.isDirectory(deps)) return
         val prefix = "${spec.id}-"
         // Pre-release tags carry a suffix, 2022.1.0-pre-release.21 for one.
-        val versionLike = Regex("""^\d+(\.\d+)*(-[A-Za-z0-9.-]+)?$""")
+        // A JDK's build after a plus, 25.0.5+8.
+        val versionLike = Regex("""^\d+(\.\d+)*([-+][A-Za-z0-9.+-]+)?$""")
         Files.list(deps).use { it.toList() }
             .filter { Files.isDirectory(it) }
             .filter { d ->
@@ -306,10 +309,12 @@ object Installer {
     }
 
     // Refuses any entry that would land outside the target, the zip slip
-    // attack. Java's reader drops unix modes, hence markExecutable after.
+    // attack. Java's reader drops unix modes: the execute bits are read from
+    // the central directory (ZipModes), markExecutable covers a zip without.
     private fun unzip(archive: Path, target: Path, cancelled: () -> Boolean) {
         Files.createDirectories(target)
         val base = target.toAbsolutePath().normalize()
+        val modes = ZipModes.of(archive)
         ZipInputStream(Files.newInputStream(archive)).use { zip ->
             while (true) {
                 if (cancelled()) throw CancelledByUser()
@@ -321,9 +326,38 @@ object Installer {
                 } else {
                     Files.createDirectories(out.parent)
                     Files.copy(zip, out, StandardCopyOption.REPLACE_EXISTING)
+                    // Any execute bit in the mode, 0o111, as Untar does.
+                    if (((modes[e.name] ?: 0) and 0b001_001_001) != 0) markExecutable(out)
                 }
             }
         }
+    }
+
+    // A zip whose single top folder carries the version, ghidra_12.2_PUBLIC,
+    // loses that folder so the table's entry stays stable. Only when the entry
+    // is not found as it is: jadx (no top folder) and Il2CppInspectorRedux
+    // (its folder named in the entry) keep their layout.
+    // Ported from Gradle's wrapper,
+    // https://github.com/gradle/gradle/blob/master/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/Install.java#verifyDistributionRoot
+    // with its listDirs: exactly one directory, and the program inside it.
+    // Not ported: BootstrapMainStarter.findLauncherJar (the table's entry is
+    // the check here), InstallCheck (the folder is moved up, not returned).
+    internal fun verifyDistributionRoot(distDir: Path, entry: String) {
+        if (Files.exists(distDir.resolve(entry))) return
+        val dirs = listDirs(distDir)
+        val files = Files.list(distDir).use { it.count() }
+        if (dirs.size != 1 || files != 1L) return
+        val home = dirs[0]
+        if (!Files.exists(home.resolve(entry))) return
+        val top = distDir.resolveSibling(distDir.fileName.toString() + ".top")
+        Files.move(home, top)
+        Files.delete(distDir)
+        Files.move(top, distDir)
+    }
+
+    private fun listDirs(distDir: Path): List<Path> {
+        if (!Files.exists(distDir)) return emptyList()
+        return Files.list(distDir).use { files -> files.filter { file -> Files.isDirectory(file, LinkOption.NOFOLLOW_LINKS) }.toList() }
     }
 
     // A jar is the program itself. It is copied under the stable name of the

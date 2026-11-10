@@ -20,6 +20,7 @@ import io.gutapk.tools.ToolSource
 import io.gutapk.tools.ToolSpec
 import io.gutapk.tools.ToolStatus
 import io.gutapk.tools.Tools
+import io.gutapk.tools.ZipModes
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermission
@@ -383,6 +384,167 @@ class ToolsTest {
         assertFailsWith<CheckFailed> { Installer.install(root, spec, release, quiet) { false } }
         assertFalse(Files.exists(root.resolve("dependencies/evil")))
         assertFalse(Files.exists(Installer.content(root, spec, release.version)))
+    }
+
+    // Ghidra's layout: one top folder carrying the version, a launcher with
+    // a dot in its name and a native program away from the entry's folder.
+    // The JDK's zip file system writes unix modes as Linux zip tools do.
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/test/kotlin/io/gutapk/ToolsTest.kt#zip
+    private fun zipWithModes(file: Path, entries: Map<String, Set<PosixFilePermission>>) {
+        val uri = java.net.URI.create("jar:" + file.toUri())
+        java.nio.file.FileSystems.newFileSystem(uri, mapOf("create" to "true", "enablePosixFileAttributes" to "true")).use { fs ->
+            entries.forEach { (name, perms) ->
+                val p = fs.getPath(name)
+                p.parent?.let { Files.createDirectories(it) }
+                Files.writeString(p, name)
+                Files.setPosixFilePermissions(p, perms)
+            }
+        }
+    }
+
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/test/kotlin/io/gutapk/ToolsTest.kt#installsVerifiesAndMarksPrograms
+    @Test
+    fun dropsTheZipTopFolderAndKeepsModes() = withRoot { root ->
+        val exe = setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE)
+        val plain = setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE)
+        val archive = root.resolve("ghidra.zip")
+        zipWithModes(archive, mapOf(
+            "ghidra_12.2_PUBLIC/support/analyzeHeadless" to exe,
+            "ghidra_12.2_PUBLIC/support/launch.sh" to exe,
+            "ghidra_12.2_PUBLIC/support/launch.properties" to plain,
+            "ghidra_12.2_PUBLIC/Ghidra/Features/Decompiler/os/linux_x86_64/decompile" to exe,
+        ))
+        val ghidra = spec.copy(id = "g", entry = "support/analyzeHeadless", execDir = "support")
+        val release = releaseFor(archive, "12.2")
+        val dir = Installer.dir(root, ghidra, "12.2")
+        Files.createDirectories(dir)
+        Files.copy(archive, dir.resolve(release.fileName))
+
+        Installer.install(root, ghidra, release, quiet) { false }
+
+        val content = Installer.content(root, ghidra, "12.2")
+        assertTrue(Files.isRegularFile(Installer.entry(root, ghidra, "12.2")))
+        assertFalse(Files.exists(content.resolve("ghidra_12.2_PUBLIC")))
+        val runs = { p: String -> PosixFilePermission.OWNER_EXECUTE in Files.getPosixFilePermissions(content.resolve(p)) }
+        assertTrue(runs("support/launch.sh"))
+        assertTrue(runs("Ghidra/Features/Decompiler/os/linux_x86_64/decompile"))
+        assertFalse(runs("support/launch.properties"))
+        assertTrue(Installer.verify(root, ghidra))
+    }
+
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/test/kotlin/io/gutapk/ToolsTest.kt#installsVerifiesAndMarksPrograms
+    @Test
+    fun keepsATopFolderTheEntryNames() = withRoot { root ->
+        val archive = root.resolve("inspector.zip")
+        zip(archive, mapOf("Inspector-linux-x64/Inspector.CLI" to "x", "Inspector-linux-x64/lib.so" to "y"))
+        val inspector = spec.copy(id = "i", entry = "Inspector-linux-x64/Inspector.CLI", execDir = "Inspector-linux-x64")
+        val release = releaseFor(archive)
+        val dir = Installer.dir(root, inspector, "1.0")
+        Files.createDirectories(dir)
+        Files.copy(archive, dir.resolve(release.fileName))
+
+        Installer.install(root, inspector, release, quiet) { false }
+
+        assertTrue(Files.isRegularFile(Installer.content(root, inspector, "1.0").resolve("Inspector-linux-x64/lib.so")))
+        assertTrue(Installer.verify(root, inspector))
+    }
+
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/test/kotlin/io/gutapk/ToolsTest.kt#unpacksTarGzWithoutItsTopFolder
+    @Test
+    fun leavesAZipWithSeveralTopEntries() {
+        val dir = Files.createTempDirectory("gutapk-top")
+        try {
+            Files.createDirectories(dir.resolve("a/support"))
+            Files.writeString(dir.resolve("a/support/prog"), "x")
+            Files.writeString(dir.resolve("README"), "x")
+            Installer.verifyDistributionRoot(dir, "support/prog")
+            assertTrue(Files.isRegularFile(dir.resolve("a/support/prog")))
+        } finally {
+            Storage.deleteTree(dir, dir.parent)
+        }
+    }
+
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/test/kotlin/io/gutapk/ToolsTest.kt#unpacksTarGzWithoutItsTopFolder
+    @Test
+    fun readsZipModesOnlyFromUnix() {
+        assertEquals(3, ZipModes.toPlatform(0x031e))
+        assertEquals(0, ZipModes.toPlatform(0x0014))
+        assertEquals(0b111_101_101, ZipModes.getUnixMode(3, 0x81ed0000L) and 0x1ff)
+        assertEquals(0, ZipModes.getUnixMode(0, 0x81ed0000L))
+        val dir = Files.createTempDirectory("gutapk-modes")
+        try {
+            val plain = dir.resolve("plain.zip")
+            zip(plain, mapOf("prog" to "x"))
+            assertTrue(ZipModes.of(plain).isEmpty())
+            val notZip = dir.resolve("not.zip")
+            Files.writeString(notZip, "not a zip")
+            assertTrue(ZipModes.of(notZip).isEmpty())
+        } finally {
+            Storage.deleteTree(dir, dir.parent)
+        }
+    }
+
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/test/kotlin/io/gutapk/ToolsTest.kt#tableIsWellFormed
+    @Test
+    fun readsGhidraAndTemurinRows() {
+        val ghidra = assertNotNull(Tools.byId("ghidra"))
+        assertEquals(ToolSource.GITHUB, ghidra.source)
+        assertEquals("support/analyzeHeadless", ghidra.entry)
+        assertEquals("support", ghidra.execDir)
+        assertTrue(Regex(ghidra.pkg).matches("ghidra_12.2_PUBLIC_20261016.zip"))
+        assertFalse(Regex(ghidra.pkg).matches("ghidra_12.2_PUBLIC_20261016.zip.sha256"))
+        val temurin = assertNotNull(Tools.byId("temurin"))
+        assertEquals(ToolSource.ADOPTIUM, temurin.source)
+        assertEquals("bin/java", temurin.entry)
+        assertEquals("jdk", temurin.pkg)
+    }
+
+    // Ghidra's tag carries its version inside: Ghidra_12.2_build, as GitHub
+    // served it on 2026-11-10.
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/test/kotlin/io/gutapk/ToolsTest.kt#readsGithubRelease
+    @Test
+    fun readsAVersionInsideTheTag() {
+        val json = """{"tag_name": "Ghidra_12.2_build", "draft": false, "prerelease": false, "assets": [
+            {"name": "ghidra_12.2_PUBLIC_20261016.zip", "size": 569712708,
+             "digest": "sha256:2c2cd776db3c1f6a097ba418922378ac3649cadd5e844a6f5f088ae628a7be67",
+             "browser_download_url": "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.2_build/ghidra_12.2_PUBLIC_20261016.zip"}]}"""
+        val r = assertNotNull(Releases.parseGithub(json, assertNotNull(Tools.byId("ghidra")).pkg))
+        assertEquals("12.2", r.version)
+        assertEquals("2c2cd776db3c1f6a097ba418922378ac3649cadd5e844a6f5f088ae628a7be67", r.sha256)
+        assertNull(Releases.parseGithub(json.replace("Ghidra_12.2_build", "latest"), ".*"))
+    }
+
+    // Shapes of Adoptium's available_releases and assets/version answers,
+    // values as the API served them on 2026-11-10.
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/test/kotlin/io/gutapk/ToolsTest.kt#readsTheDotnetIndex
+    @Test
+    fun readsTheAdoptiumApi() {
+        assertEquals(25, Releases.adoptiumLts("""{"available_lts_releases": [8, 11, 17, 21, 25], "most_recent_feature_release": 27, "most_recent_lts": 25}"""))
+        assertNull(Releases.adoptiumLts("[]"))
+        val url = Releases.availableVersionsUrl("https://api.adoptium.net/v3/info/available_releases", 25, "jdk")
+        assertTrue(url.startsWith("https://api.adoptium.net/v3/assets/version/%5B25%2C26%29?"))
+        assertTrue("image_type=jdk" in url && "os=linux" in url && "architecture=x64" in url && "release_type=ga" in url)
+        val pkgs = listOf(
+            Triple("OpenJDK25U-jdk_x64_linux_hotspot_25.0.4.1_1.tar.gz", "a".repeat(64),
+                """{"build": 1, "major": 25, "minor": 0, "openjdk_version": "25.0.4.1+1-LTS", "patch": 1, "security": 4, "semver": "25.0.4+101.0.LTS"}"""),
+            Triple("OpenJDK25U-jdk_x64_linux_hotspot_25.0.5_8.tar.gz", "68982529869257d0ee6b824ec5aa270ff8b118bb438670da0b97ebdab178d7fb",
+                """{"build": 8, "major": 25, "minor": 0, "openjdk_version": "25.0.5+8-LTS", "security": 5, "semver": "25.0.5+8.0.LTS"}"""),
+            Triple("OpenJDK25U-jdk_x64_linux_hotspot_25.0.4_7.tar.gz", "nohex",
+                """{"build": 7, "major": 25, "minor": 0, "security": 4}"""),
+        )
+        val json = pkgs.joinToString(",", "[", "]") { (name, sum, data) ->
+            """{"binaries": [{"package": {"name": "$name", "size": 141341188, "checksum": "$sum",
+                "link": "https://github.com/adoptium/temurin25-binaries/releases/download/x/$name"}}], "version_data": $data}"""
+        }
+        val r = assertNotNull(Releases.resolvePackage(json))
+        assertEquals("25.0.5+8", r.version)
+        assertEquals("68982529869257d0ee6b824ec5aa270ff8b118bb438670da0b97ebdab178d7fb", r.sha256)
+        assertEquals(141341188L, r.size)
+        assertEquals("OpenJDK25U-jdk_x64_linux_hotspot_25.0.5_8.tar.gz", r.fileName)
+        assertEquals("25.0.4+1.1", Releases.getOpenJdkSemverVersion(mapOf("major" to 25L, "minor" to 0L, "security" to 4L, "patch" to 1L, "build" to 1L)))
+        assertNull(Releases.resolvePackage("[]"))
+        assertTrue(Releases.compare("25.0.5+8", "25.0.4+1.1") > 0)
+        assertTrue(Releases.compare("25.0.5+9", "25.0.5+8") > 0)
     }
 
     // GutapK's release carries the AppImage and its .sha256 side by side.

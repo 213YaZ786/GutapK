@@ -140,7 +140,7 @@ class OfflineTest {
 
         fun post(path: String, body: String) = call(front.listeningPort, "POST", path, body)
 
-        fun admin(method: String, path: String, body: String? = null) = call(admin.listeningPort, method, path, body)
+        fun admin(method: String, path: String, body: String? = null) = call(admin.listeningPort, method, path, body, mapOf(ServerAdmin.ADMIN_HEADER to "1"))
 
         fun close() {
             front.stop()
@@ -526,11 +526,13 @@ class OfflineTest {
 
     @Test
     fun startSkipsAPortAlreadyTakenAndKeepsTheOthers() {
-        val taken = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
-        val free = freePort()
         val dir = Files.createTempDirectory("gutapk-offline-start").toFile()
+        // A port held by another process of this app, which signs the proof with the same key: skipped. A port
+        // held by anything else stops the start, see SquatTest.
+        val taken = Offline.start("listen.${freePort()}=https://one.example\n".byteInputStream(), dir)
+        val free = freePort()
         try {
-            val config = "listen.${taken.localPort}=https://one.example\nlisten.$free=https://two.example\n"
+            val config = "listen.${taken.servers[0].listeningPort}=https://one.example\nlisten.$free=https://two.example\n"
             val offline = Offline.start(config.byteInputStream(), dir)
             try {
                 assertEquals(1, offline.servers.size)
@@ -542,7 +544,7 @@ class OfflineTest {
                 offline.stop()
             }
         } finally {
-            taken.close()
+            taken.stop()
             dir.deleteRecursively()
         }
     }

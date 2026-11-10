@@ -291,7 +291,7 @@ class InjectTest {
         val added = configs[2]
         assertEquals(true, added.attrs.single().value)
         assertEquals(NodeVisitor.TYPE_INT_BOOLEAN, added.attrs.single().type)
-        assertEquals(listOf("127.0.0.1", "localhost"), added.children.map { it.text!!.text })
+        assertEquals(listOf("127.0.0.1", "localhost", "0.0.0.0"), added.children.map { it.text!!.text })
         assertTrue(added.children.all { it.attrs.single().name == "includeSubdomains" && it.attrs.single().value == false })
         assertNull(added.attrs.single().ns)
         // A second run finds it there, and a config without debug-overrides gets it last.

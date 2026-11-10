@@ -171,6 +171,12 @@ object OfflineBuild {
                 val game = served.firstOrNull { it.origin in ports.keys && it.origin !in blocked }
                 if (game != null) {
                     ServerRules.files(game).forEach { (fileName, bytes) -> added[SERVER_ASSETS + fileName] = Files.write(work.resolve(fileName), bytes) }
+                    game.data.entries.forEachIndexed { i, (entry, bytes) ->
+                        if (entry in names) {
+                            replaced[entry] = Files.write(work.resolve("data$i.json"), bytes)
+                            sink.emit(JobEvent.Line("$entry written again for a new player: the conditions of what the server gives are left out"))
+                        }
+                    }
                     sink.emit(JobEvent.Line("local game server for ${game.origin}: the progress is kept on the phone"))
                     game.lines.forEach { sink.emit(JobEvent.Line(it)) }
                 }
@@ -181,10 +187,16 @@ object OfflineBuild {
                 // The recordings kept on the PC, each file as an asset the
                 // phone copies into its cache at the first launch.
                 // https://github.com/213YaZ786/GutapK/blob/ca70230/src/main/kotlin/io/gutapk/core/offline/OfflineBuild.kt#run
+                // The copies are filtered first: a player's tokens and ids sit in the request
+                // bodies, and whoever unzips a shared APK could replay them. The PC's own folder
+                // stays whole, the learner reads it.
                 val kept = files(recordings)
-                kept.forEach { file -> added[ASSETS + file.fileName] = file }
+                val filtered = Secrets.filter(kept, work.resolve(RECORDINGS))
+                kept.forEachIndexed { i, file -> added[ASSETS + file.fileName] = filtered.files[i] }
                 val travelling = kept.count { it.fileName.toString().endsWith(ENTRY) }
                 if (travelling > 0) sink.emit(JobEvent.Line("$travelling recordings travel with the game"))
+                if (travelling > 0) sink.emit(JobEvent.Line("${filtered.values} secret values filtered from ${filtered.recordings} recordings"))
+                if (filtered.left > 0) sink.emit(JobEvent.Line("${filtered.left} request bodies are neither BSON nor JSON and travel as recorded"))
             }
 
             // The patches, the manifest and the new entries in one pass over the zip.

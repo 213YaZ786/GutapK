@@ -9,6 +9,7 @@
 // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/content/ContentProvider.java#L1915
 // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/content/ContentProvider.java#L1990-L1991
 // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/content/ContentProvider.java#L2045-L2046
+// https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/content/ContentProvider.java#L2753-L2755
 //
 // Copyright (C) 2006 The Android Open Source Project, Apache License 2.0.
 package android.content;
@@ -32,4 +33,9 @@ public abstract class ContentProvider {
     public abstract int delete(Uri uri, String selection, String[] selectionArgs);
 
     public abstract int update(Uri uri, ContentValues values, String selection, String[] selectionArgs);
+
+    // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/content/ContentProvider.java#L2753-L2755
+    public void dump(java.io.FileDescriptor fd, java.io.PrintWriter writer, String[] args) {
+        throw new RuntimeException("stub");
+    }
 }
