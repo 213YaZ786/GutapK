@@ -250,7 +250,7 @@ public final class GameServer {
             // As WireMock's journal keeps the requests no stub matched: each one with its
             // fields, so what the game sends can be read and learnt later.
             if (!known(name)) {
-                String kept = keep(field, request);
+                String kept = keep(field, name, request);
                 Server.LOG.info("Local game server: unknown command " + name + " " + request + ", answered " + STATUS + (kept == null ? "" : ", kept in " + kept));
             }
         } else {
@@ -882,24 +882,50 @@ public final class GameServer {
     }
 
     /**
-     * A command the recordings never showed, kept as the state keeps such things:
-     * the element a rule names by one of its fields, in the list of a rule its
+     * A command the recordings never showed, kept as the state keeps such things.
+     * A message named like the command keeps the request's numbers, in their order,
+     * as one entry of its list, the entry with the same first number replaced, as
+     * an append replaces the element with the same id: Jungle Heat's libgame.so
+     * reads tutorial_progress/progress entries as [tutorialId, step], by index.
+     * Else the element a rule names by one of its fields, in the list of a rule its
      * request matches, takes those of its fields it holds. Returns what was kept,
-     * null when nothing was. A message named like the command is left alone: what
-     * its documents hold is not what the request does (Jungle Heat stops at its
-     * login when tutorial_progress lists the request's fields).
+     * null when nothing was.
      */
     // https://github.com/213YaZ786/GutapK/blob/c52520a/src/dex/java/io/gutapk/offline/GameServer.java#apply
     // Not ported: the ops set, increment and remove, Patch, Pointer (the request's own fields are kept, no rule says where)
-    private String keep(String field, Map<String, Object> command) {
+    private String keep(String field, String name, Map<String, Object> command) {
         Map<String, Object> value = new LinkedHashMap<String, Object>();
+        List<Object> numbers = new ArrayList<Object>();
         for (Map.Entry<String, Object> entry : command.entrySet()) {
             if (!entry.getKey().equals(field) && !ignored(entry.getKey())) {
                 value.put(entry.getKey(), entry.getValue());
+                if (entry.getValue() instanceof Number) {
+                    numbers.add(entry.getValue());
+                }
             }
         }
         if (value.isEmpty()) {
             return null;
+        }
+        Map<String, Object> message = message(name);
+        if (message != null && !numbers.isEmpty()) {
+            for (Map.Entry<String, Object> entry : message.entrySet()) {
+                if (!(entry.getValue() instanceof List)) {
+                    continue;
+                }
+                List<Object> parentNode = castList(entry.getValue());
+                for (int i = 0; i < parentNode.size(); i++) {
+                    Object same = parentNode.get(i);
+                    if (same instanceof List && !((List<?>) same).isEmpty() && same(((List<?>) same).get(0), numbers.get(0))) {
+                        parentNode.set(i, numbers);
+                        dirty = true;
+                        return name + "/" + entry.getKey() + " " + numbers;
+                    }
+                }
+                parentNode.add(numbers);
+                dirty = true;
+                return name + "/" + entry.getKey() + " " + numbers;
+            }
         }
         // A request holding a field some rule holds for one value only (the base it is
         // for) is read with those rules alone.

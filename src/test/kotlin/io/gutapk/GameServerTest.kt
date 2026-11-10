@@ -301,8 +301,9 @@ class GameServerTest {
         quiet.deleteRecursively()
     }
 
-    // A command the recordings never showed keeps its fields in the element a rule
-    // of a request like it names. The message named like it is left alone.
+    // A command the recordings never showed keeps its fields where the state has a
+    // place for them: its numbers as one entry of the list of the message named
+    // like it, the fields the element a rule of a request like it names holds.
     // https://github.com/213YaZ786/GutapK/blob/c52520a/src/test/kotlin/io/gutapk/GameServerTest.kt#anUnknownCommandIsAnsweredStatusAndLoggedOnce
     @Test
     fun anUnknownCommandKeepsItsFieldsWhereTheStateHasAPlaceForThem() {
@@ -318,12 +319,12 @@ class GameServerTest {
             game.ask("move_building", "id" to 88, "cellI" to 5, "cellJ" to 6, "locationType" to "MAIN")
             game.ask("move_building", "id" to 88, "cellI" to 9, "cellJ" to 9, "locationType" to "SECOND")
         }
-        assertTrue(lines[1].endsWith("answered status"), lines.toString())
+        assertTrue(lines[1].endsWith("kept in tutorial_progress/progress [4, 2]"), lines.toString())
         assertTrue(lines[2].endsWith("kept in location/location/location #88 [cellI, cellJ]"), lines.toString())
         assertTrue(lines[3].endsWith("answered status"), lines.toString())
 
         val messages = Bson.decode(GameServer(dir).stateBytes())["messages"].list().associateBy { it.map()["name"] }
-        assertEquals(emptyList<Any?>(), messages["tutorial_progress"].dig("progress"))
+        assertEquals(listOf(listOf(4, 2)), messages["tutorial_progress"].dig("progress"))
         assertEquals(listOf(5, 6), listOf("cellI", "cellJ").map { messages["location"].dig("location", "location", 0, it) })
         dir.deleteRecursively()
     }
