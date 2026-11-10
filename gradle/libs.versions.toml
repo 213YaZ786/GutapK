@@ -1,10 +1,10 @@
 [versions]
 kotlin = "2.4.21"
-compose = "1.12.1"
+compose = "1.12.2"
 # Google's signing and verification library, Apache-2.0, meant for use off
 # device. Published on google(), not on Maven Central. Its version follows
 # the Android Gradle plugin.
-apksig = "8.7.3"
+apksig = "9.4.1"
 # D-Bus for the system keyring, MIT. The native transport uses the JDK's own
 # unix sockets, no native library.
 dbus-java = "5.2.2"
@@ -15,7 +15,7 @@ materialkolor = "6.0.0"
 vico = "3.3.1"
 # R8's D8 dexer, BSD-3, published on google(). Build time only: it turns the
 # offline cache server into a dex and never reaches the app's classpath.
-r8 = "8.7.18"
+r8 = "9.5.28"
 # smali's dex reader and writer, BSD-3, published on google(). It writes a
 # dex again with its strings sorted, which a patch in place cannot keep.
 # Compile and test only: the app downloads the newest one as a tool.

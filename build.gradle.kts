@@ -15,8 +15,8 @@ kotlin {
 // src/dex, compiled against stubs of the Android API (src/dexstub, never
 // shipped), turned into a dex by D8 and put on the resource path as
 // io/gutapk/offline/server.dex. The dex is built, never committed.
-// https://r8.googlesource.com/r8/+/refs/tags/8.7.18/src/main/java/com/android/tools/r8/D8.java#main
-val d8Tool by configurations.creating
+// https://r8.googlesource.com/r8/+/refs/heads/9.5/src/main/java/com/android/tools/r8/D8.java#main
+val d8Tool = configurations.create("d8Tool")
 
 dependencies {
     d8Tool(libs.r8)
@@ -44,7 +44,7 @@ tasks.test {
     useJUnitPlatform()
 }
 
-// https://r8.googlesource.com/r8/+/refs/tags/8.7.18/src/main/java/com/android/tools/r8/D8.java#main
+// https://r8.googlesource.com/r8/+/refs/heads/9.5/src/main/java/com/android/tools/r8/D8.java#main
 // https://github.com/Zennmn/AM-plus-plus/blob/main/examples/basic-plugin/build.gradle.kts
 // https://github.com/Kifranei/AM-plus-plus-media-plugin/blob/main/media-plugin/build.gradle.kts
 // D8.main refuses an empty command line and runs the compiler on the rest:

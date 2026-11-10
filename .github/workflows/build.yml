@@ -32,11 +32,11 @@ jobs:
 
       # No wrapper in this repository, on purpose: a wrapper ships a binary jar
       # that cannot be reviewed as text. Gradle is installed instead, pinned to
-      # the version Kotlin 2.4.10 is tested against.
+      # the version the local builds run.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
         with:
-          gradle-version: 9.5.0
+          gradle-version: 9.8.2
 
       - name: Read the version
         run: |

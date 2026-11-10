@@ -1,6 +1,7 @@
 package io.gutapk.core.sign
 
 import com.android.apksig.ApkSigner
+import com.android.apksig.KeyConfig
 import io.gutapk.core.apk.SignatureInfo
 import io.gutapk.core.apk.Signatures
 import io.gutapk.job.JobEvent
@@ -44,7 +45,7 @@ object ApkSigning {
             sink.emit(JobEvent.Step("sign", 1, 2))
             val schemes = schemesFor(minSdk)
             sink.emit(JobEvent.Line("signing ${input.fileName} with ${key.sha256}, schemes ${schemes.joinToString(" ")}"))
-            val config = ApkSigner.SignerConfig.Builder(key.name, key.privateKey, listOf(key.certificate)).build()
+            val config = ApkSigner.SignerConfig.Builder(key.name, KeyConfig.Jca(key.privateKey), listOf(key.certificate)).build()
             val builder = ApkSigner.Builder(listOf(config))
                 .setInputApk(input.toFile())
                 .setOutputApk(part.toFile())
