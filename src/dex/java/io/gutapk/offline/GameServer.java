@@ -49,8 +49,10 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public final class GameServer {
 
@@ -125,6 +127,9 @@ public final class GameServer {
 
     /** The latest request of each command, for a progress rule naming its entry by one. */
     private final Map<String, Map<String, Object>> sent = new LinkedHashMap<String, Map<String, Object>>();
+
+    /** The commands of the request being answered (a pack holds several), for the works that ended while it was served. */
+    private final List<Map<String, Object>> served = new ArrayList<Map<String, Object>>();
 
     /** The commands nothing recorded and nothing saved, with how many times each came since the server started. */
     private final Map<String, Integer> unknown = new LinkedHashMap<String, Integer>();
@@ -233,7 +238,10 @@ public final class GameServer {
         try {
             // The works whose time is up end first, so a login shows them done, the units of the queues too.
             long now = System.currentTimeMillis() / 1000L;
+            Map<String, Object> before = workLists();
+            served.clear();
             elapse(now);
+            elapseLike(now);
             tick(now);
             Map<String, Object> pack = map(rules.get("pack"));
             String packName = pack == null ? null : string(pack.get("command"));
@@ -252,6 +260,7 @@ public final class GameServer {
             } else {
                 responseDefinition = serveFor(field, request);
             }
+            awardExperience(before, served);
             if (dirty) {
                 save();
             }
@@ -373,8 +382,10 @@ public final class GameServer {
         }
         production(name, request);
         work(name, request);
+        upgrading(name, request);
         progress(name, request);
         sent.put(name, request);
+        served.add(request);
         return new ResponseDefinition(body, type);
     }
 
@@ -477,8 +488,8 @@ public final class GameServer {
                 }
             }
         }
-        // The commands that start a work or end it, the ones deduced by family too.
-        for (String key : new String[] {"works", "timers"}) {
+        // The commands that start a work or end it, the ones deduced by family or by analogy too.
+        for (String key : new String[] {"works", "timers", "deduced"}) {
             for (Object item : list(rules.get(key))) {
                 Map<String, Object> rule = map(item);
                 Map<String, Object> start = rule == null ? null : map(rule.get("start"));
@@ -1350,6 +1361,368 @@ public final class GameServer {
         dirty = true;
     }
 
+    /**
+     * The works the PC deduced by the analogy of a recorded one (the start of another kind of element):
+     * a command nobody recorded that names, by one of its fields, an element of a list of the state whose ids
+     * are documents of the data starts the upgrade, as HeroBaseComponent.StartUpgrading does: the element's
+     * end-time field is the start plus the data's time at its grade, the price of that grade is taken. The end
+     * is FinishUpgrading, the grade up by one and the end-time field cleared, by its time (elapseLike), by the
+     * force (SpeedUpUpgrade) or at the next login. A cancel clears the field and gives the price back
+     * (CancelUpgrade). Which command is which, the field, the grade and the tables come from the rules.
+     */
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Component/HeroBaseComponent.cs#StartUpgrading
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Component/HeroBaseComponent.cs#FinishUpgrading
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Component/HeroBaseComponent.cs#SpeedUpUpgrade
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Component/HeroBaseComponent.cs#CancelUpgrade
+    // https://raw.githubusercontent.com/213YaZ786/GutapK/c52520a/src/dex/java/io/gutapk/offline/GameServer.java#elapse
+    // Not ported: WorkerManager.AllocateWorker, DeallocateWorker (no worker is held), CanStartUpgrading, IsMaxLevel (the town hall level and the last level are not checked, a grade the data gives no time for ends at once)
+    // Not ported: m_vUpgradeLevelInProgress, Timer, StartTimer, GetRemainingSeconds (the end is the element's own field, the level in progress is its grade plus one)
+    // Not ported: GamePlayUtil.GetSpeedUpCost, HasEnoughDiamonds, UseDiamonds (the diamonds of a force are the economy's spend, a request without them takes none)
+    // Not ported: HERO_UPGRADE_CANCEL_MULTIPLIER, CommodityCountChangeHelper (a cancel gives the whole price back, as cancelClearing does), SetHeroState (nothing says the client reads one)
+    // Not ported: elapse (the works and the timers keep their loop, elapseLike is its walk over the elements of the lists a deduced work names)
+    private void upgrading(String name, Map<String, Object> command) {
+        long now = System.currentTimeMillis() / 1000L;
+        long time = command.get("optime") instanceof Number ? number(command.get("optime")) : now;
+        for (Object item : list(rules.get("deduced"))) {
+            Map<String, Object> hbc = map(item);
+            Map<String, Object> start = hbc == null ? null : map(hbc.get("start"));
+            if (start == null) {
+                continue;
+            }
+            try {
+                if (name.equals(start.get("command"))) {
+                    startUpgradingLike(hbc, command, time);
+                }
+                for (Object entry : list(hbc.get("ends"))) {
+                    Map<String, Object> end = map(entry);
+                    if (end == null || !name.equals(end.get("command"))) {
+                        continue;
+                    }
+                    if ("cancel".equals(end.get("role"))) {
+                        cancelUpgradeLike(hbc, command);
+                    } else {
+                        speedUpUpgradeLike(hbc, command);
+                    }
+                    Server.LOG.info("Local game server: " + name + " " + end.get("role") + "s the work of " + start.get("command") + " (deduced by family)");
+                }
+            } catch (Unreachable e) {
+                skipped(name, "work deduced", String.valueOf(hbc.get("lists")), e);
+            }
+        }
+    }
+
+    /** The list and the element a request names by one of its numbers: the held element whose id it is, else the call is skipped. */
+    private Object[] namedLike(Map<String, Object> hbc, Map<String, Object> command) {
+        for (String path : strings(hbc.get("lists"))) {
+            List<Object> parentNode;
+            try {
+                parentNode = list(new Patch(state, true, new LinkedHashMap<String, Object>()).evaluate(Pointer.parse(path), false));
+            } catch (Unreachable e) {
+                continue;
+            }
+            for (Map.Entry<String, Object> field : command.entrySet()) {
+                if (!(field.getValue() instanceof Number) || ignored(field.getKey())) {
+                    continue;
+                }
+                for (Object element : parentNode) {
+                    Map<String, Object> target = map(element);
+                    if (target != null && token(target.get(ID)).equals(token(field.getValue()))) {
+                        return new Object[] {path, target};
+                    }
+                }
+            }
+        }
+        throw new Unreachable("no number of the request is the id of an element of " + hbc.get("lists"), true);
+    }
+
+    /** True while the element holds an end time: the timer of the component is set. */
+    private static boolean isUpgradingLike(Map<String, Object> hbc, Map<String, Object> target) {
+        return valueAt(target, string(hbc.get("field"))) instanceof Number && number(valueAt(target, string(hbc.get("field")))) > 0;
+    }
+
+    /** The grade the element holds, the default when it holds none: the level the avatar holds for a hero. */
+    private static long currentLevelOf(Map<String, Object> hbc, Map<String, Object> target) {
+        Object grade = target.get(string(hbc.get("grade")));
+        return grade instanceof Number ? number(grade) : number(hbc.get("default"));
+    }
+
+    /** The seconds the data gives for the element at its grade, null when it gives none. */
+    private static Long getTotalSecondsLike(Map<String, Object> hbc, Map<String, Object> target) {
+        Map<String, Object> durations = map(hbc.get("durations"));
+        Object duration = durations == null ? null : durations.get(token(target.get(ID)) + "," + currentLevelOf(hbc, target));
+        return duration instanceof Number ? Long.valueOf(((Number) duration).longValue()) : null;
+    }
+
+    /** The upgrade starts on the element the request names: its end time is the start plus the data's time, its price is taken. */
+    private void startUpgradingLike(Map<String, Object> hbc, Map<String, Object> command, long time) {
+        Object[] named = namedLike(hbc, command);
+        Map<String, Object> target = castMap(named[1]);
+        String field = string(hbc.get("field"));
+        if (isUpgradingLike(hbc, target)) {
+            throw new Unreachable("a work is under way in #" + target.get(ID), true);
+        }
+        Long seconds = getTotalSecondsLike(hbc, target);
+        long end = time + (seconds == null ? 0 : seconds.longValue());
+        Map<String, Object> cost = map(hbc.get("prices")) == null ? null : map(map(hbc.get("prices")).get(token(target.get(ID)) + "," + currentLevelOf(hbc, target)));
+        Map<String, Object> economy = map(rules.get("economy"));
+        for (Map.Entry<String, Object> price : cost == null || economy == null ? new LinkedHashMap<String, Object>().entrySet() : cost.entrySet()) {
+            charge(economy, price.getKey(), number(price.getValue()), false);
+        }
+        put(target, field, typed(valueAt(target, field), end));
+        dirty = true;
+        Map<String, Object> start = map(hbc.get("start"));
+        Server.LOG.info("Local game server: work deduced: " + start.get("command") + " puts " + field + " in " + named[0] + " #" + target.get(ID) + ", " + (seconds == null ? "the data gives no time at its grade, it ends at once" : "ends in " + seconds + " s") + " (like " + hbc.get("like") + ")");
+        if (seconds == null || seconds.longValue() < 1) {
+            finishUpgradingLike(hbc, target);
+        }
+    }
+
+    /** The upgrade ends: the grade up by one, the end time cleared to the value the recorded work leaves. */
+    private void finishUpgradingLike(Map<String, Object> hbc, Map<String, Object> target) {
+        String grade = string(hbc.get("grade"));
+        Object level = target.get(grade);
+        put(target, grade, sum(level instanceof Number ? level : hbc.get("default"), Integer.valueOf(1)));
+        String field = string(hbc.get("field"));
+        put(target, field, typed(valueAt(target, field), number(hbc.get("idle"))));
+        dirty = true;
+    }
+
+    /** A force ends the upgrade of the element the request names at once. */
+    private void speedUpUpgradeLike(Map<String, Object> hbc, Map<String, Object> command) {
+        Map<String, Object> target = castMap(namedLike(hbc, command)[1]);
+        if (!isUpgradingLike(hbc, target)) {
+            throw new Unreachable("nothing under way in #" + target.get(ID), true);
+        }
+        finishUpgradingLike(hbc, target);
+    }
+
+    /** A cancel clears the end time and gives the price of the grade back, the grade stays. */
+    private void cancelUpgradeLike(Map<String, Object> hbc, Map<String, Object> command) {
+        Map<String, Object> target = castMap(namedLike(hbc, command)[1]);
+        if (!isUpgradingLike(hbc, target)) {
+            throw new Unreachable("nothing under way in #" + target.get(ID), true);
+        }
+        Map<String, Object> cost = map(hbc.get("prices")) == null ? null : map(map(hbc.get("prices")).get(token(target.get(ID)) + "," + currentLevelOf(hbc, target)));
+        Map<String, Object> economy = map(rules.get("economy"));
+        for (Map.Entry<String, Object> price : cost == null || economy == null ? new LinkedHashMap<String, Object>().entrySet() : cost.entrySet()) {
+            charge(economy, price.getKey(), number(price.getValue()), true);
+        }
+        String field = string(hbc.get("field"));
+        put(target, field, typed(valueAt(target, field), number(hbc.get("idle"))));
+        dirty = true;
+    }
+
+    /** The elements of the lists a deduced work names whose end time is up end their upgrade: Tick of the component. */
+    private void elapseLike(long now) {
+        for (Object item : list(rules.get("deduced"))) {
+            Map<String, Object> hbc = map(item);
+            String field = hbc == null ? null : string(hbc.get("field"));
+            if (field == null) {
+                continue;
+            }
+            for (String path : strings(hbc.get("lists"))) {
+                Object parentNode;
+                try {
+                    parentNode = new Patch(state, true, new LinkedHashMap<String, Object>()).evaluate(Pointer.parse(path), false);
+                } catch (Unreachable e) {
+                    continue;
+                }
+                for (Object element : new ArrayList<Object>(list(parentNode))) {
+                    Map<String, Object> target = map(element);
+                    if (target == null || !isUpgradingLike(hbc, target) || number(valueAt(target, field)) > now) {
+                        continue;
+                    }
+                    finishUpgradingLike(hbc, target);
+                    Server.LOG.info("Local game server: " + field + " of " + path + " #" + target.get(ID) + " ended (work deduced like " + hbc.get("like") + ")");
+                }
+            }
+        }
+    }
+
+    /**
+     * The experience of the works that finished while a request was served, by time, by force or at once: the
+     * lists the works run on are copied before the request (workLists), and compared with what they hold after it,
+     * as the PC compared two logins. A timer or a deduced work gives the seconds of each grade the element went up,
+     * a work the seconds of each element it was under way on at the start and is not at the end, or that the
+     * request created and ended. The number the PC found that only grows goes up by the formula it verified over
+     * those seconds, for the kinds of work it counted, and the level beside it is one plus the thresholds reached.
+     */
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/ClientAvatar.cs#L23-L25
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/ConstructionItem.cs#FinishConstruction
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Obstacle.cs#ClearingFinished
+    // https://raw.githubusercontent.com/213YaZ786/GutapK/c52520a/src/dex/java/io/gutapk/offline/GameServer.java#elapse
+    // Not ported: FinishConstruction, ClearingFinished, elapse (the end of a work stays where it is, this adds the experience once the request is served)
+    private void awardExperience(Map<String, Object> before, List<Map<String, Object>> sent) {
+        Map<String, Object> experience = map(rules.get("experience"));
+        String path = experience == null ? null : string(experience.get("path"));
+        if (path == null) {
+            return;
+        }
+        List<Object> every = new ArrayList<Object>(list(rules.get("timers")));
+        every.addAll(list(rules.get("works")));
+        every.addAll(list(rules.get("deduced")));
+        long gained = 0;
+        List<String> finished = new ArrayList<String>();
+        for (Object item : every) {
+            Map<String, Object> rule = map(item);
+            boolean deduced = rule != null && rule.get("lists") != null;
+            Map<String, Object> start = rule == null ? null : map(rule.get("start"));
+            String kind = start == null ? null : string(deduced ? rule.get("like") : start.get("command"));
+            if (kind == null || !strings(experience.get("kinds")).contains(kind)) {
+                continue;
+            }
+            for (String where : deduced ? strings(rule.get("lists")) : strings(Collections.singletonList(rule.get("list")))) {
+                List<Object> was = list(before.get(where));
+                List<Object> now = list(copy(elementsAt(where)));
+                List<String> key = strings(rule.get("key"));
+                if (deduced || key.size() == 2) {
+                    // Each grade the element went up is a work finished, by the seconds of the grade it left.
+                    String gradePath = deduced ? string(rule.get("grade")) : key.get(1);
+                    for (Object element : now) {
+                        Map<String, Object> target = map(element);
+                        Map<String, Object> source = target == null ? null : element(was, target.get(ID));
+                        long first = number(rule.get("default"));
+                        long from = source == null || !(valueAt(source, gradePath) instanceof Number) ? first : number(valueAt(source, gradePath));
+                        long to = target == null || !(valueAt(target, gradePath) instanceof Number) ? first : number(valueAt(target, gradePath));
+                        Object named = target == null ? null : deduced ? target.get(ID) : valueAt(target, key.get(0));
+                        for (long grade = from; grade < to; grade++) {
+                            Object seconds = map(rule.get("durations")) == null ? null : map(rule.get("durations")).get(token(named) + "," + grade);
+                            gained += experienceOf(string(experience.get("formula")), number(seconds));
+                            finished.add(kind);
+                        }
+                    }
+                    continue;
+                }
+                String field = string(rule.get("field"));
+                for (Object element : was) {
+                    Map<String, Object> source = map(element);
+                    Map<String, Object> target = source == null ? null : element(now, source.get(ID));
+                    boolean under = source != null && same(valueAt(source, field), rule.get("value"));
+                    if (source != null && ((under && (target == null || !same(valueAt(target, field), rule.get("value")))) || (!under && target == null && sentTo(sent, start, source.get(ID))))) {
+                        gained += experienceOf(string(experience.get("formula")), number(getTotalSeconds(rule, source)));
+                        finished.add(kind);
+                    }
+                }
+                for (Object element : now) {
+                    Map<String, Object> target = map(element);
+                    if (target != null && element(was, target.get(ID)) == null && !same(valueAt(target, field), rule.get("value")) && sentTo(sent, start, target.get(ID))) {
+                        gained += experienceOf(string(experience.get("formula")), number(getTotalSeconds(rule, target)));
+                        finished.add(kind);
+                    }
+                }
+            }
+        }
+        Map<String, Object> avatar = containerOf(path);
+        if (gained <= 0 || avatar == null) {
+            return;
+        }
+        String field = Pointer.parse(path).last();
+        long total = number(avatar.get(field)) + gained;
+        avatar.put(field, typed(avatar.get(field), total));
+        dirty = true;
+        // One plus the thresholds reached, in the field beside the experience.
+        String levelPath = string(experience.get("level"));
+        Map<String, Object> holder = levelPath == null ? null : containerOf(levelPath);
+        if (holder != null) {
+            long level = 1;
+            for (Object threshold : list(experience.get("thresholds"))) {
+                level += number(threshold) <= total ? 1 : 0;
+            }
+            String levelField = Pointer.parse(levelPath).last();
+            holder.put(levelField, typed(holder.get(levelField), level));
+        }
+        Server.LOG.info("Local game server: " + finished + " finished, " + field + " up by " + gained + " to " + total);
+    }
+
+    /** True when a command of the request is the start of the work and names the element by its id. */
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/ConstructionItem.cs#FinishConstruction
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Obstacle.cs#ClearingFinished
+    // https://raw.githubusercontent.com/213YaZ786/GutapK/c52520a/src/dex/java/io/gutapk/offline/GameServer.java#elapse
+    // Not ported: FinishConstruction, ClearingFinished, elapse (awardExperience above adds the experience, this only finds the start in the request)
+    private boolean sentTo(List<Map<String, Object>> sent, Map<String, Object> start, Object id) {
+        for (Map<String, Object> command : sent) {
+            if (start != null && start.get("command") != null && start.get("command").equals(command.get(string(rules.get("command")))) && start.get("element") != null && token(command.get(string(start.get("element")))).equals(token(id))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The elements of the lists the works run on, copied: what the state holds before a request. */
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/ConstructionItem.cs#FinishConstruction
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Obstacle.cs#ClearingFinished
+    // https://raw.githubusercontent.com/213YaZ786/GutapK/c52520a/src/dex/java/io/gutapk/offline/GameServer.java#elapse
+    // Not ported: FinishConstruction, ClearingFinished, elapse (awardExperience above adds the experience, this only keeps the lists as they were)
+    private Map<String, Object> workLists() {
+        Map<String, Object> lists = new LinkedHashMap<String, Object>();
+        if (map(rules.get("experience")) == null) {
+            return lists;
+        }
+        List<Object> every = new ArrayList<Object>(list(rules.get("timers")));
+        every.addAll(list(rules.get("works")));
+        every.addAll(list(rules.get("deduced")));
+        for (Object item : every) {
+            Map<String, Object> rule = map(item);
+            for (String where : rule == null ? new ArrayList<String>() : rule.get("lists") != null ? strings(rule.get("lists")) : strings(Collections.singletonList(rule.get("list")))) {
+                if (!lists.containsKey(where)) {
+                    lists.put(where, copy(elementsAt(where)));
+                }
+            }
+        }
+        return lists;
+    }
+
+    /** The elements of a list of the state, none when the path leads nowhere. */
+    private List<Object> elementsAt(String path) {
+        try {
+            return list(new Patch(state, true, new LinkedHashMap<String, Object>()).evaluate(Pointer.parse(path), false));
+        } catch (Unreachable e) {
+            return new ArrayList<Object>();
+        }
+    }
+
+    /** The element of a list whose id is the one given, null when none is. */
+    private static Map<String, Object> element(List<Object> elements, Object id) {
+        for (Object item : elements) {
+            Map<String, Object> target = map(item);
+            if (target != null && token(target.get(ID)).equals(token(id))) {
+                return target;
+            }
+        }
+        return null;
+    }
+
+    /** The experience of a work of that many seconds, by the formula the PC verified. */
+    private static long experienceOf(String formula, long seconds) {
+        if ("sqrt".equals(formula)) {
+            return (long) Math.floor(Math.sqrt(seconds));
+        } else if ("sqrt-ceil".equals(formula)) {
+            return (long) Math.ceil(Math.sqrt(seconds));
+        } else if ("sqrt-round".equals(formula)) {
+            return Math.round(Math.sqrt(seconds));
+        } else if ("cbrt".equals(formula)) {
+            return (long) Math.floor(Math.cbrt(seconds));
+        } else if ("log2".equals(formula)) {
+            return seconds < 1 ? 0 : 63 - Long.numberOfLeadingZeros(seconds);
+        } else if ("seconds".equals(formula)) {
+            return seconds;
+        } else if ("minutes".equals(formula)) {
+            return seconds / 60;
+        } else if ("hours".equals(formula)) {
+            return seconds / 3600;
+        }
+        return 0;
+    }
+
+    /** The document that holds the last field of a path of the state, null when the path does not lead to one. */
+    private Map<String, Object> containerOf(String path) {
+        try {
+            return map(new Patch(state, true, new LinkedHashMap<String, Object>()).evaluate(Pointer.parse(path).getParent(), false));
+        } catch (Unreachable e) {
+            return null;
+        }
+    }
+
     /** The elements of the list a production rule works on. */
     // https://github.com/213YaZ786/GutapK/blob/c52520a/src/dex/java/io/gutapk/offline/GameServer.java#elapse
     // Not ported: elapse (the timers keep their loop, components is the part of it that reaches the list of the state)
@@ -1652,7 +2025,9 @@ public final class GameServer {
         }
         for (Object item : new ArrayList<Object>(list(rule.get("effects")))) {
             Map<String, Object> effect = map(item);
-            if (effect == null || !name.equals(effect.get("command")) || !matches(effect, command)) {
+            // An effect deduced for a command nobody recorded holds for a request that lacks the fields of its when.
+            boolean deduced = effect != null && Boolean.TRUE.equals(effect.get("deduced"));
+            if (effect == null || !name.equals(effect.get("command")) || (deduced ? !agrees(effect, command) : !matches(effect, command))) {
                 continue;
             }
             String op = string(effect.get("op"));
@@ -1695,6 +2070,9 @@ public final class GameServer {
                         charge(rule, entry.getKey(), number(entry.getValue()), refund);
                     }
                 } else if ("spend".equals(op)) {
+                    if (deduced && !command.containsKey(string(effect.get("field")))) {
+                        throw new Unreachable("the request carries no " + effect.get("field") + ", nothing is taken", true);
+                    }
                     charge(rule, string(effect.get("resource")), number(command.get(string(effect.get("field")))), refund);
                 } else if ("gain".equals(op)) {
                     for (Map.Entry<String, Object> entry : map(command.get(string(effect.get("field")))).entrySet()) {
@@ -2079,6 +2457,9 @@ public final class GameServer {
                 }
                 for (Map.Entry<String, Object> entry : capacity.entrySet()) {
                     Map<String, Object> document = resource.equals(resource(rule, entry.getKey())) ? holder(target, entry.getKey()) : null;
+                    if (document == null && resource.equals(resource(rule, entry.getKey()))) {
+                        document = made(list(parentNode), target, entry.getKey(), capacities);
+                    }
                     if (document != null) {
                         out.add(new Object[] {document, entry.getKey(), Long.valueOf(number(entry.getValue()))});
                     }
@@ -2086,6 +2467,73 @@ public final class GameServer {
             }
         }
         return out;
+    }
+
+    /**
+     * The field a storage lacks for its resource (a storage built on the phone holds none): made as the other
+     * elements of its list hold theirs, a document of one key in the list they hold them in, starting at 0.
+     */
+    // https://raw.githubusercontent.com/213YaZ786/GutapK/c52520a/src/dex/java/io/gutapk/offline/GameServer.java#holder
+    // https://raw.githubusercontent.com/213YaZ786/GutapK/c52520a/src/dex/java/io/gutapk/offline/GameServer.java#storages
+    // Not ported: holder, storages (they stand above, this finds the list a sibling holds its capacity in and makes the field there)
+    private Map<String, Object> made(List<Object> elements, Map<String, Object> target, String key, Map<String, Object> capacities) {
+        Set<String> keys = new LinkedHashSet<String>();
+        for (Object capacity : capacities.values()) {
+            if (map(capacity) != null) {
+                keys.addAll(map(capacity).keySet());
+            }
+        }
+        for (Object element : elements) {
+            Map<String, Object> other = map(element);
+            Object[] where = other == null || other == target ? null : heldBy(other, keys);
+            if (where == null) {
+                continue;
+            }
+            List<Object> way = castList(where[0]);
+            Map<String, Object> parentNode = target;
+            for (int i = 0; i < way.size() - 1; i++) {
+                if (!(parentNode.get(way.get(i)) instanceof Map)) {
+                    parentNode.put((String) way.get(i), new LinkedHashMap<String, Object>());
+                }
+                parentNode = castMap(parentNode.get(way.get(i)));
+            }
+            String last = (String) way.get(way.size() - 1);
+            if (!(parentNode.get(last) instanceof List)) {
+                parentNode.put(last, new ArrayList<Object>());
+            }
+            Map<String, Object> document = new LinkedHashMap<String, Object>();
+            document.put(key, typed(where[1], 0));
+            castList(parentNode.get(last)).add(document);
+            dirty = true;
+            return document;
+        }
+        return null;
+    }
+
+    /** The keys of maps that lead to the list holding a document of one capacity key, and the number it holds there. Null when none does. */
+    private static Object[] heldBy(Object node, Set<String> keys) {
+        if (!(node instanceof Map)) {
+            return null;
+        }
+        for (Map.Entry<String, Object> entry : castMap(node).entrySet()) {
+            if (entry.getValue() instanceof List) {
+                for (Object item : (List<?>) entry.getValue()) {
+                    Map<String, Object> document = map(item);
+                    if (document != null && document.size() == 1 && keys.contains(document.keySet().iterator().next()) && document.values().iterator().next() instanceof Number) {
+                        List<Object> way = new ArrayList<Object>();
+                        way.add(entry.getKey());
+                        return new Object[] {way, document.values().iterator().next()};
+                    }
+                }
+            } else if (entry.getValue() instanceof Map) {
+                Object[] found = heldBy(entry.getValue(), keys);
+                if (found != null) {
+                    castList(found[0]).add(0, entry.getKey());
+                    return found;
+                }
+            }
+        }
+        return null;
     }
 
     /** Adds to a resource: the wallet, else the storages up to their capacity. Returns what did not fit. */

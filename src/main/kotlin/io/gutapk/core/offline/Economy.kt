@@ -94,6 +94,59 @@ object Economy {
         return priced(inner[key], resources)
     }
 
+    // The cost of leaving each grade of the documents a work deduced by analogy reads its times from:
+    // UpgradeHeroCommand.Execute takes the resource and the cost of the hero's level (GetUpgradeResource,
+    // GetUpgradeCost). The key of the price is named like the key of the time (upgradeTime, upgradePrice),
+    // the first grade has the document's own, each next one its entry's, as the time does.
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/PacketProcessing/Commands/UpgradeHeroCommand.cs#Execute
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/core/offline/ServerRules.kt#valueAt
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/core/offline/ServerRules.kt#getValues
+    // not ported: UpgradeHeroCommand, HasEnoughResources, HasFreeWorkers, StartUpgrading (the economy takes the price when the command is served)
+    // not ported: valueAt, getValues, walk (price and gradesOf above read the documents)
+    fun upgradePrices(statics: List<Any?>, ids: Set<String>, time: String): Map<String, Map<String, Long>> {
+        val resources = GameState.resources(statics)
+        val stem = time.replace(Regex("[A-Z][a-z0-9]*$"), "")
+        val rd = LinkedHashMap<String, Map<String, Long>>()
+        for (documents in GameState.named(statics)) {
+            for (hd in documents) {
+                val id = hd["id"].toString()
+                val key = hd.keys.map { it.toString() }.firstOrNull { stem.isNotEmpty() && it.startsWith(stem) && it != time && priced(hd[it], resources) != null }
+                if (id !in ids || key == null) continue
+                val top = 1L + ((gradesOf(hd)?.let { (hd[it.first] as List<*>).size }) ?: 0)
+                for (currentLevel in 1L..top) price(hd, key, currentLevel, resources)?.let { rd.putIfAbsent("$id,$currentLevel", it) }
+            }
+        }
+        return rd
+    }
+
+    // The effects of the commands a work deduced by analogy has: its force takes what the force of the
+    // recorded work takes (a spend of diamonds), the price of its start is the table it carries.
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/PacketProcessing/Commands/UpgradeHeroCommand.cs#Execute
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/core/offline/ServerRules.kt#valueAt
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/core/offline/ServerRules.kt#getValues
+    // not ported: UpgradeHeroCommand, HasEnoughResources, HasFreeWorkers, StartUpgrading (the economy takes the price when the command is served)
+    // not ported: valueAt, getValues, walk (called from ServerRules as they are)
+    fun deduced(learned: Map<String, Any?>?, upgrades: List<Map<String, Any?>>, works: List<Map<String, Any?>>): Map<String, Any?>? {
+        if (learned == null) return null
+        val effects = (learned["effects"] as? List<*>).orEmpty().filterIsInstance<Map<String, Any?>>()
+        val added = mutableListOf<Map<String, Any?>>()
+        for (go in upgrades) {
+            val hbc = works.firstOrNull { (it["start"] as Map<*, *>)["command"] == go["like"] } ?: continue
+            val forced = (hbc["ends"] as? List<*>).orEmpty().filterIsInstance<Map<*, *>>().filter { it["role"] == "force" && it["deduced"] != true }.map { it["command"] }
+            for (end in (go["ends"] as? List<*>).orEmpty().filterIsInstance<Map<*, *>>().filter { it["role"] == "force" }) {
+                for (effect in effects.filter { it["command"] in forced && it["op"] == "spend" }) {
+                    val cost = LinkedHashMap(effect).apply {
+                        remove("when")
+                        put("command", end["command"])
+                        put("deduced", true)
+                    }
+                    if (cost !in added) added.add(cost)
+                }
+            }
+        }
+        return LinkedHashMap(learned).apply { put("effects", effects + added) }
+    }
+
     // The element lists of a state, each named by a list of the data.
     // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/core/offline/ServerRules.kt#getValues
     private fun kinds(state: Map<String, Any?>, lists: List<List<Map<*, *>>>): List<Kind> {

@@ -720,6 +720,75 @@ class ServerRulesTest {
         return dir
     }
 
+    // The clearing recording with the experience the real server added silently to the character: 7 for the bush cleared
+    // by its time (60 s), 17 and 7 for the fern (300 s) and the bush forced in the last interval, and a list of the levels.
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Obstacle.cs#ClearingFinished
+    private fun recordExperience(): File {
+        val dir = Files.createTempDirectory("gutapk-recordings").toFile()
+        val store = Store(dir)
+        val t0 = 1_700_000_000L
+        var n = 0
+        fun put(seconds: Long, request: Map<String, Any?>, answer: ByteArray, method: String = "POST", path: String = "/") {
+            val body = if (method == "GET") ByteArray(0) else Bson.encode(doc("name" to request["name"], "n" to ++n, "optime" to seconds.toInt()).apply { putAll(request - "name") })
+            store.put(Store.Entry(origin, method, path, "r=${++n}", Integer.toHexString(body.contentHashCode() + n), 200, mapOf("Content-Type" to "text/plain"), answer, seconds * 1000), body)
+        }
+        fun idle() = doc("type" to "NORMAL", "updateTime" to (t0 - 900).toInt())
+        fun logged(seconds: Long, buildings: List<Map<String, Any?>>, exp: Int, level: Int): ByteArray {
+            val answer = login(seconds * 1000, 1, buildings, doc("DIAMOND" to 20))
+            (((answer["data"] as List<*>)[1] as Map<*, *>)["data"] as MutableMap<String, Any?>).apply {
+                put("exp", exp)
+                put("level", level)
+            }
+            return Bson.encode(answer)
+        }
+        val camp = building(1, 5, 1, 1, 1)
+        val status = Bson.encode(doc("name" to "status"))
+        put(
+            t0 - 5, emptyMap(),
+            ("[{\"id\": 5, \"name\": \"Camp\", \"price\": {\"DIAMOND\": 5}}, {\"id\": 52, \"name\": \"Fern\", \"price\": {\"DIAMOND\": 9}, \"clearTimeSeconds\": 300}, " +
+                "{\"id\": 60, \"name\": \"Bush\", \"price\": {\"DIAMOND\": 2}, \"clearTimeSeconds\": 60}]").toByteArray(),
+            "GET", "/data/building.json",
+        )
+        put(t0 - 4, emptyMap(), "[{\"level\": 1, \"exp\": 30}, {\"level\": 2, \"exp\": 50}, {\"level\": 3, \"exp\": 100}]".toByteArray(), "GET", "/data/level.json")
+        put(t0, doc("name" to "authorize"), logged(t0, listOf(camp, bush(136, 60, idle()), bush(124, 52, idle()), bush(3, 60, idle())), 0, 1))
+        put(t0 + 10, doc("name" to "remove_obstacle", "id" to 136), status)
+        put(t0 + 40, doc("name" to "reload_game"), logged(t0 + 40, listOf(camp, bush(136, 60, doc("updateTime" to (t0 + 10).toInt(), "type" to "REMOVE")), bush(124, 52, idle()), bush(3, 60, idle())), 0, 1))
+        put(t0 + 130, doc("name" to "reload_game"), logged(t0 + 130, listOf(camp, bush(124, 52, idle()), bush(3, 60, idle())), 7, 1))
+        put(t0 + 140, doc("name" to "remove_obstacle", "id" to 124), status)
+        put(t0 + 141, doc("name" to "remove_obstacle", "id" to 3), status)
+        put(t0 + 142, doc("name" to "force_remove_obstacle", "id" to 3, "amount" to 3), status)
+        put(t0 + 500, doc("name" to "reload_game"), logged(t0 + 500, listOf(camp), 31, 2))
+        return dir
+    }
+
+    // The experience is the number of the login that only grows, and the formula that fits the works finished between the
+    // logins is the one kept: the square root of their seconds here, the other candidates contradict an interval. The level
+    // beside it is one plus the thresholds of the data list of {level, exp} reached. On the phone, a work that ends by its time
+    // or by force adds it, and the level follows.
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Obstacle.cs#ClearingFinished
+    @Test
+    fun theExperienceIsTheNumberThatOnlyGrowsByTheFormulaTheFinishedWorksFit() {
+        val learned = ServerRules.learn(ServerRules.read(recordExperience().toPath())).single()
+        val experience = learned.rules["experience"] as Map<*, *>
+        assertEquals(listOf("character/data/exp", "sqrt", listOf("remove_obstacle"), "character/data/level", listOf(30L, 80L, 180L)), listOf(experience["path"], experience["formula"], experience["kinds"], experience["level"], experience["thresholds"]))
+        assertTrue(learned.lines.any { "experience: character/data/exp grows by the sqrt of the seconds of each work finished (remove_obstacle), verified on 2 intervals" in it }, learned.lines.toString())
+        assertTrue(learned.lines.any { "experience: compared sqrt, sqrt-ceil, sqrt-round" in it && "sqrt verified 2" in it && "seconds verified 0" in it }, learned.lines.toString())
+
+        val now = System.currentTimeMillis() / 1000
+        val idle = doc("type" to "NORMAL", "updateTime" to 1)
+        val folder = gameOf(learned, listOf(building(1, 5, 1, 1, 1), bush(124, 52, idle), bush(3, 60, idle)) + (4..8).map { bush(it, 60, idle) })
+        val game = GameServer(folder)
+        fun character(of: GameServer): Map<*, *> = ((of.ask("authorize", now)["data"] as List<*>).single { (it as Map<*, *>)["name"] == "character" } as Map<*, *>)["data"] as Map<*, *>
+        assertEquals(listOf(31, 2), listOf(character(game)["exp"], character(game)["level"]))
+        // The fern (300 s) and five bushes (60 s) are over at the next request, 17 and 7 each, a bush forced adds 7.
+        game.ask("remove_obstacle", now - 400, "id" to 124)
+        (4..8).forEach { game.ask("remove_obstacle", now - 100, "id" to it) }
+        game.ask("remove_obstacle", now - 10, "id" to 3)
+        game.ask("force_remove_obstacle", now, "id" to 3, "amount" to 3)
+        assertEquals(listOf(31 + 17 + 35 + 7, 3), listOf(character(game)["exp"], character(game)["level"]))
+        assertEquals(listOf(90, 3), listOf(character(GameServer(folder))["exp"], character(GameServer(folder))["level"]))
+    }
+
     // A fake game: the native library holds the names of its commands as C strings.
     private fun library(vararg names: String): java.nio.file.Path {
         val apk = Files.createTempFile("gutapk-game", ".apk")
@@ -932,6 +1001,100 @@ class ServerRulesTest {
         game.ask("unit_upgrade_start", now - 6000, "unitId" to 10005)
         val flame = GameServer(folder).ask("authorize", now).elements().getValue(181)["state"] as Map<*, *>
         assertEquals(listOf(mapOf("unit" to 10002, "grade" to 3), mapOf("unit" to 10005, "grade" to 2)), flame["grades"])
+    }
+
+    // The laboratory recording plus a data file of heroes: the list of the state that holds the hero (its id the document's,
+    // its health the document's HEALTH) is the kind of element a start nobody recorded can name.
+    private fun recordHeroes(): File {
+        val dir = recordLab()
+        val t0 = 1_700_000_000L
+        val heroes = "[{\"id\": 1000001, \"name\": \"Bulldozer\", \"upgradeTime\": 300, \"upgradePrice\": {\"OIL\": 50}, \"parameters\": [{\"HEALTH\": 140}], " +
+            "\"grades\": [{\"gradeId\": 2, \"upgradeTime\": 1800, \"upgradePrice\": {\"OIL\": 100}}, {\"gradeId\": 3, \"upgradeTime\": 3600, \"upgradePrice\": {\"OIL\": 200}}, " +
+            "{\"gradeId\": 4, \"upgradePrice\": {\"OIL\": 300}}]}]"
+        Store(dir).put(Store.Entry(origin, "GET", "/data/heroes.json", "r=900", "heroes", 200, mapOf("Content-Type" to "text/plain"), heroes.toByteArray(), (t0 - 3) * 1000), ByteArray(0))
+        return dir
+    }
+
+    private fun GameServer.wallet(now: Long): Map<*, *> {
+        val character = (ask("authorize", now)["data"] as List<*>).single { (it as Map<*, *>)["name"] == "character" } as Map<*, *>
+        return (character["data"] as Map<*, *>)["wallet"] as Map<*, *>
+    }
+
+    // A name the game's library holds that no recording shows, ending like the start of a recorded work (hero_upgrade_start
+    // beside unit_upgrade_start) and beginning with another word, is the same work for the elements of a list of the state
+    // whose ids are documents of the data: the request names one by an id field. The start writes the end-time field the
+    // recorded start writes, plus the data's time at the element's grade, the end moves the grade up by one and clears
+    // the field, the force and the cancel follow the family, the price is the data's at the grade, exp is left alone.
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/PacketProcessing/Commands/UpgradeHeroCommand.cs#Execute
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Component/HeroBaseComponent.cs#StartUpgrading
+    @Test
+    fun aStartNobodyRecordedIsDeducedFromARecordedWorkOfTheSameStemForTheElementsOfAListTheDataNames() {
+        val apk = library("hero_upgrade_start", "hero_upgrade_force", "cancel_hero_upgrade", "personal_tourney_start", "tls_start", "unit_upgrade_start", "unit_upgrade_force")
+        val learned = ServerRules.learn(ServerRules.read(recordHeroes().toPath()), apk).single()
+        val heroes = "location/location/location/#88/state/heroes"
+        val deduced = rules(learned, "deduced").single()
+        assertEquals(
+            listOf("unit_upgrade_start", mapOf("command" to "hero_upgrade_start"), "resfinish", 0, "grade", 1, "upgradeTime", listOf(heroes)),
+            listOf(deduced["like"], deduced["start"], deduced["field"], deduced["idle"], deduced["grade"], deduced["default"], deduced["time"], deduced["lists"]),
+        )
+        assertEquals(mapOf("1000001,1" to 300, "1000001,2" to 1800, "1000001,3" to 3600), deduced["durations"])
+        assertEquals(mapOf("1000001,1" to mapOf("OIL" to 50L), "1000001,2" to mapOf("OIL" to 100L), "1000001,3" to mapOf("OIL" to 200L), "1000001,4" to mapOf("OIL" to 300L)), deduced["prices"])
+        assertEquals(
+            listOf(mapOf("command" to "cancel_hero_upgrade", "role" to "cancel", "deduced" to true), mapOf("command" to "hero_upgrade_force", "role" to "force", "deduced" to true)),
+            deduced["ends"],
+        )
+        // Nothing else changes: the recorded works keep their ends, no recorded name or one-word stem is deduced.
+        assertEquals(listOf("unit_upgrade_start"), rules(learned, "works").map { (it["start"] as Map<*, *>)["command"] })
+        assertEquals(listOf(mapOf("command" to "unit_upgrade_force", "role" to "force", "element" to "unitId", "by" to "state/resunit")), rules(learned, "works").single()["ends"])
+        val effects = (learned.rules["economy"] as Map<*, *>)["effects"] as List<*>
+        assertTrue(effects.any { (it as Map<*, *>)["command"] == "hero_upgrade_force" && it["op"] == "spend" && it["field"] == "amount" && it["resource"] == "DIAMOND" && it["deduced"] == true && it["when"] == null }, effects.toString())
+        assertTrue(effects.none { (it as Map<*, *>)["command"] == "hero_upgrade_start" || it["command"] == "cancel_hero_upgrade" }, effects.toString())
+        assertTrue(learned.lines.any { "work deduced: hero_upgrade_start like unit_upgrade_start puts resfinish" in it && "hero_upgrade_force forces it" in it }, learned.lines.toString())
+        assertTrue(learned.lines.any { "family (deduced): cancel_hero_upgrade cancels the work of hero_upgrade_start" in it }, learned.lines.toString())
+        assertTrue(learned.lines.none { "personal_tourney" in it || "tls_start" in it }, learned.lines.toString())
+        // Without the library, or with only the recorded names, nothing is deduced.
+        assertNull(ServerRules.learn(ServerRules.read(recordHeroes().toPath())).single().rules["deduced"])
+        assertNull(ServerRules.learn(ServerRules.read(recordHeroes().toPath()), library("unit_upgrade_start", "unit_upgrade_force", "set_tutorial_step")).single().rules["deduced"])
+
+        // On the phone: 100 s into the 300 s of the first grade.
+        val now = System.currentTimeMillis() / 1000
+        val folder = gameOf(learned, listOf(building(88, 5, 1, 1, 1).apply { put("state", doc("heroes" to listOf(doc("id" to 1000001, "grade" to 1, "health" to 140, "exp" to 8)))) }))
+        val game = GameServer(folder)
+        fun hero() = (game.ask("authorize", now).elements().getValue(88)["state"] as Map<*, *>).let { (it["heroes"] as List<*>).single() as Map<*, *> }
+        assertEquals(895, game.wallet(now)["OIL"])
+        game.ask("hero_upgrade_start", now - 100, "heroId" to 1000001)
+        assertEquals(mapOf("id" to 1000001, "grade" to 1, "health" to 140, "exp" to 8, "resfinish" to (now + 200).toInt()), hero())
+        assertEquals(845, game.wallet(now)["OIL"])
+        // Under way: a second start changes nothing, the force ends it at once (its request carries no amount, nothing is taken).
+        game.ask("hero_upgrade_start", now - 100, "heroId" to 1000001)
+        assertEquals(845, game.wallet(now)["OIL"])
+        game.ask("hero_upgrade_force", now, "heroId" to 1000001)
+        assertEquals(mapOf("id" to 1000001, "grade" to 2, "health" to 140, "exp" to 8, "resfinish" to 0), hero())
+        assertEquals(13, game.wallet(now)["DIAMOND"])
+        // The second grade takes 1800 s: started 2000 s ago it is over at the next request, the third grade held.
+        game.ask("hero_upgrade_start", now - 2000, "heroId" to 1000001)
+        assertEquals(3, hero()["grade"])
+        assertEquals(0, hero()["resfinish"])
+        assertEquals(745, game.wallet(now)["OIL"])
+        // A cancel clears the field, gives the price back and keeps the grade, a force with diamonds takes them.
+        game.ask("hero_upgrade_start", now, "heroId" to 1000001)
+        assertEquals(545, game.wallet(now)["OIL"])
+        game.ask("cancel_hero_upgrade", now, "heroId" to 1000001)
+        assertEquals(listOf(3, 0, 745), listOf(hero()["grade"], hero()["resfinish"], game.wallet(now)["OIL"]))
+        game.ask("hero_upgrade_start", now, "heroId" to 1000001)
+        game.ask("hero_upgrade_force", now, "heroId" to 1000001, "amount" to 5)
+        assertEquals(listOf(4, 0, 8), listOf(hero()["grade"], hero()["resfinish"], game.wallet(now)["DIAMOND"]))
+        // A grade the data gives no time for ends at once.
+        game.ask("hero_upgrade_start", now, "heroId" to 1000001)
+        assertEquals(listOf(5, 0, 245), listOf(hero()["grade"], hero()["resfinish"], game.wallet(now)["OIL"]))
+        // A request that names no element of the list, or nothing under way, changes nothing.
+        game.ask("hero_upgrade_start", now, "heroId" to 999)
+        game.ask("hero_upgrade_force", now, "heroId" to 1000001)
+        assertEquals(listOf(5, 8, 245), listOf(hero()["grade"], hero()["exp"], game.wallet(now)["OIL"]))
+        assertTrue(game.unknown().isEmpty(), game.unknown().toString())
+        // A new start of the game keeps the grade.
+        assertEquals(5, ((GameServer(folder).ask("authorize", now).elements().getValue(88)["state"] as Map<*, *>)["heroes"] as List<*>).let { (it.single() as Map<*, *>)["grade"] })
+        Files.delete(apk)
     }
 
     // A command that names an element by id and carries fields the element holds under the same names (a move) sets

@@ -947,6 +947,153 @@ class GameServerTest {
         dir.deleteRecursively()
     }
 
+    // A work the PC deduced by the analogy of a recorded one: a start nobody recorded that names, by a number of its request,
+    // an element of a list of the state whose ids are documents of the data writes the end time of that element (the start
+    // plus the data's time at its grade) and takes the price of the grade. Its end, by time or by force, is the grade up
+    // by one and the end time cleared, a cancel clears it and gives the price back, exp is left as it is, and the Admin
+    // counts none of these commands as unknown.
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Component/HeroBaseComponent.cs#StartUpgrading
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Component/HeroBaseComponent.cs#FinishUpgrading
+    @Test
+    fun aWorkDeducedByAnalogyStartsOnTheElementTheRequestNamesAndEndsWithTheGradeUpByOne() {
+        val all = rules()
+        val heroes = "location/location/location/#88/state/heroes"
+        all["deduced"] = listOf(
+            doc(
+                "like" to "unit_upgrade_start", "start" to doc("command" to "hero_upgrade_start"), "field" to "resfinish", "idle" to 0, "grade" to "grade", "default" to 1, "time" to "upgradeTime",
+                "lists" to listOf(heroes), "durations" to doc("1000001,1" to 300, "1000001,2" to 600, "1000002,2" to 600), "prices" to doc("1000001,1" to doc("GOLD" to 100), "1000001,2" to doc("GOLD" to 40), "1000002,2" to doc("GOLD" to 250)),
+                "ends" to listOf(doc("command" to "hero_upgrade_force", "role" to "force", "deduced" to true), doc("command" to "cancel_hero_upgrade", "role" to "cancel", "deduced" to true)),
+            ),
+        )
+        all["economy"] = doc(
+            "resources" to listOf("DIAMOND", "GOLD"), "wallet" to "character/data/wallet", "storages" to listOf<Any?>(),
+            "effects" to mutableListOf<Any?>(doc("command" to "hero_upgrade_force", "op" to "spend", "field" to "amount", "resource" to "DIAMOND", "deduced" to true, "when" to doc("locationType" to "MAIN"))),
+        )
+        val saved = state()
+        (saved["messages"].list()[0].dig("data", "wallet") as MutableMap<String, Any?>)["GOLD"] = 1000
+        (saved["messages"].list()[1].dig("location", "location").list()[0] as MutableMap<String, Any?>)["state"] =
+            doc("heroes" to listOf(doc("id" to 1000001, "grade" to 1, "exp" to 8), doc("id" to 1000002, "grade" to 2, "exp" to 3)))
+        val dir = folder(all, saved)
+        val game = GameServer(dir)
+        val now = System.currentTimeMillis() / 1000
+        fun hero(n: Int) = Bson.decode(game.stateBytes())["messages"].list()[1].dig("location", "location").list()[0].map()["state"].map()["heroes"].list()[n].map()
+        fun gold() = Bson.decode(game.stateBytes())["messages"].list()[0].dig("data", "wallet", "GOLD")
+
+        val (_, started) = logged { game.ask("hero_upgrade_start", "heroId" to 1000001, "optime" to now.toInt()) }
+        assertEquals(mapOf("id" to 1000001, "grade" to 1, "exp" to 8, "resfinish" to (now + 300).toInt()), hero(0))
+        assertEquals(900, gold())
+        assertTrue(started.any { "work deduced: hero_upgrade_start puts resfinish in $heroes #1000001, ends in 300 s (like unit_upgrade_start)" in it }, started.toString())
+        assertTrue(started.none { "unknown command" in it }, started.toString())
+        assertTrue(game.unknown().isEmpty(), game.unknown().toString())
+        // Under way: a second start is skipped with one line and takes nothing.
+        val (_, busy) = logged { game.ask("hero_upgrade_start", "heroId" to 1000001, "optime" to now.toInt()) }
+        assertEquals(1, busy.count { "skipped" in it && "a work is under way in #1000001" in it }, busy.toString())
+        assertEquals(900, gold())
+        // A force with diamonds ends it at once: the grade is 2, the field cleared, exp untouched.
+        val (_, forced) = logged { game.ask("hero_upgrade_force", "heroId" to 1000001, "amount" to 7, "optime" to now.toInt()) }
+        assertEquals(mapOf("id" to 1000001, "grade" to 2, "exp" to 8, "resfinish" to 0), hero(0))
+        assertEquals(493, Bson.decode(game.stateBytes())["messages"].list()[0].dig("data", "wallet", "DIAMOND"))
+        assertTrue(forced.any { "hero_upgrade_force forces the work of hero_upgrade_start (deduced by family)" in it }, forced.toString())
+        // The grade 2 of the second hero takes 600 s: started 1000 s ago it is over at the next request.
+        game.ask("hero_upgrade_start", "heroId" to 1000002, "optime" to (now - 1000).toInt())
+        assertEquals(650, gold())
+        val (_, ended) = logged { game.ask("change_nick", "nick" to "x") }
+        assertEquals(mapOf("id" to 1000002, "grade" to 3, "exp" to 3, "resfinish" to 0), hero(1))
+        assertTrue(ended.any { "resfinish of $heroes #1000002 ended" in it }, ended.toString())
+        // A cancel clears the field, gives the price back and keeps the grade.
+        game.ask("hero_upgrade_start", "heroId" to 1000001, "optime" to now.toInt())
+        assertEquals(mapOf("id" to 1000001, "grade" to 2, "exp" to 8, "resfinish" to (now + 600).toInt()), hero(0))
+        assertEquals(610, gold())
+        game.ask("cancel_hero_upgrade", "heroId" to 1000001, "optime" to now.toInt())
+        assertEquals(mapOf("id" to 1000001, "grade" to 2, "exp" to 8, "resfinish" to 0), hero(0))
+        assertEquals(650, gold())
+        // A request that names no element, and a force with nothing under way, are skipped with one line each.
+        val (_, lost) = logged {
+            game.ask("hero_upgrade_start", "heroId" to 5, "optime" to now.toInt())
+            game.ask("hero_upgrade_force", "heroId" to 1000001, "optime" to now.toInt())
+        }
+        assertEquals(1, lost.count { "skipped" in it && "no number of the request is the id of an element of" in it }, lost.toString())
+        assertEquals(1, lost.count { "skipped" in it && "nothing under way in #1000001" in it }, lost.toString())
+        // A force whose request carries no amount takes no diamonds, with one line.
+        game.ask("hero_upgrade_start", "heroId" to 1000001, "optime" to now.toInt())
+        val (_, free) = logged { game.ask("hero_upgrade_force", "heroId" to 1000001, "optime" to now.toInt()) }
+        assertEquals(1, free.count { "skipped" in it && "the request carries no amount" in it }, free.toString())
+        assertEquals(listOf(3, 493, 610), listOf(hero(0)["grade"], Bson.decode(game.stateBytes())["messages"].list()[0].dig("data", "wallet", "DIAMOND"), gold()))
+        assertTrue(game.unknown().isEmpty(), game.unknown().toString())
+        // The grades are kept for the next start of the game.
+        val again = Bson.decode(GameServer(dir).stateBytes())["messages"].list()[1].dig("location", "location").list()[0].map()["state"].map()["heroes"].list()
+        assertEquals(listOf(3, 3), again.map { it.map()["grade"] })
+        dir.deleteRecursively()
+    }
+
+    // Experience: a work of a kind the rules count, ended by its time or by force, adds the formula's value of its seconds to
+    // the number the PC found and moves the level to one plus the thresholds reached. A research the intervals did not support
+    // adds nothing.
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Obstacle.cs#ClearingFinished
+    @Test
+    fun aWorkThatEndsAddsItsExperienceAndTheLevelFollows() {
+        val dir = working(listOf(obstacle(1, 60), obstacle(2, 52), laboratory(181)))
+        val file = File(dir, "rules.bson")
+        val all = Bson.decode(file.readBytes())
+        all["experience"] = doc("path" to "character/data/exp", "formula" to "sqrt", "kinds" to listOf("remove_obstacle"), "level" to "character/data/level", "thresholds" to listOf(10, 40))
+        file.writeBytes(Bson.encode(all))
+        val now = System.currentTimeMillis() / 1000
+        val game = GameServer(dir)
+        fun character() = Bson.decode(game.stateBytes())["messages"].list()[0].dig("data").map()
+        // The bush (60 s) is over at the next request, 7. The fern (300 s) is forced at once, 17.
+        game.ask("remove_obstacle", "id" to 1, "optime" to (now - 100).toInt())
+        game.ask("remove_obstacle", "id" to 2, "optime" to (now - 10).toInt())
+        val (_, forced) = logged { game.ask("force_remove_obstacle", "id" to 2, "amount" to 3, "optime" to now.toInt()) }
+        assertEquals(listOf(24, 2), listOf(character()["exp"], character()["level"]))
+        assertTrue(forced.any { "[remove_obstacle] finished, exp up by 17 to 24" in it }, forced.toString())
+        // A research is not of a counted kind: its end gives nothing, and the hours of it change nothing.
+        game.ask("unit_upgrade_start", "unitId" to 10001, "optime" to (now - 1000).toInt())
+        game.ask("change_nick", "nick" to "x")
+        assertEquals(listOf(24, 2), listOf(character()["exp"], character()["level"]))
+        assertEquals(listOf(24, 2), listOf(Bson.decode(GameServer(dir).stateBytes())["messages"].list()[0].dig("data", "exp"), Bson.decode(GameServer(dir).stateBytes())["messages"].list()[0].dig("data", "level")))
+        dir.deleteRecursively()
+    }
+
+    // A storage built on the phone holds no field for its resource (parameters is empty): the field is made as the
+    // other storages of the list hold theirs, a document of one key in the list they hold it in, starting at 0, then
+    // the deposit fills it up to the capacity of the grade and a withdraw takes from it. It is saved with the state.
+    // https://raw.githubusercontent.com/213YaZ786/GutapK/c52520a/src/dex/java/io/gutapk/offline/GameServer.java#storages
+    @Test
+    fun aStorageBuiltOnThePhoneGetsTheFieldItsResourceIsHeldIn() {
+        val all = rules()
+        all["economy"] = doc(
+            "resources" to listOf("DIAMOND", "GOLD", "BIOFUEL"), "wallet" to "character/data/wallet",
+            "storages" to listOf(
+                doc(
+                    "list" to "location/location/location", "key" to "articleId", "grade" to "grade", "default" to 1,
+                    "capacities" to doc("5,1" to doc("CAPACITY_GOLD" to 1000), "130,3" to doc("CAPACITY_BIOFUEL" to 160000)),
+                ),
+            ),
+            "effects" to mutableListOf<Any?>(
+                doc("command" to "change_nick", "op" to "gain", "field" to "prize"),
+                doc("command" to "set_tutorial_step", "op" to "spend", "field" to "tutorial_step", "resource" to "BIOFUEL"),
+            ),
+        )
+        val saved = state()
+        (saved["messages"].list()[1].map()["location"] as MutableMap<String, Any?>)["location"] = mutableListOf<Any?>(
+            doc("id" to 90, "articleId" to 5, "grade" to 1, "parameters" to mutableListOf<Any?>(doc("CAPACITY_GOLD" to 800))),
+            doc("id" to 91, "articleId" to 130, "grade" to 3, "parameters" to mutableListOf<Any?>()),
+        )
+        val dir = folder(all, saved)
+        val game = GameServer(dir)
+        fun held(id: Int, name: String) = Bson.decode(game.stateBytes())["messages"].list()[1].dig("location", "location").list().map { it.map() }.first { it["id"] == id }["parameters"].list().firstNotNullOfOrNull { it.map()[name] }
+        game.ask("change_nick", "nick" to "x", "prize" to doc("BIOFUEL" to 500, "GOLD" to 100))
+        assertEquals(500, held(91, "CAPACITY_BIOFUEL"))
+        assertEquals(900, held(90, "CAPACITY_GOLD"))
+        // Up to the capacity of the grade, the rest is lost. A spend takes from the field.
+        game.ask("change_nick", "nick" to "x", "prize" to doc("BIOFUEL" to 200000))
+        assertEquals(160000, held(91, "CAPACITY_BIOFUEL"))
+        game.ask("set_tutorial_step", "tutorial_step" to 1000)
+        assertEquals(159000, held(91, "CAPACITY_BIOFUEL"))
+        assertEquals(159000, Bson.decode(GameServer(dir).stateBytes())["messages"].list()[1].dig("location", "location").list().map { it.map() }.first { it["id"] == 91 }["parameters"].list().single().map()["CAPACITY_BIOFUEL"])
+        dir.deleteRecursively()
+    }
+
     // The commands nothing recorded and nothing saved are counted for the admin, which says them.
     @Test
     fun theCommandsThatCannotBeSavedAreCountedForTheAdmin() {

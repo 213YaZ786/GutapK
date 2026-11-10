@@ -250,7 +250,7 @@ object ServerRules {
         // The production first: the elements it queues units in are not works.
         val production = productionRules(snapshots, others, statics, learnt + variantRules(learnt, timed, statics, snapshots.last().state).first)
         val producing = production.flatMap { p -> listOf("train", "force", "left").mapNotNull { (p[it] as? Map<*, *>)?.get("command") as? String } }.toSet()
-        val worked = startClearing(snapshots, others, statics, learnt.filter { it["command"] !in producing }, timed, whens, library, producing)
+        val worked = startClearing(snapshots, others, statics, learnt.filter { it["command"] !in producing }, timed, whens, library, producing, instances)
         val (variants, variantTimers, moves) = variantRules(learnt, worked.timers, statics, snapshots.last().state)
         val rules = learnt + variants
         val timers = worked.timers + variantTimers
@@ -258,7 +258,8 @@ object ServerRules {
         val elements = rules.mapNotNull { r -> NAMING.matchEntire(r["path"].toString())?.let { r["command"].toString() to it.groupValues[2] } }.toSet() +
             worked.works.flatMap { w -> listOf(w["start"] as Map<*, *>) + (w["ends"] as List<*>).map { it as Map<*, *> }.filter { it["by"] == null } }
                 .mapNotNull { m -> m["element"]?.let { m["command"].toString() to it.toString() } }
-        val economy = Economy.learn(snapshots.map { it.time to it.state }, others, statics, timers, whens, rules, moves, elements)
+        val economy = Economy.deduced(Economy.learn(snapshots.map { it.time to it.state }, others, statics, timers, whens, rules, moves, elements), worked.upgrades, worked.works)
+        val (earned, earnedNotes) = experience(snapshots, others, statics, worked.works, timers)
         // The commands that change the state: those a rule, a progress, an economy effect, a production or a work names.
         val seen = intervals(snapshots, others)
         val changing = rules.filter { observed(it, seen) }.map { it["command"] as String }.toSet() + progress.map { it["command"] as String } +(economy?.get("effects") as? List<*>).orEmpty().filterIsInstance<Map<*, *>>().map { it["command"] as String } + producing +
@@ -268,6 +269,8 @@ object ServerRules {
         val document = linkedMapOf<String, Any?>("command" to command, "login" to login.toList(), "time" to time, "answers" to samples, "answerRules" to answerRules, "rules" to rules, "timers" to timers)
         economy?.let { document["economy"] = it }
         if (worked.works.isNotEmpty()) document["works"] = worked.works
+        if (worked.upgrades.isNotEmpty()) document["deduced"] = worked.upgrades
+        earned?.let { document["experience"] = it }
         if (progress.isNotEmpty()) document["progress"] = progress
         if (production.isNotEmpty()) document["production"] = production
         // The fields of the requests the server refused (the signature of an attack): a
@@ -292,7 +295,11 @@ object ServerRules {
                 "  work: ${start["command"]} puts ${w["list"]} ${w["field"]} in ${w["value"]}" + (start["at"]?.let { " at $it" } ?: "") + (start["element"]?.let { " named by $it" } ?: "") +
                     ", ends after the ${w["time"]} of ${(w["durations"] as Map<*, *>).size} documents of the game's data (by ${(w["key"] as List<*>).first()}), " + (w["then"] as List<*>).filterIsInstance<Map<*, *>>().joinToString(" ") { "${it["op"]}" + (it["path"]?.let { p -> " $p" } ?: "") } +
                     (if (ends.isEmpty()) "" else ", $ends")
-            } + worked.notes +
+            } + worked.upgrades.map { u ->
+                val ends = (u["ends"] as List<*>).filterIsInstance<Map<*, *>>().joinToString { "${it["command"]} ${it["role"]}s it (deduced by family)" }
+                "  work deduced: ${(u["start"] as Map<*, *>)["command"]} like ${u["like"]} puts ${u["field"]} in an element of ${(u["lists"] as List<*>).joinToString()} named by an id field of the request, " +
+                    "ends after the ${u["time"]} of ${(u["durations"] as Map<*, *>).size} documents of the game's data, ${u["grade"]} up by one" + (if (ends.isEmpty()) "" else ", $ends")
+            } + worked.notes + earnedNotes +
             (if (carried.isEmpty() && sets.none { "/#$" in it["path"].toString() }) emptyList() else listOf("  family (deduced): a command never recorded that names an element of ${elementLists(snapshots.last().state).keys.joinToString()} by id sets the fields it carries under the name the element holds them with (a move)")) +
             production.map { p -> "  production: ${(p["train"] as Map<*, *>)["command"]} queues units in ${p["list"]} ${p["queue"]}, one leaves it each time of ${(p["durations"] as Map<*, *>).size} documents of the game's data, for the elements with ${(p["camp"] as Map<*, *>)["key"]} ${(p["camp"] as Map<*, *>)["value"]}" } +
             (economy?.get("effects") as? List<*>).orEmpty().filterIsInstance<Map<*, *>>().map { e ->
@@ -702,8 +709,9 @@ object ServerRules {
     // before its time (null when the timer did), and the diffs of the element.
     private class Ending(val interval: Interval, val list: String, val source: Map<*, *>, val target: Map<*, *>?, val started: Call?, val finisher: Call?, val diffs: List<StateDiff.Diff>)
 
-    // What startClearing learnt: the works, the timers with what they lacked, a line for each work left out.
-    private class Works(val works: List<Map<String, Any?>>, val timers: List<Map<String, Any?>>, val notes: List<String>)
+    // What startClearing learnt: the works, the timers with what they lacked, a line for each work left out,
+    // the works deduced by the analogy of a recorded one.
+    private class Works(val works: List<Map<String, Any?>>, val timers: List<Map<String, Any?>>, val notes: List<String>, val upgrades: List<Map<String, Any?>> = emptyList())
 
     // works: one per command that puts an element of a list in a text for a time (a clearing, the
     // research of a unit). The start is a set rule of the command (the text a constant, the time
@@ -721,7 +729,7 @@ object ServerRules {
     // not ported: timerRules (kept as it is, an upgrade a timer covers only gets its start and its forces added)
     // not ported: __init__, findOnSymbol, findOnFields, executeOnSymbol, executeOnFields, _findRelationType, _checkEqualityRelation, _equalRelation, _sizeRelation (RelationFinder.kt ports the relation, equalRelation is called)
     // not ported: _generateAttributeValuesForSymbol, _getAllFieldsValues, _generateConcatData, _generateDataValues, _generateSizeValues, returns (the values are the fields of the calls and of the elements)
-    private fun startClearing(snapshots: List<Snapshot>, calls: List<Call>, statics: List<Any?>, rules: List<Map<String, Any?>>, timers: List<Map<String, Any?>>, whens: Map<String, Map<String, Any?>>, names: Set<String>, skipped: Set<String> = emptySet()): Works {
+    private fun startClearing(snapshots: List<Snapshot>, calls: List<Call>, statics: List<Any?>, rules: List<Map<String, Any?>>, timers: List<Map<String, Any?>>, whens: Map<String, Map<String, Any?>>, names: Set<String>, skipped: Set<String> = emptySet(), instances: List<Map<String, Any?>> = emptyList()): Works {
         val lists = dataLists(statics)
         val moments = intervals(snapshots, calls)
         val held = snapshots.flatMap { s -> elementLists(s.state).entries }
@@ -988,8 +996,11 @@ object ServerRules {
             if (begin == null) notes.add("  work: $label, the start time is not known")
         }
 
-        // The names the game knows that no recording shows, paired with the works by stem.
-        notes.addAll(execute(built + decorated.filter { it["start"] != null }, names, calls.map { it.name }.toSet()))
+        // The names the game knows that no recording shows, paired with the works by stem: first the starts
+        // a recorded work shows for another kind of element, then the forces and cancels of every start.
+        val recorded = calls.map { it.name }.toSet()
+        val upgrades = execute(built, names, recorded, instances, statics, notes)
+        notes.addAll(execute(built + decorated.filter { it["start"] != null } + upgrades, names, recorded))
 
         // The second base: a work learnt for one value of its when field holds on the part of the state named like another.
         val variants = built.flatMap { work ->
@@ -1004,7 +1015,7 @@ object ServerRules {
                 }
             }
         }
-        return Works(built + variants, decorated, notes)
+        return Works(built + variants, decorated, notes, upgrades)
     }
 
     // families: UCS gives every timed action a start, a SpeedUp and a Cancel (CancelConstructionCommand
@@ -1067,11 +1078,14 @@ object ServerRules {
                 // The field that names the element: the recorded force's, else the start's.
                 val force = forcesOf(go).firstOrNull()
                 val element = force?.get("element") ?: (go["start"] as Map<*, *>)["element"]
-                if (element == null) {
+                // A work deduced by analogy names no field: the request is read when it is served.
+                if (element == null && go["like"] == null) {
                     lines.add("  family left out: $name, no field names the element of ${startOf(go)}")
                     continue
                 }
-                val end = linkedMapOf<String, Any?>("command" to name, "role" to role, "element" to element, "deduced" to true)
+                val end = linkedMapOf<String, Any?>("command" to name, "role" to role)
+                element?.let { end["element"] = it }
+                end["deduced"] = true
                 force?.get("by")?.let { end["by"] = it }
                 go["ends"] = (go["ends"] as? List<*>).orEmpty() + end
                 // An element removed at its end is an obstacle, any other work a construction item.
@@ -1080,6 +1094,213 @@ object ServerRules {
             }
         }
         return lines
+    }
+
+    // experience: UCS keeps the avatar's experience (m_vExperience) and level beside each other, and leaves the
+    // experience of a finished construction or clearing as a todo (FinishConstruction, ClearingFinished). Here the
+    // number of the login that only grows is found, then the formula over the works finished between two
+    // logins that makes it grow: the candidates are compared on every interval, the seconds of a work being what
+    // the work's durations give for the element (a construction, a grade of an upgrade by the timer, a clearing,
+    // a research), and each set of the kinds of work is tried. An interval is verified when the works predict the
+    // growth exactly, contradicted when they predict more than it grew, left unexplained when it grew more (a prize
+    // of a claimed achievement). The formula is kept only with no contradiction and two verified intervals. The level
+    // is the number beside it that the data list of {level, exp} gives: one plus the thresholds reached.
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/ClientAvatar.cs#L23-L25
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/ConstructionItem.cs#FinishConstruction
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Obstacle.cs#ClearingFinished
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/main/kotlin/io/gutapk/core/offline/ServerRules.kt#timerRules
+    // not ported: FinishConstruction, ClearingFinished (the end of a work is learnt by startClearing, this reads its endings between the logins)
+    // not ported: timerRules (kept as it is, its timers and the works of startClearing are read here as they are)
+    private fun experience(snapshots: List<Snapshot>, calls: List<Call>, statics: List<Any?>, works: List<Map<String, Any?>>, timers: List<Map<String, Any?>>): Pair<Map<String, Any?>?, List<String>> {
+        val moments = intervals(snapshots, calls)
+        if (moments.isEmpty()) return null to emptyList()
+        fun elements(state: Map<String, Any?>, list: Any?): List<Map<*, *>> = (valueAt(state, list.toString()) as? List<*>).orEmpty().filterIsInstance<Map<*, *>>()
+        fun seconds(durations: Any?, index: String): Long = ((durations as? Map<*, *>)?.get(index) as? Number)?.toLong() ?: 0L
+        // The works finished between each two logins: the command that starts each and the seconds the data gives it.
+        val done = moments.map { i ->
+            val finished = mutableListOf<Pair<String, Long>>()
+            for (timer in timers) {
+                val key = (timer["key"] as? List<*>)?.map { it.toString() } ?: continue
+                val command = (timer["start"] as? Map<*, *>)?.get("command")?.toString() ?: continue
+                val first = (timer["default"] as? Number)?.toLong() ?: 1L
+                fun grade(e: Map<*, *>?): Long = (valueAt(e, key.last()) as? Number)?.toLong() ?: first
+                val before = elements(i.source.state, timer["list"]).associateBy { it["id"].toString() }
+                for (now in elements(i.target.state, timer["list"])) {
+                    for (g in grade(before[now["id"].toString()]) until grade(now)) finished.add(command to seconds(timer["durations"], "${valueAt(now, key.first())},$g"))
+                }
+            }
+            for (work in works) {
+                val start = work["start"] as? Map<*, *> ?: continue
+                val command = start["command"].toString()
+                val field = work["field"].toString()
+                val key = (work["key"] as? List<*>)?.firstOrNull()?.toString() ?: continue
+                val before = elements(i.source.state, work["list"]).associateBy { it["id"].toString() }
+                val after = elements(i.target.state, work["list"]).associateBy { it["id"].toString() }
+                fun named(id: String): Boolean = i.between.any { c -> c.name == command && start["element"]?.let { c.xFields[it]?.toString() == id } == true }
+                // The seconds of the element's work: by its key, and by the grade the research holds for its unit.
+                fun taken(e: Map<*, *>): Long {
+                    val unit = valueAt(e, key)
+                    val grade = work["grade"] as? Map<*, *> ?: return seconds(work["durations"], unit.toString())
+                    val entry = elements(mapOf("e" to e), "e/${grade["list"]}").firstOrNull { it[grade["match"]].toString() == unit.toString() }
+                    return seconds(work["durations"], "$unit,${entry?.get(grade["field"]) ?: work["default"]}")
+                }
+                for ((id, was) in before) {
+                    val now = after[id]
+                    val under = valueAt(was, field) == work["value"]
+                    if ((under && (now == null || valueAt(now, field) != work["value"])) || (!under && now == null && named(id))) finished.add(command to taken(was))
+                }
+                for ((id, now) in after) {
+                    if (id !in before && valueAt(now, field) != work["value"] && named(id)) finished.add(command to taken(now))
+                }
+            }
+            finished
+        }
+
+        // The numbers of the logins that never go down and go up more than once (a login that lacks one is skipped).
+        val series = snapshots.flatMap { getValues(it.state).keys }.distinct().map { path ->
+            path to snapshots.map { s -> (valueAt(s.state, path) as? Number)?.takeIf { n -> n !is Double && n.toLong() in 0 until EPOCH }?.toLong() }
+        }.filter { (_, v) ->
+            val pairs = v.zipWithNext().filter { (a, b) -> a != null && b != null }
+            pairs.all { (a, b) -> b!! >= a!! } && pairs.count { (a, b) -> b!! > a!! } >= 2
+        }
+
+        val formulas = linkedMapOf<String, (Long) -> Long>(
+            "sqrt" to { d -> Math.floor(Math.sqrt(d.toDouble())).toLong() },
+            "sqrt-ceil" to { d -> Math.ceil(Math.sqrt(d.toDouble())).toLong() },
+            "sqrt-round" to { d -> Math.round(Math.sqrt(d.toDouble())) },
+            "cbrt" to { d -> Math.floor(Math.cbrt(d.toDouble())).toLong() },
+            "log2" to { d -> if (d < 1) 0L else 63L - java.lang.Long.numberOfLeadingZeros(d) },
+            "seconds" to { d -> d },
+            "minutes" to { d -> d / 60 },
+            "hours" to { d -> d / 3600 },
+        )
+        val kinds = done.flatten().map { it.first }.distinct()
+        class Fit(val path: String, val formula: String, val used: List<String>, val verified: Int, val contradicted: Int, val unexplained: List<Int>)
+        fun fit(path: String, grown: List<Long?>, name: String, used: List<String>): Fit {
+            var verified = 0
+            var contradicted = 0
+            val unexplained = mutableListOf<Int>()
+            for ((n, finished) in done.withIndex()) {
+                val seen = (grown[n + 1] ?: continue) - (grown[n] ?: continue)
+                val predicted = finished.filter { it.first in used }.sumOf { formulas.getValue(name)(it.second) }
+                when {
+                    predicted > seen -> contradicted++
+                    predicted < seen -> unexplained.add(n)
+                    predicted > 0 -> verified++
+                }
+            }
+            return Fit(path, name, used, verified, contradicted, unexplained)
+        }
+        val fits = series.flatMap { (path, grown) ->
+            formulas.keys.flatMap { name -> (1 until (1 shl kinds.size)).map { mask -> fit(path, grown, name, kinds.filterIndexed { n, _ -> mask and (1 shl n) != 0 }) } }
+        }
+        val best = fits.filter { it.contradicted == 0 && it.verified >= 2 }.minWithOrNull(compareBy<Fit> { -it.verified }.thenBy { it.used.size }.thenBy { formulas.keys.indexOf(it.formula) })
+        val notes = mutableListOf<String>()
+        if (best == null) {
+            notes.add("  experience: no formula of ${formulas.keys.joinToString()} fits the works finished between the logins (${done.sumOf { it.size }} works in ${moments.size} intervals) for ${series.size} numbers that only grow: ${series.take(8).joinToString { it.first }}")
+            return null to notes
+        }
+        val rule = linkedMapOf<String, Any?>("path" to best.path, "formula" to best.formula, "kinds" to best.used)
+        // The level: the field beside the experience that the data list of {level, exp} gives the thresholds of.
+        val field = best.path.substringAfterLast('/')
+        val parent = best.path.substringBeforeLast('/', "")
+        val lists = mutableListOf<List<Map<*, *>>>()
+        fun collect(node: Any?) {
+            when (node) {
+                is Map<*, *> -> node.values.forEach { collect(it) }
+                is List<*> -> if (node.isNotEmpty() && node.all { it is Map<*, *> && it.size == 2 && it[field] is Number && it.values.all { v -> v is Number } }) lists.add(node.map { it as Map<*, *> }) else node.forEach { collect(it) }
+            }
+        }
+        statics.forEach { collect(it) }
+        val levels = lists.firstOrNull()
+        val level = levels?.first()?.keys?.firstOrNull { it != field }?.toString()
+        if (levels != null && level != null && levels.sortedBy { (it[level] as Number).toLong() }.withIndex().all { (n, d) -> (d[level] as Number).toLong() == n + 1L }) {
+            var total = 0L
+            val thresholds = levels.sortedBy { (it[level] as Number).toLong() }.map { d ->
+                total += (d[field] as Number).toLong()
+                total
+            }
+            val path = if (parent.isEmpty()) level else "$parent/$level"
+            val held = snapshots.mapNotNull { s -> (valueAt(s.state, best.path) as? Number)?.toLong()?.let { exp -> (valueAt(s.state, path) as? Number)?.toLong() to exp } }
+            if (held.isNotEmpty() && held.all { (seen, exp) -> seen == 1L + thresholds.count { it <= exp } }) {
+                rule["level"] = path
+                rule["thresholds"] = thresholds
+            } else {
+                notes.add("  experience: the level $path does not follow the thresholds of the data list at every login, it is left alone")
+            }
+        }
+        notes.add(0, "  experience: ${best.path} grows by the ${best.formula} of the seconds of each work finished (${best.used.joinToString()}), verified on ${best.verified} intervals" +
+            (rule["level"]?.let { ", the level ${it} is one plus the thresholds reached" } ?: ""))
+        notes.add("  experience: compared ${formulas.keys.joinToString()}: " + formulas.keys.joinToString { name ->
+            val top = fits.filter { it.path == best.path && it.formula == name && it.contradicted == 0 }.maxByOrNull { it.verified }
+            "$name verified ${top?.verified ?: 0}"
+        })
+        for (n in best.unexplained) {
+            val i = moments[n]
+            notes.add("  experience: ${i.source.time / 1000} to ${i.target.time / 1000} grew more than the works explain, with ${i.between.map { it.name }.distinct().joinToString()} between")
+        }
+        return rule to notes
+    }
+
+    // upgrades deduced: UpgradeHeroCommand.Execute finds the game object the command names (go), takes
+    // its HeroBaseComponent (hbc), reads the level the avatar holds for the hero (currentLevel), the
+    // resource and the cost of that level (rd, cost), and starts the upgrade. A name the game's library
+    // holds that no recording shows, ending with the words of the start of a recorded work (unit_upgrade_start
+    // for hero_upgrade_start) and beginning with others, is that command for another kind of element:
+    // the recorded work (hbc) says how to write one, its end-time field the start sets to $end, its
+    // grade step the counter its end moves up by one, the cleared value the end sets back. The data
+    // (hd) gives the time and the cost of each level, the lists of the state (go) whose ids are
+    // documents of that data are the elements it can name. A request names its element by an id
+    // field, found when it is served. Two works sharing the words, or none that has an end-time field
+    // and a grade step, leave the name out.
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/PacketProcessing/Commands/UpgradeHeroCommand.cs#Execute
+    // https://raw.githubusercontent.com/jeanbmar/UCS/master/Ultrapowa%20Clash%20Server/Logic/Component/HeroBaseComponent.cs#StartUpgrading
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/main/kotlin/io/gutapk/core/offline/ServerRules.kt#timerRules
+    // not ported: UpgradeHeroCommand (the constructor reads BuildingId and Unknown1 from a BinaryReader: a command is a BSON document here)
+    // not ported: CanStartUpgrading, IsMaxLevel (the town hall level and the last level are not checked: the data gives no time past its last grade, the end is then at once)
+    // not ported: HasEnoughResources, HasFreeWorkers, AllocateWorker (the economy takes the price and never goes below zero, no worker is held)
+    // not ported: GetHeroByName, GetUnitUpgradeLevel, GetUpgradeResource, GetUpgradeCost (the documents, the grade and the price are read in the tables written here, when the command is served)
+    // not ported: timerRules (kept as it is), execute family (the function above deduces the force and the cancel of the start this one deduces)
+    private fun execute(works: List<Map<String, Any?>>, names: Set<String>, recorded: Set<String>, instances: List<Map<String, Any?>>, statics: List<Any?>, notes: MutableList<String>): List<MutableMap<String, Any?>> {
+        val upgrades = mutableListOf<MutableMap<String, Any?>>()
+        fun startOf(hbc: Map<String, Any?>): String = (hbc["start"] as Map<*, *>)["command"].toString()
+        val taken = works.flatMap { hbc -> listOf(startOf(hbc)) + (hbc["ends"] as? List<*>).orEmpty().filterIsInstance<Map<*, *>>().map { it["command"].toString() } }.toSet()
+        for (name in names.filter { it !in recorded && it !in taken }.sorted()) {
+            val words = name.split('_')
+            // The work whose start ends with the same words (the role word and a stem word at least), another beginning.
+            val likes = works.map { hbc -> hbc to startOf(hbc).split('_').asReversed().zip(words.asReversed()).takeWhile { (a, b) -> a == b }.size }
+                .filter { (hbc, shared) -> shared >= 2 && shared < words.size && shared < startOf(hbc).split('_').size }
+            val nearest = likes.maxOfOrNull { it.second } ?: continue
+            val hbcs = likes.filter { it.second == nearest }.map { it.first }
+            if (hbcs.map { startOf(it) }.distinct().size != 1) {
+                notes.add("  work deduced left out: $name could be like ${hbcs.joinToString { startOf(it) }}")
+                continue
+            }
+            val hbc = hbcs.first()
+            // How a start writes one: the end-time field, the value the end sets back, the grade step.
+            val finish = ((hbc["start"] as Map<*, *>)["sets"] as? Map<*, *>)?.entries?.firstOrNull { it.value == "\$end" }?.key?.toString()
+            val rd = (hbc["then"] as? List<*>).orEmpty().filterIsInstance<Map<*, *>>().firstOrNull { it["op"] == "set" && it["path"] == finish && it["value"] is Number }?.get("value")
+            val grade = (hbc["grade"] as? Map<*, *>)?.get("field")?.toString()
+            val currentLevel = hbc["default"] as? Number
+            val hd = hbc["durations"] as? Map<*, *>
+            if (finish == null || rd == null || grade == null || currentLevel == null || hd == null) continue
+            // go: the lists of the state whose ids are documents of the data the work reads its times from.
+            val go = instances.filter { i -> (i["entries"] as? List<*>).orEmpty().any { e -> hd.containsKey("${(e as Map<*, *>)["id"]},$currentLevel") } }
+            if (go.isEmpty()) {
+                notes.add("  work deduced left out: $name, no list of the state holds documents the ${hbc["time"]} of ${startOf(hbc)} is for")
+                continue
+            }
+            val ids = go.flatMap { i -> (i["entries"] as List<*>).map { (it as Map<*, *>)["id"].toString() } }.toSet()
+            val deduced = linkedMapOf<String, Any?>(
+                "like" to startOf(hbc), "start" to linkedMapOf("command" to name), "field" to finish.substringAfterLast('/'), "idle" to rd,
+                "grade" to grade, "default" to currentLevel, "time" to hbc["time"], "lists" to go.map { it["path"] },
+                "durations" to hd.entries.filter { it.key.toString().substringBefore(',') in ids }.associate { it.key.toString() to it.value },
+            )
+            Economy.upgradePrices(statics, ids, hbc["time"].toString()).takeIf { it.isNotEmpty() }?.let { deduced["prices"] = it }
+            deduced["ends"] = emptyList<Any?>()
+            upgrades.add(deduced)
+        }
+        return upgrades
     }
 
     // carried fields: MoveBuildingCommand finds the object BuildingId names (go) and sets its
