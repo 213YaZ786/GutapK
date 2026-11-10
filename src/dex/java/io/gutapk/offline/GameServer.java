@@ -279,6 +279,8 @@ public final class GameServer {
                 apply(rule, body, false, request);
             }
         }
+        // The resources first, at the grade the element has before the rules move it.
+        economy(name, request);
         // The scenarios move on: the rules of the command edit the state, those
         // learnt from requests like this one only.
         for (Object item : list(rules.get("rules"))) {
@@ -804,6 +806,223 @@ public final class GameServer {
                 Server.LOG.info("Local game server: " + field + " " + rule.get("value") + " of " + path + " #" + target.get(ID) + " ended");
             }
         }
+    }
+
+    /**
+     * The economy the PC learnt: what a command adds to the player's resources
+     * and takes from them. A collect moves what the game says it collected from
+     * the producer to the storages, the producer keeping what does not fit and
+     * starting again from now. A price is taken from the data the PC copied, by
+     * the article a field names or by the next grade of the element named. A
+     * resource of the wallet is taken from or added to it, any other one to the
+     * storages, each up to its capacity at its grade.
+     */
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/dex/java/io/gutapk/offline/GameServer.java#apply
+    // Not ported: the ops set, append, increment and remove, Patch.put (an effect adds to totals or takes from them)
+    private void economy(String name, Map<String, Object> command) {
+        Map<String, Object> rule = map(rules.get("economy"));
+        if (rule == null) {
+            return;
+        }
+        for (Object item : list(rule.get("effects"))) {
+            Map<String, Object> effect = map(item);
+            if (effect == null || !name.equals(effect.get("command")) || !matches(effect, command)) {
+                continue;
+            }
+            String op = string(effect.get("op"));
+            try {
+                if ("collect".equals(op)) {
+                    Map<String, Object> target = element(string(effect.get("list")), command.get(string(effect.get("element"))));
+                    List<String> producers = strings(map(effect.get("producers")).get(token(target.get(string(effect.get("key"))))));
+                    long amount = number(command.get(string(effect.get("field"))));
+                    for (String key : producers) {
+                        Map<String, Object> parentNode = holder(target, key);
+                        if (parentNode != null) {
+                            parentNode.put(key, typed(parentNode.get(key), deposit(rule, resource(rule, key), amount)));
+                        }
+                    }
+                    String since = string(effect.get("since"));
+                    if (since != null && command.get("optime") instanceof Number) {
+                        put(target, since, typed(valueAt(target, since), number(command.get("optime"))));
+                    }
+                } else if ("pay".equals(op)) {
+                    Map<String, Object> price = map(map(effect.get("prices")).get(token(command.get(string(effect.get("field"))))));
+                    long times = effect.get("times") == null ? 1 : number(command.get(string(effect.get("times"))));
+                    for (Map.Entry<String, Object> entry : price.entrySet()) {
+                        withdraw(rule, entry.getKey(), number(entry.getValue()) * times);
+                    }
+                } else if ("payGrade".equals(op)) {
+                    Map<String, Object> target = element(string(effect.get("list")), command.get(string(effect.get("element"))));
+                    Object grade = target.get(string(effect.get("grade")));
+                    long next = (grade instanceof Number ? number(grade) : number(effect.get("default"))) + 1;
+                    Map<String, Object> price = map(map(effect.get("prices")).get(token(target.get(string(effect.get("key")))) + "," + next));
+                    for (Map.Entry<String, Object> entry : price.entrySet()) {
+                        withdraw(rule, entry.getKey(), number(entry.getValue()));
+                    }
+                } else if ("spend".equals(op)) {
+                    withdraw(rule, string(effect.get("resource")), number(command.get(string(effect.get("field")))));
+                } else if ("gain".equals(op)) {
+                    for (Map.Entry<String, Object> entry : map(command.get(string(effect.get("field")))).entrySet()) {
+                        deposit(rule, entry.getKey(), number(entry.getValue()));
+                    }
+                } else {
+                    throw new Unreachable("unknown op");
+                }
+                dirty = true;
+            } catch (Unreachable e) {
+                skipped(name, "economy " + op, String.valueOf(effect.get("field") != null ? effect.get("field") : effect.get("element")), e);
+            } catch (NullPointerException e) {
+                skipped(name, "economy " + op, String.valueOf(effect.get("field")), new Unreachable("nothing to read"));
+            }
+        }
+    }
+
+    /** The element of a list of the state whose id is the one given. */
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/dex/java/io/gutapk/offline/GameServer.java#apply
+    private Map<String, Object> element(String path, Object id) {
+        Object parentNode = new Patch(state, true, new LinkedHashMap<String, Object>()).evaluate(Pointer.parse(path), false);
+        for (Object item : list(parentNode)) {
+            Map<String, Object> target = map(item);
+            if (target != null && token(target.get(ID)).equals(token(id))) {
+                return target;
+            }
+        }
+        throw new Unreachable("no element " + id + " in " + path);
+    }
+
+    /** The document of an element holding a field, its parameters searched through. Null when it holds none. */
+    private static Map<String, Object> holder(Object node, String key) {
+        if (node instanceof Map) {
+            Map<String, Object> document = castMap(node);
+            if (document.get(key) instanceof Number) {
+                return document;
+            }
+            for (Object value : document.values()) {
+                Map<String, Object> found = holder(value, key);
+                if (found != null) {
+                    return found;
+                }
+            }
+        } else if (node instanceof List) {
+            for (Object value : (List<?>) node) {
+                Map<String, Object> found = holder(value, key);
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** The resource a field holds: the longest resource its name ends with after an underscore. */
+    private static String resource(Map<String, Object> rule, String key) {
+        String best = null;
+        for (String name : strings(rule.get("resources"))) {
+            if (key.endsWith("_" + name) && (best == null || name.length() > best.length())) {
+                best = name;
+            }
+        }
+        return best;
+    }
+
+    /** The wallet when it holds the resource, null when the storages do. */
+    private Map<String, Object> wallet(Map<String, Object> rule, String resource) {
+        String path = string(rule.get("wallet"));
+        if (path == null) {
+            return null;
+        }
+        try {
+            Object node = new Patch(state, true, new LinkedHashMap<String, Object>()).evaluate(Pointer.parse(path), false);
+            Map<String, Object> wallet = map(node);
+            return wallet != null && wallet.get(resource) instanceof Number ? wallet : null;
+        } catch (Unreachable e) {
+            return null;
+        }
+    }
+
+    /**
+     * The storages of a resource, each with the field holding it and its
+     * capacity at its grade, in the order of their lists.
+     */
+    private List<Object[]> storages(Map<String, Object> rule, String resource) {
+        List<Object[]> out = new ArrayList<Object[]>();
+        for (Object item : list(rule.get("storages"))) {
+            Map<String, Object> storage = map(item);
+            Map<String, Object> capacities = storage == null ? null : map(storage.get("capacities"));
+            if (capacities == null) {
+                continue;
+            }
+            Object parentNode;
+            try {
+                parentNode = new Patch(state, true, new LinkedHashMap<String, Object>()).evaluate(Pointer.parse(string(storage.get("list"))), false);
+            } catch (Unreachable e) {
+                continue;
+            }
+            for (Object element : list(parentNode)) {
+                Map<String, Object> target = map(element);
+                if (target == null) {
+                    continue;
+                }
+                Object grade = target.get(string(storage.get("grade")));
+                Map<String, Object> capacity = map(capacities.get(token(target.get(string(storage.get("key")))) + "," + token(grade == null ? storage.get("default") : grade)));
+                if (capacity == null) {
+                    continue;
+                }
+                for (Map.Entry<String, Object> entry : capacity.entrySet()) {
+                    Map<String, Object> document = resource.equals(resource(rule, entry.getKey())) ? holder(target, entry.getKey()) : null;
+                    if (document != null) {
+                        out.add(new Object[] {document, entry.getKey(), Long.valueOf(number(entry.getValue()))});
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
+    /** Adds to a resource: the wallet, else the storages up to their capacity. Returns what did not fit. */
+    private long deposit(Map<String, Object> rule, String resource, long amount) {
+        Map<String, Object> wallet = wallet(rule, resource);
+        if (wallet != null) {
+            wallet.put(resource, typed(wallet.get(resource), number(wallet.get(resource)) + amount));
+            return 0;
+        }
+        long left = amount;
+        for (Object[] storage : storages(rule, resource)) {
+            Map<String, Object> document = castMap(storage[0]);
+            String key = (String) storage[1];
+            long held = number(document.get(key));
+            long added = Math.max(0, Math.min(left, ((Long) storage[2]).longValue() - held));
+            document.put(key, typed(document.get(key), held + added));
+            left -= added;
+        }
+        return left;
+    }
+
+    /** Takes from a resource: the wallet, else the storages in turn, none going below zero. */
+    private void withdraw(Map<String, Object> rule, String resource, long amount) {
+        Map<String, Object> wallet = wallet(rule, resource);
+        if (wallet != null) {
+            wallet.put(resource, typed(wallet.get(resource), Math.max(0, number(wallet.get(resource)) - amount)));
+            return;
+        }
+        long left = amount;
+        for (Object[] storage : storages(rule, resource)) {
+            Map<String, Object> document = castMap(storage[0]);
+            String key = (String) storage[1];
+            long held = number(document.get(key));
+            long taken = Math.min(left, held);
+            document.put(key, typed(document.get(key), held - taken));
+            left -= taken;
+        }
+    }
+
+    private static long number(Object value) {
+        return value instanceof Number ? ((Number) value).longValue() : 0;
+    }
+
+    /** A number in the type the state held there: an int32 while it fits. */
+    private static Object typed(Object old, long value) {
+        return !(old instanceof Long) && (int) value == value ? (Object) Integer.valueOf((int) value) : (Object) Long.valueOf(value);
     }
 
     /** The value at a path of a document, its segments joined by "/", null when it is not there. */

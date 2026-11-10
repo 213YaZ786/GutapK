@@ -174,7 +174,7 @@ fun OfflineDialog(
     var skipSignIn by remember { mutableStateOf(true) }
     // The local game server, learnt from the recordings kept on the PC.
     val learned by produceState<List<ServerRules.Learned>>(emptyList(), dir, recorded) {
-        value = withContext(Dispatchers.IO) { runCatching { ServerRules.learn(ServerRules.read(OfflineBuild.recordings(dir))) }.getOrDefault(emptyList()) }
+        value = withContext(Dispatchers.IO) { runCatching { ServerRules.learn(ServerRules.read(OfflineBuild.recordings(dir)), dir.resolve("original.apk")) }.getOrDefault(emptyList()) }
     }
     var keepProgress by remember { mutableStateOf(true) }
     val blocked = refused ?: advised.keys

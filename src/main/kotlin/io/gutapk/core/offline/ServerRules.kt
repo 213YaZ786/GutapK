@@ -112,9 +112,13 @@ object ServerRules {
     // A login, the time it was answered and its state: message name to message.
     private class Snapshot(val time: Long, val state: Map<String, Any?>)
 
-    fun learn(recordings: List<Recording>): List<Learned> = recordings.groupBy { it.origin }.mapNotNull { (origin, all) -> learn(origin, all.sortedBy { it.receivedResponseMillis }) }
+    // The game's data files are its APK's (its assets) and the answers recorded.
+    fun learn(recordings: List<Recording>, apk: Path? = null): List<Learned> {
+        val statics = GameState.statics(apk, recordings)
+        return recordings.groupBy { it.origin }.mapNotNull { (origin, all) -> learn(origin, all.sortedBy { it.receivedResponseMillis }, statics) }
+    }
 
-    private fun learn(origin: String, recordings: List<Recording>): Learned? {
+    private fun learn(origin: String, recordings: List<Recording>, statics: List<Any?>): Learned? {
         val sent = recordings.filter { it.code in 200..299 }.mapNotNull { r -> Bson.document(r.request)?.let { r to it } }
         // The command field: the first field of the documents sent, when it is text.
         val command = sent.mapNotNull { (_, doc) -> doc.entries.firstOrNull()?.takeIf { it.value is String }?.key }.groupingBy { it }.eachCount().maxByOrNull { it.value }?.key ?: return null
@@ -185,15 +189,20 @@ object ServerRules {
             whens[r["command"]]?.let { linkedMapOf<String, Any?>().apply { putAll(r); put("when", it) } } ?: r
         }
         val answerRules = answerRules(others, command)
-        val timers = timerRules(snapshots, others, statics(recordings))
+        val timers = timerRules(snapshots, others, statics)
+        val economy = Economy.learn(snapshots.map { it.time to it.state }, others, statics, timers, whens, rules)
 
         val document = linkedMapOf<String, Any?>("command" to command, "login" to login.toList(), "time" to time, "answers" to samples, "answerRules" to answerRules, "rules" to rules, "timers" to timers)
+        economy?.let { document["economy"] = it }
         packs.entries.firstOrNull()?.let { (name, list) -> document["pack"] = linkedMapOf("command" to name, "list" to list) }
         val lines = listOf(
             "$origin: a local game server learnt from ${calls.size} commands, login ${login.joinToString()}, " +
                 "${state.size} messages kept, ${rules.size} rules, ${answerRules.size} answer rules, ${samples.size} commands answered alike",
         ) + (rules + answerRules).map { r -> "  ${r["command"]}: ${r["op"] ?: "answer"} ${r["path"]}" + (r["value"]?.let { v -> " = " + (if (v is Map<*, *>) "{${v.keys.joinToString()}}" else v.toString()) } ?: "") } +
-            timers.map { t -> "  timer: ${t["list"]} ${t["field"]} ${t["value"]} ends after the time of ${(t["durations"] as Map<*, *>).size} documents of the game's data" }
+            timers.map { t -> "  timer: ${t["list"]} ${t["field"]} ${t["value"]} ends after the time of ${(t["durations"] as Map<*, *>).size} documents of the game's data" } +
+            (economy?.get("effects") as? List<*>).orEmpty().filterIsInstance<Map<*, *>>().map { e ->
+                "  economy: ${e["command"]} ${e["op"]} " + listOf("element", "field", "times", "price", "resource").mapNotNull { k -> e[k]?.let { "$k=$it" } }.joinToString(" ")
+            }
         return Learned(origin, document, linkedMapOf("messages" to state.values.toList()), lines)
     }
 
@@ -506,13 +515,6 @@ object ServerRules {
             }
         }
         return null
-    }
-
-    // The game's data files: the recorded answers that are JSON.
-    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/core/offline/ServerRules.kt#read
-    private fun statics(recordings: List<Recording>): List<Any?> = recordings.filter { it.requestMethod == "GET" && it.body.size in 2..16_000_000 }.mapNotNull { r ->
-        val text = String(r.body, Charsets.UTF_8).trimStart()
-        if (text.startsWith("[") || text.startsWith("{")) runCatching { io.gutapk.tools.Json.parse(text) }.getOrNull() else null
     }
 
     // answer rules: a path of a command's answer that is, in every sample, the

@@ -29,10 +29,10 @@ class ServerRulesTest {
     private fun doc(vararg pairs: Pair<String, Any?>): LinkedHashMap<String, Any?> = LinkedHashMap<String, Any?>().apply { pairs.forEach { (k, v) -> put(k, v) } }
 
     // A login answer: five named messages, the player's step, its buildings and the time.
-    private fun login(time: Long, tutor: Int, buildings: List<Map<String, Any?>>) = doc(
+    private fun login(time: Long, tutor: Int, buildings: List<Map<String, Any?>>, wallet: Map<String, Any?>? = null) = doc(
         "data" to listOf(
             doc("name" to "authorize", "gameId" to 7, "sessionId" to "s$time"),
-            doc("name" to "character", "data" to doc("tutor" to tutor, "nick" to "", "level" to 1)),
+            doc("name" to "character", "data" to doc("tutor" to tutor, "nick" to "", "level" to 1).apply { if (wallet != null) put("wallet", wallet) }),
             doc("name" to "location", "location" to doc("location" to buildings)),
             doc("name" to "chrono", "data" to doc("time" to (time / 1000).toInt())),
             doc("name" to "quests_state", "data" to listOf(doc("id" to 1, "value" to 0))),
@@ -196,6 +196,73 @@ class ServerRulesTest {
         val done = GameServer(folder).ask("authorize", now).cannon()
         assertEquals(3, done["grade"])
         assertEquals(mapOf("type" to "NORMAL", "updateTime" to (now - 100).toInt()), done["state"])
+    }
+
+    // A session where the player collects a mine and buys buildings: the gold is in
+    // the storage of the center, up to its capacity, the diamonds in the wallet. An
+    // attack shows the totals between two logins.
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/test/kotlin/io/gutapk/ServerRulesTest.kt#record
+    private fun recordEconomy(): File {
+        val dir = Files.createTempDirectory("gutapk-recordings").toFile()
+        val store = Store(dir)
+        val t0 = 1_700_000_000L
+        var n = 0
+        fun put(seconds: Long, request: Map<String, Any?>, answer: ByteArray, method: String = "POST", path: String = "/") {
+            val body = if (method == "GET") ByteArray(0) else Bson.encode(doc("name" to request["name"], "n" to ++n, "optime" to seconds.toInt()).apply { putAll(request - "name") })
+            store.put(Store.Entry(origin, method, path, "r=${++n}", Integer.toHexString(body.contentHashCode() + n), 200, mapOf("Content-Type" to "text/plain"), answer, seconds * 1000), body)
+        }
+        fun center(gold: Int) = doc("id" to 101, "articleId" to 3, "cellI" to 1, "cellJ" to 1, "parameters" to listOf(doc("CAPACITY_GOLD" to gold)))
+        fun mine(id: Int) = doc("id" to id, "articleId" to 4, "cellI" to id - 100, "cellJ" to 3, "parameters" to listOf(doc("STORED_GOLD" to 0)))
+        val tower = doc("id" to 104, "articleId" to 5, "cellI" to 7, "cellJ" to 8)
+        val status = Bson.encode(doc("name" to "status"))
+        put(
+            t0 - 5, emptyMap(),
+            ("[{\"id\": 3, \"name\": \"Center\", \"price\": {\"GOLD\": 0}, \"parameters\": [{\"CAPACITY_GOLD\": 100}], \"grades\": [{\"gradeId\": 2, \"price\": {\"GOLD\": 50}, \"parameters\": [{\"CAPACITY_GOLD\": 200}]}]}, " +
+                "{\"id\": 4, \"name\": \"Mine\", \"price\": {\"GOLD\": 30}, \"parameters\": [{\"PRODUCTION_GOLD\": 10}, {\"STORED_GOLD\": 40}], \"grades\": [{\"gradeId\": 2, \"price\": {\"GOLD\": 60}}]}, " +
+                "{\"id\": 5, \"name\": \"Tower\", \"price\": {\"DIAMOND\": 5}, \"grades\": [{\"gradeId\": 2, \"price\": {\"DIAMOND\": 8}}]}]").toByteArray(),
+            "GET", "/data/building.json",
+        )
+        put(t0, doc("name" to "authorize"), Bson.encode(login(t0 * 1000, 1, listOf(center(20), mine(102)), doc("DIAMOND" to 20))))
+        put(t0 + 10, doc("name" to "collect_action", "id" to 102, "amount" to 60), status)
+        put(t0 + 20, doc("name" to "buy_building", "id" to 103, "articleId" to 4, "cellI" to 3, "cellJ" to 3), status)
+        put(t0 + 30, doc("name" to "reload_game"), Bson.encode(login((t0 + 30) * 1000, 1, listOf(center(50), mine(102), mine(103)), doc("DIAMOND" to 20))))
+        put(t0 + 40, doc("name" to "collect_action", "id" to 103, "amount" to 25), status)
+        put(t0 + 50, doc("name" to "attack_mission", "missionId" to 1), Bson.encode(doc("name" to "attack_mission", "attackerData" to doc("wallet" to doc("GOLD" to 75, "DIAMOND" to 20)))))
+        put(t0 + 60, doc("name" to "buy_building", "id" to 104, "articleId" to 5, "cellI" to 7, "cellJ" to 8), status)
+        put(t0 + 70, doc("name" to "reload_game"), Bson.encode(login((t0 + 70) * 1000, 1, listOf(center(75), mine(102), mine(103), tower), doc("DIAMOND" to 15))))
+        return dir
+    }
+
+    // As theLearntServerKeepsTheProgressOnThePhone, the progress being the resources:
+    // a collect fills the storages up to their capacity, the producer keeping the
+    // rest, a building takes its price from the wallet.
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/test/kotlin/io/gutapk/ServerRulesTest.kt#theLearntServerKeepsTheProgressOnThePhone
+    @Test
+    fun theLearntServerKeepsTheResourcesOnThePhone() {
+        val learned = ServerRules.learn(ServerRules.read(recordEconomy().toPath())).single()
+        val economy = assertNotNull(learned.rules["economy"] as Map<*, *>?, learned.lines.toString())
+        assertEquals(0L, (economy["error"] as Number).toLong(), economy.toString())
+        val effects = (economy["effects"] as List<*>).map { e -> listOf("command", "op", "element", "field", "times").mapNotNull { (e as Map<*, *>)[it] }.joinToString(" ") }
+        assertTrue("collect_action collect id amount" in effects, effects.toString())
+        assertTrue("buy_building pay articleId" in effects, effects.toString())
+
+        val folder = Files.createTempDirectory("gutapk-game").toFile()
+        ServerRules.files(learned).forEach { (name, bytes) -> File(folder, name).writeBytes(bytes) }
+        fun GameServer.ask(vararg fields: Pair<String, Any?>): Map<*, *> =
+            Bson.document(assertNotNull(answer(Bson.encode(doc("n" to 1, "optime" to 1_700_000_100).apply { putAll(fields) }))).body)!!
+        val game = GameServer(folder)
+        // 75 of 100 gold in the center: 25 of the 50 collected fit, the mine keeps the rest.
+        game.ask("name" to "collect_action", "id" to 102, "amount" to 50)
+        game.ask("name" to "buy_building", "id" to 105, "articleId" to 5, "cellI" to 9, "cellJ" to 9)
+
+        // A new start of the game: the server reads its folder again.
+        val data = GameServer(folder).ask("name" to "authorize")["data"] as List<*>
+        val character = data.single { (it as Map<*, *>)["name"] == "character" } as Map<*, *>
+        assertEquals(mapOf("DIAMOND" to 10), (character["data"] as Map<*, *>)["wallet"])
+        val location = data.single { (it as Map<*, *>)["name"] == "location" } as Map<*, *>
+        val buildings = ((location["location"] as Map<*, *>)["location"] as List<*>).map { it as Map<*, *> }.associateBy { it["id"] }
+        assertEquals(listOf(mapOf("CAPACITY_GOLD" to 100)), buildings[101]!!["parameters"])
+        assertEquals(listOf(mapOf("STORED_GOLD" to 25)), buildings[102]!!["parameters"])
     }
 
     @Test

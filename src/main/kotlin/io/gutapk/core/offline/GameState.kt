@@ -83,7 +83,7 @@ object GameState {
 
     // The lists of named data documents: [{"id": 5, "name": "...", ...}].
     // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/core/offline/ServerRules.kt#getValues
-    private fun named(statics: List<Any?>): List<List<Map<*, *>>> {
+    internal fun named(statics: List<Any?>): List<List<Map<*, *>>> {
         val out = mutableListOf<List<Map<*, *>>>()
         fun walk(node: Any?) {
             when (node) {
@@ -99,7 +99,7 @@ object GameState {
     // of a document of one data list in, the list whose documents share the most
     // field names with the elements (a building and its article both have parameters).
     // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/core/offline/ServerRules.kt#valueAt
-    private fun naming(elements: List<Map<*, *>>, lists: List<List<Map<*, *>>>): Pair<String, Map<String, String>>? {
+    internal fun naming(elements: List<Map<*, *>>, lists: List<List<Map<*, *>>>): Pair<String, Map<String, String>>? {
         val keys = elements.flatMap { it.keys }.map { it.toString() }.toSet()
         var best: Pair<String, Map<String, String>>? = null
         var bestShared = -1
