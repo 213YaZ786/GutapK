@@ -277,8 +277,11 @@ class GameServerTest {
         dir.deleteRecursively()
     }
 
+    // Each request of an unknown command is logged with its fields, as WireMock's
+    // journal keeps every request no stub matched.
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/test/kotlin/io/gutapk/GameServerTest.kt#anUnknownCommandIsAnsweredStatusAndLoggedOnce
     @Test
-    fun anUnknownCommandIsAnsweredStatusAndLoggedOnce() {
+    fun anUnknownCommandIsAnsweredStatusAndLoggedWithItsFields() {
         val dir = folder()
         val game = GameServer(dir)
         val (back, lines) = logged {
@@ -286,7 +289,7 @@ class GameServerTest {
             game.ask("nobody_knows")
         }
         assertEquals(doc("name" to "status"), back)
-        assertEquals(listOf("Local game server: unknown command nobody_knows, answered status"), lines)
+        assertEquals(List(2) { "Local game server: unknown command nobody_knows {name=nobody_knows, n=7, optime=1700000000}, answered status" }, lines)
         // A command that has a rule but no recorded answer is status too, and not an unknown one.
         val rules = rules()
         (rules["rules"] as MutableList<Any?>).add(rule("silent", "set", "character/data/nick", "x"))
@@ -296,6 +299,33 @@ class GameServerTest {
         assertEquals(emptyList(), noise)
         dir.deleteRecursively()
         quiet.deleteRecursively()
+    }
+
+    // A command the recordings never showed keeps its fields in the element a rule
+    // of a request like it names. The message named like it is left alone.
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/test/kotlin/io/gutapk/GameServerTest.kt#anUnknownCommandIsAnsweredStatusAndLoggedOnce
+    @Test
+    fun anUnknownCommandKeepsItsFieldsWhereTheStateHasAPlaceForThem() {
+        val rules = rules()
+        (rules["rules"] as MutableList<Any?>).add(rule("upgrade_action", "increment", "location/location/location/#\$id/grade", null, "when" to doc("locationType" to "MAIN")))
+        val state = state()
+        state["messages"] = state["messages"].list() + doc("name" to "tutorial_progress", "progress" to listOf<Any?>())
+        val dir = folder(rules, state)
+        val game = GameServer(dir)
+        val (_, lines) = logged {
+            game.ask("tutorial_progress", "tutorialId" to 4, "step" to 1, "skip" to false)
+            game.ask("tutorial_progress", "tutorialId" to 4, "step" to 2, "skip" to false)
+            game.ask("move_building", "id" to 88, "cellI" to 5, "cellJ" to 6, "locationType" to "MAIN")
+            game.ask("move_building", "id" to 88, "cellI" to 9, "cellJ" to 9, "locationType" to "SECOND")
+        }
+        assertTrue(lines[1].endsWith("answered status"), lines.toString())
+        assertTrue(lines[2].endsWith("kept in location/location/location #88 [cellI, cellJ]"), lines.toString())
+        assertTrue(lines[3].endsWith("answered status"), lines.toString())
+
+        val messages = Bson.decode(GameServer(dir).stateBytes())["messages"].list().associateBy { it.map()["name"] }
+        assertEquals(emptyList<Any?>(), messages["tutorial_progress"].dig("progress"))
+        assertEquals(listOf(5, 6), listOf("cellI", "cellJ").map { messages["location"].dig("location", "location", 0, it) })
+        dir.deleteRecursively()
     }
 
     @Test

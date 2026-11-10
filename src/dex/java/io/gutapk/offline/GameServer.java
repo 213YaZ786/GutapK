@@ -47,6 +47,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -110,12 +111,6 @@ public final class GameServer {
 
     /** state.bson, { messages: [...] }. */
     private Map<String, Object> state;
-
-    /** Commands already logged as unknown, so the line comes once per command. */
-    private final List<String> unknown = new ArrayList<String>();
-
-    /** Commands already logged as sent unlike the requests their rules were learnt from. */
-    private final List<String> unlearnt = new ArrayList<String>();
 
     /** Set when a rule changed the state, cleared when it is saved. */
     private boolean dirty;
@@ -252,9 +247,11 @@ public final class GameServer {
             Map<String, Object> notConfigured = new LinkedHashMap<String, Object>();
             notConfigured.put(field, STATUS);
             body = notConfigured;
-            if (!known(name) && !unknown.contains(name)) {
-                unknown.add(name);
-                Server.LOG.info("Local game server: unknown command " + name + ", answered " + STATUS);
+            // As WireMock's journal keeps the requests no stub matched: each one with its
+            // fields, so what the game sends can be read and learnt later.
+            if (!known(name)) {
+                String kept = keep(field, request);
+                Server.LOG.info("Local game server: unknown command " + name + " " + request + ", answered " + STATUS + (kept == null ? "" : ", kept in " + kept));
             }
         } else {
             body = copy(matchingStub.get("answer"));
@@ -283,6 +280,10 @@ public final class GameServer {
         economy(name, request);
         // The scenarios move on: the rules of the command edit the state, those
         // learnt from requests like this one only.
+        // The line comes when no rule of the command holds for this request, not when
+        // the rules of another base are left out.
+        boolean applied = false;
+        Object unlearnt = null;
         for (Object item : list(rules.get("rules"))) {
             Map<String, Object> rule = map(item);
             if (rule == null || !name.equals(rule.get("command"))) {
@@ -290,10 +291,13 @@ public final class GameServer {
             }
             if (matches(rule, request)) {
                 apply(rule, state, true, request);
-            } else if (!unlearnt.contains(name)) {
-                unlearnt.add(name);
-                Server.LOG.info("Local game server: " + name + " was learnt from requests with " + rule.get("when") + " only, this one leaves the progress as it is");
+                applied = true;
+            } else if (unlearnt == null) {
+                unlearnt = rule.get("when");
             }
+        }
+        if (!applied && unlearnt != null) {
+            Server.LOG.info("Local game server: " + name + " was learnt from requests with " + unlearnt + " only, this one leaves the progress as it is: " + request);
         }
         return new ResponseDefinition(body, type);
     }
@@ -875,6 +879,75 @@ public final class GameServer {
                 skipped(name, "economy " + op, String.valueOf(effect.get("field")), new Unreachable("nothing to read"));
             }
         }
+    }
+
+    /**
+     * A command the recordings never showed, kept as the state keeps such things:
+     * the element a rule names by one of its fields, in the list of a rule its
+     * request matches, takes those of its fields it holds. Returns what was kept,
+     * null when nothing was. A message named like the command is left alone: what
+     * its documents hold is not what the request does (Jungle Heat stops at its
+     * login when tutorial_progress lists the request's fields).
+     */
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/dex/java/io/gutapk/offline/GameServer.java#apply
+    // Not ported: the ops set, increment and remove, Patch, Pointer (the request's own fields are kept, no rule says where)
+    private String keep(String field, Map<String, Object> command) {
+        Map<String, Object> value = new LinkedHashMap<String, Object>();
+        for (Map.Entry<String, Object> entry : command.entrySet()) {
+            if (!entry.getKey().equals(field) && !ignored(entry.getKey())) {
+                value.put(entry.getKey(), entry.getValue());
+            }
+        }
+        if (value.isEmpty()) {
+            return null;
+        }
+        // A request holding a field some rule holds for one value only (the base it is
+        // for) is read with those rules alone.
+        boolean conditioned = false;
+        for (Object item : list(rules.get("rules"))) {
+            Map<String, Object> when = map(item) == null ? null : map(map(item).get("when"));
+            if (when != null && !Collections.disjoint(when.keySet(), command.keySet())) {
+                conditioned = true;
+            }
+        }
+        for (Object item : list(rules.get("rules"))) {
+            Map<String, Object> rule = map(item);
+            String path = rule == null ? null : string(rule.get("path"));
+            int at = path == null ? -1 : path.indexOf("/#$");
+            if (at < 0 || !matches(rule, command) || (conditioned && rule.get("when") == null)) {
+                continue;
+            }
+            String id = path.substring(at + 3).split("/")[0];
+            if (!command.containsKey(id)) {
+                continue;
+            }
+            Map<String, Object> target;
+            try {
+                target = element(path.substring(0, at), command.get(id));
+            } catch (Unreachable e) {
+                continue;
+            }
+            List<String> kept = new ArrayList<String>();
+            for (Map.Entry<String, Object> entry : value.entrySet()) {
+                Object valueNode = target.get(entry.getKey());
+                if (entry.getKey().equals(id) || valueNode == null) {
+                    continue;
+                }
+                if (valueNode instanceof Number && entry.getValue() instanceof Number) {
+                    target.put(entry.getKey(), typed(valueNode, number(entry.getValue())));
+                } else if (valueNode instanceof String && entry.getValue() instanceof String) {
+                    target.put(entry.getKey(), entry.getValue());
+                } else {
+                    continue;
+                }
+                kept.add(entry.getKey());
+            }
+            if (!kept.isEmpty()) {
+                dirty = true;
+                return path.substring(0, at) + " #" + command.get(id) + " " + kept;
+            }
+        }
+        return null;
     }
 
     /** The element of a list of the state whose id is the one given. */

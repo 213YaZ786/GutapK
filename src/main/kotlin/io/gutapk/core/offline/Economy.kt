@@ -179,6 +179,7 @@ object Economy {
         timers: List<Map<String, Any?>>,
         whens: Map<String, Map<String, Any?>>,
         rules: List<Map<String, Any?>> = emptyList(),
+        moves: List<Map<String, Any?>> = emptyList(),
     ): Map<String, Any?>? {
         val latest = snapshots.lastOrNull()?.second ?: return null
         val lists = GameState.named(statics)
@@ -300,15 +301,29 @@ object Economy {
 
         // The data the phone reads: the prices, the producers and the storages'
         // capacities, by article and grade.
-        val effects = chosen.map { relation ->
+        // The effects learnt, then the same on the lists the rules' variants were moved
+        // to (the second base's), for requests holding the variant's value.
+        val learnt = chosen.map { it to whens[it["command"]] }
+        val variants = moves.flatMap { move ->
+            learnt.mapNotNull { (relation, condition) ->
+                val target = move["when"] as Map<*, *>
+                if (condition == null || condition.keys != target.keys) return@mapNotNull null
+                val list = relation["list"] ?: return@mapNotNull relation to target.entries.associate { it.key.toString() to it.value }
+                if (list != move["from"]) null else LinkedHashMap(relation).apply { put("list", move["to"]) } to target.entries.associate { it.key.toString() to it.value }
+            }
+        }
+        val effects = (learnt + variants).map { (relation, condition) ->
             val out = LinkedHashMap<String, Any?>(relation)
-            whens[relation["command"]]?.let { out["when"] = it }
+            condition?.let { out["when"] = it }
             val kind = kinds.firstOrNull { it.path == relation["list"] }
             when (relation["op"]) {
                 "pay" -> {
-                    val list = lists[relation["data"] as Int]
+                    // Its list first, then the others written alike (the second base's buildings).
+                    val first = relation["data"] as Int
                     out.remove("data")
-                    out["prices"] = list.mapNotNull { d -> priced(d[relation["price"]], resources)?.let { d["id"].toString() to it } }.toMap()
+                    out["prices"] = LinkedHashMap<String, Any?>().apply {
+                        (listOf(lists[first]) + lists.filterIndexed { i, _ -> i != first }).flatten().forEach { d -> priced(d[relation["price"]], resources)?.let { putIfAbsent(d["id"].toString(), it) } }
+                    }
                 }
                 "payGrade" -> if (kind != null) {
                     out["key"] = kind.key
@@ -329,7 +344,7 @@ object Economy {
                 }
             }
             out
-        }
+        }.distinct()
         val storages = kinds.map { kind ->
             linkedMapOf<String, Any?>(
                 "list" to kind.path, "key" to kind.key, "grade" to gradeField, "default" to gradeDefault.toInt(),

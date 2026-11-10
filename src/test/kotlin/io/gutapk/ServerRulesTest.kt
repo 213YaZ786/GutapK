@@ -29,11 +29,11 @@ class ServerRulesTest {
     private fun doc(vararg pairs: Pair<String, Any?>): LinkedHashMap<String, Any?> = LinkedHashMap<String, Any?>().apply { pairs.forEach { (k, v) -> put(k, v) } }
 
     // A login answer: five named messages, the player's step, its buildings and the time.
-    private fun login(time: Long, tutor: Int, buildings: List<Map<String, Any?>>, wallet: Map<String, Any?>? = null) = doc(
+    private fun login(time: Long, tutor: Int, buildings: List<Map<String, Any?>>, wallet: Map<String, Any?>? = null, second: List<Map<String, Any?>>? = null) = doc(
         "data" to listOf(
             doc("name" to "authorize", "gameId" to 7, "sessionId" to "s$time"),
             doc("name" to "character", "data" to doc("tutor" to tutor, "nick" to "", "level" to 1).apply { if (wallet != null) put("wallet", wallet) }),
-            doc("name" to "location", "location" to doc("location" to buildings)),
+            doc("name" to "location", "location" to doc("location" to buildings)).apply { if (second != null) put("second_location", doc("location" to second)) },
             doc("name" to "chrono", "data" to doc("time" to (time / 1000).toInt())),
             doc("name" to "quests_state", "data" to listOf(doc("id" to 1, "value" to 0))),
             doc("name" to "restrictions", "data" to doc("chat" to false)),
@@ -263,6 +263,50 @@ class ServerRulesTest {
         val buildings = ((location["location"] as Map<*, *>)["location"] as List<*>).map { it as Map<*, *> }.associateBy { it["id"] }
         assertEquals(listOf(mapOf("CAPACITY_GOLD" to 100)), buildings[101]!!["parameters"])
         assertEquals(listOf(mapOf("STORED_GOLD" to 25)), buildings[102]!!["parameters"])
+    }
+
+    // A session played on the first base only, the second one beside it in the
+    // state, the game's data giving both values of locationType.
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/test/kotlin/io/gutapk/ServerRulesTest.kt#recordUpgrade
+    private fun recordBases(): File {
+        val dir = Files.createTempDirectory("gutapk-recordings").toFile()
+        val store = Store(dir)
+        val t0 = 1_700_000_000L
+        var n = 0
+        fun put(seconds: Long, request: Map<String, Any?>, answer: ByteArray, method: String = "POST", path: String = "/") {
+            val body = if (method == "GET") ByteArray(0) else Bson.encode(doc("name" to request["name"], "n" to ++n, "optime" to seconds.toInt()).apply { putAll(request - "name") })
+            store.put(Store.Entry(origin, method, path, "r=${++n}", Integer.toHexString(body.contentHashCode() + n), 200, mapOf("Content-Type" to "text/plain"), answer, seconds * 1000), body)
+        }
+        val second = listOf(building(1, 15, 2, 2, 1))
+        val status = Bson.encode(doc("name" to "status"))
+        put(t0 - 5, emptyMap(), "[{\"id\": 5, \"name\": \"Cannon\", \"locationType\": \"MAIN\"}, {\"id\": 15, \"name\": \"Hut\", \"locationType\": \"SECOND\"}]".toByteArray(), "GET", "/data/building.json")
+        put(t0, doc("name" to "authorize"), Bson.encode(login(t0 * 1000, 1, listOf(building(1, 5, 1, 1, 1)), second = second)))
+        put(t0 + 10, doc("name" to "upgrade_action", "id" to 1, "locationType" to "MAIN"), status)
+        put(t0 + 20, doc("name" to "reload_game"), Bson.encode(login((t0 + 20) * 1000, 1, listOf(building(1, 5, 1, 1, 2)), second = second)))
+        put(t0 + 30, doc("name" to "upgrade_action", "id" to 1, "locationType" to "MAIN"), status)
+        put(t0 + 40, doc("name" to "reload_game"), Bson.encode(login((t0 + 40) * 1000, 1, listOf(building(1, 5, 1, 1, 3)), second = second)))
+        return dir
+    }
+
+    // The second base plays as the first: a request with locationType SECOND does
+    // to its list what the recorded ones did to the first base's, which it leaves alone.
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/test/kotlin/io/gutapk/ServerRulesTest.kt#theLearntServerKeepsTheProgressOnThePhone
+    @Test
+    fun theSecondBaseKeepsItsProgressAsTheFirstOne() {
+        val learned = ServerRules.learn(ServerRules.read(recordBases().toPath())).single()
+        val variant = rules(learned, "rules").single { (it["when"] as? Map<*, *>)?.get("locationType") == "SECOND" }
+        assertEquals(listOf("upgrade_action", "increment", "location/second_location/location/#\$id/grade"), listOf(variant["command"], variant["op"], variant["path"]))
+
+        val folder = Files.createTempDirectory("gutapk-game").toFile()
+        ServerRules.files(learned).forEach { (name, bytes) -> File(folder, name).writeBytes(bytes) }
+        fun GameServer.ask(vararg fields: Pair<String, Any?>): Map<*, *> =
+            Bson.document(assertNotNull(answer(Bson.encode(doc("n" to 1, "optime" to 1_700_000_100).apply { putAll(fields) }))).body)!!
+        GameServer(folder).ask("name" to "upgrade_action", "id" to 1, "locationType" to "SECOND")
+        val data = GameServer(folder).ask("name" to "authorize")["data"] as List<*>
+        val location = data.single { (it as Map<*, *>)["name"] == "location" } as Map<*, *>
+        fun grade(base: String) = (((location[base] as Map<*, *>)["location"] as List<*>).single() as Map<*, *>)["grade"]
+        assertEquals(3, grade("location"))
+        assertEquals(2, grade("second_location"))
     }
 
     @Test

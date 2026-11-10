@@ -184,13 +184,16 @@ object ServerRules {
         val snapshots = logins.map { c -> Snapshot(c.time, messages(c.answer!!, command).filter { (it[command] as String) in state }.associateBy { it[command] as String }) }
         val others = calls.filter { it.name !in login && it.name !in packs }
         val increments = incrementRules(snapshots, others)
-        val whens = whenRules(others)
-        val rules = (setRules(snapshots, others, increments) + appendRules(snapshots, others) + increments).map { r ->
+        val whens = whenRules(others, statics)
+        val learnt = (setRules(snapshots, others, increments) + appendRules(snapshots, others) + increments).map { r ->
             whens[r["command"]]?.let { linkedMapOf<String, Any?>().apply { putAll(r); put("when", it) } } ?: r
         }
         val answerRules = answerRules(others, command)
-        val timers = timerRules(snapshots, others, statics)
-        val economy = Economy.learn(snapshots.map { it.time to it.state }, others, statics, timers, whens, rules)
+        val timed = timerRules(snapshots, others, statics)
+        val (variants, variantTimers, moves) = variantRules(learnt, timed, statics, snapshots.last().state)
+        val rules = learnt + variants
+        val timers = timed + variantTimers
+        val economy = Economy.learn(snapshots.map { it.time to it.state }, others, statics, timers, whens, rules, moves)
 
         val document = linkedMapOf<String, Any?>("command" to command, "login" to login.toList(), "time" to time, "answers" to samples, "answerRules" to answerRules, "rules" to rules, "timers" to timers)
         economy?.let { document["economy"] = it }
@@ -502,12 +505,14 @@ object ServerRules {
                     val sample = grades.firstOrNull { g -> g.values.any { (it as? Number)?.toLong() == grade } } ?: continue
                     val gradeKey = sample.entries.firstOrNull { (it.value as? Number)?.toLong() == grade }?.key ?: continue
                     val durationKey = sample.entries.firstOrNull { it.key != gradeKey && (it.value as? Number)?.toLong() == duration }?.key ?: continue
+                    // This list first, then the others written alike (the second base
+                    // has its own file of buildings), an id already given kept.
                     val table = LinkedHashMap<String, Any?>()
-                    for (other in list) {
+                    for (other in (listOf(list) + lists.filter { it !== list }).flatten()) {
                         for (g in (other[listKey] as? List<*>).orEmpty().filterIsInstance<Map<*, *>>()) {
                             val number = (g[gradeKey] as? Number)?.toLong() ?: continue
                             val seconds = (g[durationKey] as? Number)?.toLong() ?: continue
-                            table["${other["id"]},${number - 1}"] = seconds.toInt()
+                            table.putIfAbsent("${other["id"]},${number - 1}", seconds.toInt())
                         }
                     }
                     return key.toString() to table
@@ -540,17 +545,85 @@ object ServerRules {
     // whose elements share the ids of the first) leaves the state as it is.
     // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/core/offline/ServerRules.kt#answerRules
     // not ported: getValues, executeOnFields (the request alone is read, no path of the answer)
-    private fun whenRules(calls: List<Call>): Map<String, Map<String, Any?>> {
+    private fun whenRules(calls: List<Call>, statics: List<Any?>): Map<String, Map<String, Any?>> {
         val results = LinkedHashMap<String, Map<String, Any?>>()
         for ((name, group) in calls.groupBy { it.name }) {
             val fields = LinkedHashMap<String, Any?>()
             for (xField in group.flatMap { it.xFields.keys }.toSet()) {
                 val xValues = group.map { it.fields[xField] }
-                if (xValues.all { it is String && it == xValues.first() }) fields[xField] = xValues.first()
+                if (!xValues.all { it is String && it == xValues.first() }) continue
+                // One call says nothing of the values a field takes (a nick), unless
+                // the game's data gives that value to a field of that name (MAIN).
+                if (group.size > 1 || xValues.first() in valuesOf(statics, xField)) fields[xField] = xValues.first()
             }
             if (fields.isNotEmpty()) results[name] = fields
         }
         return results
+    }
+
+    // variants: a rule learnt for one value of its when field holds for the other
+    // values the game's data gives that field, on the part of the state named like
+    // that value. The second base was never recorded: requests with locationType
+    // SECOND do to location/second_location what those with MAIN did to
+    // location/location. A timer runs on such a part too.
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/main/kotlin/io/gutapk/core/offline/ServerRules.kt#whenRules
+    // not ported: getValues (the data is walked for one field's texts)
+    // Returns the rules, the timers and the moves, each list the rules of a value
+    // were moved from, to, and that value, for the economy to move its effects alike.
+    private fun variantRules(rules: List<Map<String, Any?>>, timers: List<Map<String, Any?>>, statics: List<Any?>, state: Map<String, Any?>): Triple<List<Map<String, Any?>>, List<Map<String, Any?>>, List<Map<String, Any?>>> {
+        val results = mutableListOf<Map<String, Any?>>()
+        val values = LinkedHashSet<String>()
+        val moves = LinkedHashSet<Map<String, Any?>>()
+        for (rule in rules) {
+            val fields = (rule["when"] as? Map<*, *>)?.takeIf { it.size == 1 } ?: continue
+            val (xField, xValue) = fields.entries.single()
+            for (value in valuesOf(statics, xField.toString()).filter { it != xValue }) {
+                val path = moved(rule["path"].toString(), value, state) ?: continue
+                values.add(value)
+                results.add(LinkedHashMap(rule).apply { put("path", path); put("when", mapOf(xField to value)) })
+                moves.add(linkedMapOf("from" to rule["path"].toString().substringBefore("/#"), "to" to path.substringBefore("/#"), "when" to mapOf(xField.toString() to value)))
+            }
+        }
+        val timed = timers.flatMap { timer -> values.mapNotNull { value -> moved(timer["list"].toString(), value, state)?.let { LinkedHashMap(timer).apply { put("list", it) } } } }
+        return Triple(results, timed, moves.toList())
+    }
+
+    // The texts the game's data gives a field.
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/main/kotlin/io/gutapk/core/offline/ServerRules.kt#getValues
+    private fun valuesOf(statics: List<Any?>, field: String): Set<String> {
+        val out = LinkedHashSet<String>()
+        fun walk(v: Any?) {
+            when (v) {
+                is Map<*, *> -> v.forEach { (k, x) -> if (k == field && x is String) out.add(x) else walk(x) }
+                is List<*> -> v.forEach { walk(it) }
+            }
+        }
+        statics.forEach { walk(it) }
+        return out
+    }
+
+    // A path moved to the part of the state named like a value: at the first of its
+    // segments whose document holds one other key of the same kind with the value
+    // as a word of its name, the path still leading to a list or a document there.
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/main/kotlin/io/gutapk/core/offline/ServerRules.kt#valueAt
+    // not ported: valueAt (called as it is, on each part of the path)
+    private fun moved(path: String, value: String, root: Any?): String? {
+        val segments = path.split('/')
+        val word = value.lowercase()
+        for (i in 1 until segments.size) {
+            if (segments[i].startsWith("#")) break
+            val node = valueAt(root, segments.take(i).joinToString("/")) as? Map<*, *> ?: break
+            val here = node[segments[i]] ?: break
+            val keys = node.keys.map { it.toString() }.filter { k ->
+                val x = node[k]
+                k != segments[i] && word in k.lowercase().split('_') && (x is Map<*, *>) == (here is Map<*, *>) && (x is List<*>) == (here is List<*>)
+            }
+            if (keys.size != 1) continue
+            val out = segments.take(i) + keys.single() + segments.drop(i + 1)
+            val list = out.takeWhile { !it.startsWith("#") }.joinToString("/")
+            return if (valueAt(root, list) != null) out.joinToString("/") else null
+        }
+        return null
     }
 
     // The paths of an answer through its documents, to the values at their ends.
