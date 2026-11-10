@@ -8,13 +8,17 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -25,6 +29,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -35,6 +40,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import io.gutapk.core.apk.ApkInfo
@@ -71,6 +78,8 @@ import io.gutapk.tools.Libraries
 import io.gutapk.tools.TrackerList
 import io.gutapk.tools.ToolSpec
 import io.gutapk.ui.Fact
+import io.gutapk.ui.GIcons
+import io.gutapk.ui.LocalLang
 import io.gutapk.ui.LookupDialog
 import io.gutapk.ui.currentJobView
 import io.gutapk.ui.installRefusal
@@ -604,10 +613,34 @@ private fun readServer(l: Link): Pair<Status, List<Value>> = ServerAdmin.status(
 // the game's data files: the APK's and the answers recorded. Null when the phone
 // has no local game server.
 // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#readServer
-private fun readGame(l: Link, dir: Path): Pair<Map<String, Any?>, List<GameState.Field>>? {
+// The names are the game's own words in the player's language when it has a
+// localisation (GameState.localisation).
+private fun readGame(l: Link, dir: Path, language: String): Pair<Map<String, Any?>, List<GameState.Field>>? {
     val state = ServerAdmin.state(l.local)?.let { GameState.read(it) } ?: return null
     val statics = GameState.statics(dir.resolve("original.apk"), ServerRules.read(OfflineBuild.recordings(dir)))
-    return state to GameState.fields(state, statics)
+    val names = GameState.named(statics).flatten().mapNotNull { it["name"] as? String }.toSet()
+    return state to GameState.fields(state, statics, GameState.localisation(dir.resolve("original.apk"), names, language))
+}
+
+// A name of the data as a player reads it: INTERNAL_CAPACITY_GOLD as Internal
+// capacity gold, second_location as Second location, cellI as Cell i. A name
+// with a space is already words (the game's own, Mine d'or) and kept.
+// https://github.com/213YaZ786/GutapK/blob/c52520a/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#shownValue
+// not ported: shownValue (kept beside it, the value of a field and not its name)
+internal fun readable(raw: String): String = if (' ' in raw.trim()) raw.trim() else
+    raw.replace(Regex("([a-z])([A-Z])"), "$1 $2").replace('_', ' ').replace('/', ' ').trim().lowercase().replaceFirstChar { it.uppercase() }
+
+// The number one step up or down, as NumberPicker's buttons change the value by
+// one. An empty field (an element without the number yet) steps from 0.
+// https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/widget/NumberPicker.java#changeValueByOne
+// not ported: changeValueByOne (the selector wheel and its scrollers: a field and two buttons here)
+internal fun stepped(text: String, increment: Boolean): String? {
+    val by = if (increment) 1 else -1
+    return when (val n = if (text.isBlank()) 0L else typedNumber(text)) {
+        null -> null
+        is Long -> (n + by).toString()
+        else -> (n.toDouble() + by).toString()
+    }
 }
 
 // The number a field of the game's progress was given, null when it is none.
@@ -634,6 +667,7 @@ fun AdminDialog(
     dir: Path,
     info: ApkInfo,
     onDismiss: () -> Unit,
+    onCodeValues: (() -> Unit)? = null,
 ) {
     var attempt by remember { mutableStateOf(0) }
     val found by produceState<Seen>(Seen.Looking, attempt) {
@@ -645,8 +679,6 @@ fun AdminDialog(
     var status by remember { mutableStateOf<Status?>(null) }
     var values by remember { mutableStateOf<List<Value>?>(null) }
     val edits = remember { mutableStateMapOf<String, String>() }
-    var search by remember { mutableStateOf("") }
-    val opened = remember { mutableStateMapOf<String, Boolean>() }
     var working by remember { mutableStateOf(false) }
     var failure by remember { mutableStateOf<String?>(null) }
     var answer by remember { mutableStateOf<Answer?>(null) }
@@ -656,9 +688,7 @@ fun AdminDialog(
     var game by remember { mutableStateOf<Pair<Map<String, Any?>, List<GameState.Field>>?>(null) }
     var stored by remember { mutableStateOf<Int?>(null) }
     val noAnswer = t("admin_no_answer")
-    val resourcesTitle = t("admin_resources")
-    val elementsTitle = t("admin_elements")
-    val playerTitle = t("admin_player")
+    val language = LocalLang.current.code
     val restartFailed = t("admin_restart_failed")
     val scope = rememberCoroutineScope()
 
@@ -693,114 +723,34 @@ fun AdminDialog(
                 onDismissRequest = onDismiss,
                 title = { Text(title) },
                 text = {
-                    // Jungle Heat's recordings hold 27 000 values: the list is
-                    // lazy, each answer a header that opens on a click, and a
-                    // search narrows every answer at once. The rows are the
-                    // ones this dialog had, the sticky headers those of the
-                    // Compose sample.
-                    // https://github.com/213YaZ786/GutapK/blob/ca70230/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#L496-L512
-                    // https://github.com/androidx/androidx/blob/androidx-main/compose/foundation/foundation/samples/src/main/java/androidx/compose/foundation/samples/LazyDslSamples.kt#StickyHeaderListSample
-                    // not ported: reverseLayout, contentPadding (the list reads top down in the dialog's own padding)
-                    val needle = search.trim()
-                    val sections = list.filter { v -> needle.isEmpty() || needle in v.pointer || needle in shownValue(v.override ?: v.value) }.groupBy { it.key }
-                    LazyColumn(
-                        Modifier.heightIn(max = 560.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    AdminValues(
+                        packageName = info.packageName,
+                        status = s,
+                        values = list,
+                        game = g?.second,
+                        reading = working,
+                        edits = edits,
+                        onCodeValues = onCodeValues,
+                        technical = {
+                            TextButton(enabled = !working && confirming == null, onClick = { confirming = "clear" }) { Text(t("admin_clear")) }
+                            // The recordings leave the phone for the PC, where the
+                            // next offline build takes them into the game.
+                            TextButton(
+                                enabled = !working,
+                                onClick = {
+                                    working = true
+                                    answer = null
+                                    failure = null
+                                    kept = null
+                                    scope.launch {
+                                        val outcome = withContext(Dispatchers.IO) { runCatching { ServerAdmin.export(l.local, OfflineBuild.recordings(dir)) } }
+                                        outcome.onSuccess { kept = it }.onFailure { failure = it.message ?: it.javaClass.simpleName }
+                                        working = false
+                                    }
+                                },
+                            ) { Text(t("admin_keep")) }
+                        },
                     ) {
-                        item { Fact(t("try_package"), info.packageName) }
-                        item { Fact(t("admin_status"), t(if (s.mode in listOf("live", "replay", "miss")) "admin_mode_" + s.mode else "admin_mode_none")) }
-                        item { Text(t("admin_counts", s.entries.toString(), s.overrides.toString()), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                        // The commands the game sent that the local server cannot save yet.
-                        items(s.unknown.entries.toList()) { (name, count) -> Text(t("admin_unknown", name, count.toString()), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                        if (list.isNotEmpty() || g != null) {
-                            item {
-                                OutlinedTextField(
-                                    value = search,
-                                    onValueChange = { search = it },
-                                    label = { Text(t("admin_search")) },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth(),
-                                )
-                            }
-                        }
-                        // The game's progress first: the resources open, each element
-                        // and each part of the player under its own header, as the
-                        // answers below.
-                        // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#L680-L702
-                        item {
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(t("admin_game"), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-                                // The progress is read after the values: the game's data files take a moment.
-                                if (working) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                                if (g != null || !working) Text(t(if (g == null) "admin_no_game" else "admin_game_d"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                stored?.let { Text(t("admin_state_saved", it.toString()), style = MaterialTheme.typography.bodyMedium) }
-                            }
-                        }
-                        if (g != null) {
-                            val shownFields = g.second.filter { field -> needle.isEmpty() || needle in field.label || needle in field.path }
-                            val parts = listOf(
-                                resourcesTitle to shownFields.filter { it.group == GameState.Group.RESOURCES }.groupBy { resourcesTitle },
-                                elementsTitle to shownFields.filter { it.group == GameState.Group.ELEMENTS }.groupBy { it.label.substringBefore(" · ") },
-                                playerTitle to shownFields.filter { it.group == GameState.Group.PLAYER }.groupBy { it.path.substringBefore('/') },
-                            )
-                            for ((part, groups) in parts) {
-                                if (groups.isEmpty()) continue
-                                if (part != resourcesTitle) {
-                                    item { Text(part, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) }
-                                }
-                                groups.forEach { (section, members) ->
-                                    val key = "state:$part:$section"
-                                    val shown = needle.isNotEmpty() || (opened[key] ?: (part == resourcesTitle))
-                                    stickyHeader {
-                                        Text(
-                                            (if (shown) "▾ " else "▸ ") + section + "  (" + members.size + ")",
-                                            style = MaterialTheme.typography.labelLarge,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                                                .clickable { opened[key] = !shown }.padding(vertical = 4.dp),
-                                        )
-                                    }
-                                    if (shown) {
-                                        items(members.take(SHOWN), key = { stateKey(it) }) { field ->
-                                            val label = when (field.group) {
-                                                GameState.Group.RESOURCES -> field.label
-                                                GameState.Group.ELEMENTS -> field.label.substringAfter(" · ")
-                                                GameState.Group.PLAYER -> field.path.substringAfter('/')
-                                            }
-                                            StateRow(label, edits[stateKey(field)] ?: shownValue(field.value)) { edits[stateKey(field)] = it }
-                                        }
-                                        if (members.size > SHOWN) {
-                                            item { Text(t("admin_more", (members.size - SHOWN).toString()), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        if (list.isEmpty()) {
-                            item { Text(t("admin_no_values"), style = MaterialTheme.typography.bodyMedium) }
-                        }
-                        sections.forEach { (section, members) ->
-                            val shown = needle.isNotEmpty() || opened[section] == true
-                            stickyHeader {
-                                Text(
-                                    (if (shown) "▾ " else "▸ ") + section + "  (" + members.size + ")",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontFamily = FontFamily.Monospace,
-                                    modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                                        .clickable { opened[section] = !shown }.padding(vertical = 4.dp),
-                                )
-                            }
-                            if (shown) {
-                                items(members.take(SHOWN), key = { rowKey(it) }) { v ->
-                                    ValueRow(v, edits[rowKey(v)] ?: shownValue(v.override ?: v.value)) { edits[rowKey(v)] = it }
-                                }
-                                if (members.size > SHOWN) {
-                                    item { Text(t("admin_more", (members.size - SHOWN).toString()), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                                }
-                            }
-                        }
-                        item {
                             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                 if (a != null) {
                                     Text(
@@ -811,28 +761,18 @@ fun AdminDialog(
                                 }
                                 failure?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error) }
                                 kept?.let { Text(t("admin_kept", it.toString()), style = MaterialTheme.typography.bodyMedium) }
+                                stored?.let { Text(t("admin_state_saved", it.toString()), style = MaterialTheme.typography.bodyMedium) }
                                 val sure = confirming
                                 if (sure == null) {
-                                    Row {
-                                        TextButton(enabled = !working, onClick = { confirming = "reset" }) { Text(t("admin_reset")) }
-                                        TextButton(enabled = !working, onClick = { confirming = "clear" }) { Text(t("admin_clear")) }
-                                    }
-                                    // The recordings leave the phone for the PC, where the
-                                    // next offline build takes them into the game.
+                                    // One tap puts every value back: the changes not saved
+                                    // yet at once, the values set on the phone once asked.
                                     TextButton(
-                                        enabled = !working,
+                                        enabled = !working && (edits.isNotEmpty() || s.overrides > 0),
                                         onClick = {
-                                            working = true
-                                            answer = null
-                                            failure = null
-                                            kept = null
-                                            scope.launch {
-                                                val outcome = withContext(Dispatchers.IO) { runCatching { ServerAdmin.export(l.local, OfflineBuild.recordings(dir)) } }
-                                                outcome.onSuccess { kept = it }.onFailure { failure = it.message ?: it.javaClass.simpleName }
-                                                working = false
-                                            }
+                                            edits.clear()
+                                            if (s.overrides > 0) confirming = "reset"
                                         },
-                                    ) { Text(t("admin_keep")) }
+                                    ) { Text(t("admin_reset_all")) }
                                 } else {
                                     Text(t(if (sure == "reset") "admin_confirm_reset" else "admin_confirm_clear"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
                                     Row {
@@ -862,12 +802,7 @@ fun AdminDialog(
                                         TextButton(onClick = { confirming = null }) { Text(t("cancel")) }
                                     }
                                 }
-                                // Values compiled into the game need a reader of the
-                                // code, which comes later.
-                                Text(t("admin_compiled"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                                Text(t("admin_compiled_d"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
-                        }
                     }
                 },
                 confirmButton = {
@@ -889,7 +824,7 @@ fun AdminDialog(
                                             .getOrElse { Answer(0, false, it.message ?: it.javaClass.simpleName, 0) }
                                     }
                                     if (reply.ok) {
-                                        val fresh = withContext(Dispatchers.IO) { runCatching { readGame(l, dir) }.getOrNull() }
+                                        val fresh = withContext(Dispatchers.IO) { runCatching { readGame(l, dir, language) }.getOrNull() }
                                         if (fresh != null) game = fresh
                                         // The game shows the new values from its next login only.
                                         withContext(Dispatchers.IO) { runCatching { ServerAdmin.restart(l.adb, l.serial, info.packageName) }.getOrElse { it.message } }
@@ -966,7 +901,7 @@ fun AdminDialog(
                                 }.onFailure { failure = it.message ?: it.javaClass.simpleName }
                                 val held = outcome.getOrNull()?.first
                                 if (held != null) {
-                                    withContext(Dispatchers.IO) { runCatching { readGame(held, dir) } }
+                                    withContext(Dispatchers.IO) { runCatching { readGame(held, dir, language) } }
                                         .onSuccess { game = it }.onFailure { failure = it.message ?: it.javaClass.simpleName }
                                 }
                                 working = false
@@ -1001,50 +936,238 @@ fun AdminDialog(
     }
 }
 
-// One value with the editor its type asks for: a switch, a number field, a
-// text field. A value that was overridden says what the server holds.
+// The values a player calibrates, as Android's settings list theirs: a category
+// title over each group, one row per value with its editor, the groups opening
+// on a click. What is recommended comes first (the commands the local server
+// cannot save yet), then the game's progress by what it is: the resources open,
+// each list of the save under the name the save gives it (the buildings of each
+// base, the heroes, the missions), the player's own numbers, every name the
+// game's own word. The counters, the mode, the recordings and the raw answers
+// wait behind Details. Jungle Heat's recordings hold 27 000 values: the list is
+// lazy and a search narrows every group at once.
+// https://github.com/213YaZ786/GutapK/blob/c52520a/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#AdminDialog
+// https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/packages/SettingsLib/Spa/spa/src/com/android/settingslib/spa/widget/ui/Category.kt#LazyCategory
+// not ported: AdminDialog (stays: it talks to the phone and hands its values here)
+// not ported: LazyCategory's state, bottomPadding and LocalIsInCategory (the dialog's own list and padding)
+@Composable
+internal fun AdminValues(
+    packageName: String,
+    status: Status,
+    values: List<Value>,
+    game: List<GameState.Field>?,
+    reading: Boolean,
+    edits: MutableMap<String, String>,
+    onCodeValues: (() -> Unit)?,
+    technical: @Composable () -> Unit,
+    // What the player opened and searched, given by a test to draw the dialog open.
+    opened: MutableMap<String, Boolean> = remember { mutableStateMapOf() },
+    shownDetails: MutableState<Boolean> = remember { mutableStateOf(false) },
+    searched: MutableState<String> = remember { mutableStateOf("") },
+    outcome: @Composable () -> Unit,
+) {
+    var search by searched
+    var details by shownDetails
+    val needle = search.trim()
+    LazyColumn(
+        Modifier.heightIn(max = 560.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        item { Text(t(if (status.mode in listOf("live", "replay", "miss")) "admin_mode_" + status.mode else "admin_mode_none"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        if (status.unknown.isNotEmpty()) {
+            item { CategoryTitle(t("admin_recommended")) }
+            items(status.unknown.entries.toList()) { (name, count) -> Text(t("admin_unknown", name, count.toString()), style = MaterialTheme.typography.bodyMedium) }
+        }
+        if (values.isNotEmpty() || game != null) {
+            item {
+                OutlinedTextField(
+                    value = search,
+                    onValueChange = { search = it },
+                    label = { Text(t("admin_search")) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                CategoryTitle(t("admin_game"))
+                // The progress is read after the values: the game's data files take a moment.
+                if (reading && game == null) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                if (game != null || !reading) Text(t(if (game == null) "admin_no_game" else "admin_game_d"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        if (game != null) {
+            val shownFields = game.filter { field -> needle.isEmpty() || listOf(field.label, field.name, field.section, field.key, field.path).any { it.contains(needle, ignoreCase = true) } }
+            // By the name read: DIAMOND and DIAMONDS both say Diamonds.
+            val sections = shownFields.groupBy { it.group to readable(it.section) }.entries.sortedBy { it.key.first.ordinal }
+            for ((part, members) in sections) {
+                val (group, section) = part
+                val key = "state:$group:$section"
+                val shown = needle.isNotEmpty() || (opened[key] ?: (group == GameState.Group.RESOURCES))
+                val elements = members.groupBy { it.path.substringBeforeLast('/') }
+                stickyHeader { SectionHeader(section, if (group == GameState.Group.ELEMENTS) elements.size else members.size, shown) { opened[key] = !shown } }
+                if (!shown) continue
+                if (group == GameState.Group.ELEMENTS) {
+                    // Each element under its name, its id beside it: nine walls are nine rows.
+                    for ((at, numbers) in elements.entries.take(SHOWN)) {
+                        val id = at.substringAfterLast('/')
+                        item(key = "label:$at") {
+                            Text(numbers.first().name.let { if (it.isEmpty()) id else "$it  $id" }, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 4.dp))
+                        }
+                        items(numbers, key = { stateKey(it) }) { field ->
+                            NumberRow(readable(field.key), null, edits[stateKey(field)] ?: shownValue(field.value), shownValue(field.value)) { edits[stateKey(field)] = it }
+                        }
+                    }
+                    if (elements.size > SHOWN) {
+                        item { Text(t("admin_more", (elements.size - SHOWN).toString()), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    }
+                } else {
+                    items(members.take(SHOWN), key = { stateKey(it) }) { field ->
+                        // A resource names what holds it (a storage), its number below.
+                        val held = field.group == GameState.Group.RESOURCES && field.name.isNotEmpty()
+                        val label = if (held) field.name else readable(field.key.ifEmpty { field.path })
+                        NumberRow(label, if (held) readable(field.key) else null, edits[stateKey(field)] ?: shownValue(field.value), shownValue(field.value)) { edits[stateKey(field)] = it }
+                    }
+                    if (members.size > SHOWN) {
+                        item { Text(t("admin_more", (members.size - SHOWN).toString()), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    }
+                }
+            }
+        }
+        // The values written in the game's code are another tool: one row opens it.
+        if (onCodeValues != null) {
+            item {
+                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = onCodeValues).padding(vertical = 8.dp)) {
+                    Text(t("admin_code"), style = MaterialTheme.typography.bodyLarge)
+                    Text(t("admin_code_d"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        item { SectionHeader(t("admin_details"), null, details) { details = !details } }
+        if (details) {
+            item { Fact(t("try_package"), packageName) }
+            item { Fact(t("admin_status"), status.mode) }
+            item { Text(t("admin_counts", status.entries.toString(), status.overrides.toString()), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            item { Column { technical() } }
+            item { CategoryTitle(t("admin_answers")) }
+            if (values.isEmpty()) {
+                item { Text(t("admin_no_values"), style = MaterialTheme.typography.bodyMedium) }
+            }
+            val answers = values.filter { v -> needle.isEmpty() || needle in v.pointer || needle in shownValue(v.override ?: v.value) }.groupBy { it.key }
+            answers.forEach { (section, members) ->
+                val shown = needle.isNotEmpty() || opened[section] == true
+                stickyHeader { SectionHeader(section, members.size, shown) { opened[section] = !shown } }
+                if (shown) {
+                    items(members.take(SHOWN), key = { rowKey(it) }) { v ->
+                        ValueRow(v, edits[rowKey(v)] ?: shownValue(v.override ?: v.value)) { edits[rowKey(v)] = it }
+                    }
+                    if (members.size > SHOWN) {
+                        item { Text(t("admin_more", (members.size - SHOWN).toString()), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    }
+                }
+            }
+        }
+        item { outcome() }
+    }
+}
+
+// A category title that is placed before a group of similar items.
+// https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/packages/SettingsLib/Spa/spa/src/com/android/settingslib/spa/widget/ui/Category.kt#CategoryTitle
+// not ported: the expressive paddings (the dialog keeps its own)
+@Composable
+private fun CategoryTitle(title: String) {
+    Text(
+        text = title,
+        modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
+        color = MaterialTheme.colorScheme.primary,
+        style = MaterialTheme.typography.labelLarge,
+    )
+}
+
+// The header of a group that opens on a click, sticky while its rows scroll,
+// as the answers' headers of this dialog were.
+// https://github.com/213YaZ786/GutapK/blob/c52520a/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#AdminDialog
+// not ported: AdminDialog (its header alone is taken, the dialog stays)
+@Composable
+private fun SectionHeader(title: String, count: Int?, shown: Boolean, onClick: () -> Unit) {
+    Text(
+        (if (shown) "▾ " else "▸ ") + title + (count?.let { "  ($it)" } ?: ""),
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .clickable(onClick = onClick).padding(vertical = 8.dp),
+    )
+}
+
+// One number as a settings row shows it, its title and what it is below, with
+// the editor GameConqueror's cheat list gives a value: edited in place, here
+// between NumberPicker's decrement and increment, and a reset to the value the
+// game had, enabled once it is changed. An element without the number yet
+// shows it empty.
+// https://github.com/213YaZ786/GutapK/blob/c52520a/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#StateRow
+// https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/packages/SettingsLib/Spa/spa/src/com/android/settingslib/spa/widget/preference/Preference.kt#Preference
+// https://github.com/scanmem/scanmem/blob/main/gui/GameConqueror.py#cheatlist_edit_value_cb
+// not ported: StateRow (this row replaces it, with the steppers and the reset)
+// not ported: Preference (its title and summary only: no icon, the row itself is not clicked)
+// not ported: cheatlist_edit_value_cb (GTK's edited signal is onValueChange, and the lock: a value set stays set until reset)
+@Composable
+private fun NumberRow(title: String, summary: String?, text: String, original: String, onChange: (String) -> Unit) {
+    val changed = text != original
+    val less = t("admin_less")
+    val more = t("admin_more_one")
+    val reset = t("admin_reset_one")
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            summary?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            if (changed && original.isNotEmpty()) Text(t("admin_was", original), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+        }
+        IconButton(onClick = { stepped(text, false)?.let(onChange) }, modifier = Modifier.semantics { contentDescription = less }) {
+            Text("−", style = MaterialTheme.typography.titleLarge)
+        }
+        OutlinedTextField(
+            value = text,
+            onValueChange = { onChange(it.filter { c -> c.isDigit() || c in "-+.eE" }) },
+            singleLine = true,
+            isError = text.isNotEmpty() && typedNumber(text) == null,
+            modifier = Modifier.width(128.dp),
+        )
+        IconButton(onClick = { stepped(text, true)?.let(onChange) }, modifier = Modifier.semantics { contentDescription = more }) {
+            Text("+", style = MaterialTheme.typography.titleLarge)
+        }
+        IconButton(enabled = changed, onClick = { onChange(original) }) { Icon(GIcons.Restart, contentDescription = reset) }
+    }
+}
+
+// One value of an answer with the editor its type asks for: a switch, a number
+// row, a text field, each with the reset of NumberRow to what the server holds.
+// https://github.com/213YaZ786/GutapK/blob/c52520a/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#ValueRow
+// https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/packages/SettingsLib/Spa/spa/src/com/android/settingslib/spa/widget/preference/SwitchPreference.kt#InternalSwitchPreference
+// not ported: InternalSwitchPreference (its summary, icon and toggleable row: the switch alone toggles, beside the path)
 @Composable
 private fun ValueRow(v: Value, text: String, onChange: (String) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        when (v.type) {
-            "bool" -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(v.pointer, style = MaterialTheme.typography.bodyLarge, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f))
-                Switch(checked = text == "true", onCheckedChange = { onChange(it.toString()) })
+    val original = shownValue(v.value)
+    val reset = t("admin_reset_one")
+    if (v.type == "number") {
+        NumberRow(v.pointer, null, text, original, onChange)
+        return
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (v.type == "bool") {
+            Column(Modifier.weight(1f)) {
+                Text(v.pointer, style = MaterialTheme.typography.bodyLarge, fontFamily = FontFamily.Monospace)
+                if (text != original) Text(t("admin_was", original), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
             }
-            "number" -> OutlinedTextField(
-                value = text,
-                onValueChange = { onChange(it.filter { c -> c.isDigit() || c in "-+.eE" }) },
-                label = { Text(v.pointer) },
-                singleLine = true,
-                isError = typed(v, text) == null,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            else -> OutlinedTextField(
+            Switch(checked = text == "true", onCheckedChange = { onChange(it.toString()) })
+        } else {
+            OutlinedTextField(
                 value = text,
                 onValueChange = onChange,
                 label = { Text(v.pointer) },
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.weight(1f),
             )
         }
-        if (v.override != null) {
-            Text(t("admin_original", shownValue(v.value)), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+        IconButton(enabled = text != original, onClick = { onChange(original) }) { Icon(GIcons.Restart, contentDescription = reset) }
     }
-}
-
-// One number of the game's progress, the number field of ValueRow. An element
-// without the number yet shows it empty.
-// https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#ValueRow
-// not ported: the bool and text editors and the server value line (the progress holds numbers, set by nobody else)
-@Composable
-private fun StateRow(label: String, text: String, onChange: (String) -> Unit) {
-    OutlinedTextField(
-        value = text,
-        onValueChange = { onChange(it.filter { c -> c.isDigit() || c in "-+.eE" }) },
-        label = { Text(label) },
-        singleLine = true,
-        isError = text.isNotEmpty() && typedNumber(text) == null,
-        modifier = Modifier.fillMaxWidth(),
-    )
 }

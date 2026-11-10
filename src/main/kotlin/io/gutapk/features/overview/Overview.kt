@@ -47,6 +47,7 @@ import io.gutapk.core.apk.UnityReader
 import io.gutapk.core.il2cpp.MethodEntry
 import io.gutapk.core.offline.Endpoint
 import io.gutapk.core.offline.Endpoints
+import io.gutapk.core.offline.OfflineBuild
 import io.gutapk.core.edit.Engine
 import io.gutapk.core.edit.CodeSource
 import io.gutapk.core.edit.JavaCode
@@ -188,6 +189,9 @@ fun OverviewScreen(
         value = withContext(Dispatchers.IO) { runCatching { Endpoints.scan(original) }.getOrDefault(emptyList()) }
     }
     var dialog by remember { mutableStateOf<String?>(null) }
+    // The recordings a local game server is learnt from, counted again when a
+    // dialog closes (Offline and Admin keep new ones on the PC).
+    val recorded by produceState(0, dir, dialog) { value = withContext(Dispatchers.IO) { OfflineBuild.count(OfflineBuild.recordings(dir)) } }
     var editing by remember { mutableStateOf(false) }
     var methods by remember { mutableStateOf(false) }
     var methodQuery by remember { mutableStateOf("") }
@@ -258,12 +262,19 @@ fun OverviewScreen(
             if (scanned) FilledTonalButton(onClick = { dialog = "offline" }) { Text(t("offline_action")) }
             // A Godot game's server is read in its scripts, any other's in its dex.
             if (root != null) FilledTonalButton(onClick = { dialog = "local" }) { Text(t("local_action")) }
-            if (scanned) FilledTonalButton(onClick = { dialog = "admin" }) { Text(t("admin_action")) }
-            if (godot) FilledTonalButton(onClick = { dialog = "godot" }) { Text(t("godot_action")) }
             // A game without an engine is Java or Kotlin, its values are in its
             // dex. Under any engine ApkReader names, the dex only holds the
             // engine's glue to Android, and its numbers are nobody's values.
-            if (root != null && info?.engines?.isEmpty() == true) FilledTonalButton(onClick = { dialog = "java" }) { Text(t("godot_action")) }
+            val code = when {
+                godot -> "godot"
+                root != null && info?.engines?.isEmpty() == true -> "java"
+                else -> null
+            }
+            // One Values button: the values the local game server serves once it
+            // has recordings to learn from (Admin then opens the code's values
+            // too), else the values written in the game's code.
+            val served = scanned && (recorded > 0 || code == null)
+            if (served || code != null) FilledTonalButton(onClick = { dialog = if (served) "admin" else code }) { Text(t("admin_action")) }
         }
     }
     val detection = if (root != null && loaded != null) rememberDetection(root, loaded.classes) else null
@@ -382,6 +393,11 @@ fun OverviewScreen(
                 dir = dir,
                 info = info,
                 onDismiss = { dialog = null },
+                onCodeValues = when {
+                    info.engines.contains(ApkReader.GODOT) -> ({ dialog = "godot" })
+                    info.engines.isEmpty() -> ({ dialog = "java" })
+                    else -> null
+                },
             )
             "local" -> if (root != null) LocalDialog(
                 root = root,

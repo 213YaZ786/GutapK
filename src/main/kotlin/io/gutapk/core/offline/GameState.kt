@@ -22,8 +22,19 @@ object GameState {
 
     // One value the Admin shows: its group, what it is (the resource, the element's
     // name), the path in the state and the value the phone holds, null when the
-    // element has none yet.
-    data class Field(val group: Group, val label: String, val path: String, val value: Any?)
+    // element has none yet. For the Admin's sections: section is what the value
+    // belongs to (the resource, the state's name of the elements' list, the
+    // message), name the element's or the holder's name in the player's language
+    // and key the number's own name.
+    data class Field(
+        val group: Group,
+        val label: String,
+        val path: String,
+        val value: Any?,
+        val section: String = "",
+        val name: String = "",
+        val key: String = "",
+    )
 
     // The data files read at most, a game's files are a few megabytes each.
     private const val DATA_LIMIT = 8_000_000
@@ -119,14 +130,104 @@ object GameState {
         return best
     }
 
+    // How the Admin names the elements of a list, null for none: a field holding
+    // the id of a document (a name ending in id, as articleId, named the most
+    // things right on Jungle Heat's save), else the element's own id when one data
+    // list alone holds them all (the heroes, whose grade 1 is the id of many
+    // documents). A field every element holds the same value of names nothing.
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/main/kotlin/io/gutapk/core/offline/GameState.kt#naming
+    // not ported: naming (stays as it is beside this one: the learnt rules lean on it)
+    internal fun shownNaming(elements: List<Map<*, *>>, lists: List<List<Map<*, *>>>): Pair<String, Map<String, String>>? {
+        val keys = elements.flatMap { it.keys }.map { it.toString() }.toSet()
+        var best: Pair<String, Map<String, String>>? = null
+        var bestShared = -1
+        for (list in lists) {
+            val ids = list.associate { it["id"].toString() to it["name"] as String }
+            val shared = list.flatMap { it.keys }.map { it.toString() }.toSet().intersect(keys).size
+            for (k in keys) {
+                if (k == "id" || !k.endsWith("id", ignoreCase = true) || list.any { it.containsKey(k) }) continue
+                if (!elements.all { e -> e[k].let { (it is Number || it is String) && ids.containsKey(it.toString()) } }) continue
+                if (elements.size > 1 && elements.map { it[k].toString() }.toSet().size == 1) continue
+                if (shared > bestShared) {
+                    best = k to ids
+                    bestShared = shared
+                }
+            }
+        }
+        if (best != null) return best
+        val owners = lists.filter { list ->
+            elements.all { e -> list.any { it["id"].toString() == e["id"].toString() } } && list.none { d -> keys.any { it != "id" && d.containsKey(it) } }
+        }.map { list -> list.associate { it["id"].toString() to it["name"] as String } }.distinct()
+        return owners.singleOrNull()?.let { "id" to it }
+    }
+
+    // The words of the game's own localisation: a text file of the APK whose lines
+    // are the names the data uses (Jungle Heat's localization.lid, "LID Gold
+    // Mine"), and beside it a file of as many lines in the player's language
+    // (localization_fr.lid, "Mine d'or"), else in English, line for line. Empty
+    // when the game has none: the names are shown as the data writes them.
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/main/kotlin/io/gutapk/core/offline/GameState.kt#statics
+    // not ported: statics (its JSON parse and the recordings: the words are lines of the APK's own files)
+    fun localisation(apk: Path?, names: Set<String>, language: String): Map<String, String> {
+        if (apk == null || !Files.isRegularFile(apk) || names.isEmpty()) return emptyMap()
+        ZipFile(apk.toFile()).use { zip ->
+            val texts = LinkedHashMap<String, List<String>>()
+            for (entry in zip.entries().asSequence()) {
+                if (!entry.name.startsWith("assets/") || entry.isDirectory || entry.size !in 2..DATA_LIMIT) continue
+                val bytes = zip.getInputStream(entry).use { it.readAllBytes() }
+                if (bytes.take(4096).any { it == 0.toByte() }) continue
+                texts[entry.name] = String(bytes, Charsets.UTF_8).lines()
+            }
+            val keys = texts.maxByOrNull { (_, lines) -> lines.count { it in names } } ?: return emptyMap()
+            if (keys.value.count { it in names } < 2) return emptyMap()
+            val folder = keys.key.substringBeforeLast('/')
+            val siblings = texts.filter { (name, lines) -> name != keys.key && name.substringBeforeLast('/') == folder && lines.size == keys.value.size }
+            fun spoken(code: String) = siblings.entries.firstOrNull { (name, _) ->
+                name.substringAfterLast('/').substringBeforeLast('.').lowercase().let { it.endsWith("_$code") || it.endsWith("-$code") || it.endsWith(".$code") }
+            }?.value
+            val words = spoken(language) ?: spoken("en") ?: return emptyMap()
+            return keys.value.indices.filter { keys.value[it] in names && words[it].isNotBlank() }.associate { keys.value[it] to words[it] }
+        }
+    }
+
+    // The data's name of each resource: the documents of one list each naming a
+    // resource in a text field of their own (currency.json's {"type": "GOLD",
+    // "name": "LID Gold"}), the list naming the most of them. A pack of gold, one
+    // of several documents naming GOLD, names none.
+    // https://github.com/213YaZ786/GutapK/blob/c52520a/src/main/kotlin/io/gutapk/core/offline/GameState.kt#resources
+    // not ported: resources, walk (the count of the documents a name is met in: the resources are given)
+    fun resourceNames(statics: List<Any?>, resources: Set<String>): Map<String, String> {
+        var best = emptyMap<String, String>()
+        for (list in named(statics)) {
+            val keys = list.flatMap { it.keys }.map { it.toString() }.toSet()
+            for (k in keys) {
+                val held = list.filter { it[k] is String && it[k] in resources }
+                if (held.map { it[k] }.toSet().size != held.size) continue
+                if (held.size > best.size) best = held.associate { it[k] as String to it["name"] as String }
+            }
+        }
+        return if (best.size >= 2) best else emptyMap()
+    }
+
     // The values of the state the Admin shows, by group: a resource wherever the
     // player holds it, the numbers of each element, the numbers of the messages.
     // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/core/offline/ServerRules.kt#getValues
-    fun fields(state: Map<String, Any?>, statics: List<Any?>): List<Field> {
+    // words: the game's localisation (localisation), a data name to the player's word.
+    fun fields(state: Map<String, Any?>, statics: List<Any?>, words: Map<String, String> = emptyMap()): List<Field> {
         val all = messages(state)
         val nameField = nameField(all) ?: return emptyList()
         val lists = named(statics)
         val out = mutableListOf<Field>()
+        // A key several messages hold their content under (data) says what nothing
+        // is, as nameField reads the messages' keys: the section of a list is the
+        // last other name of its path that is not its message's (Jungle Heat's
+        // location/second_location/location is the second base), else the message.
+        // https://github.com/213YaZ786/GutapK/blob/c52520a/src/main/kotlin/io/gutapk/core/offline/GameState.kt#nameField
+        val containers = all.flatMap { m -> m.keys.filter { it != nameField } }.groupingBy { it }.eachCount().filterValues { it >= 2 }.keys
+        fun section(path: String): String {
+            val message = path.substringBefore('/')
+            return path.split('/').filter { s -> !s.startsWith("#") && s.toIntOrNull() == null && s !in containers && s != message }.lastOrNull() ?: message
+        }
         // The resources the player holds: a name the data prices in that a number of the state is named by.
         val held = mutableSetOf<String>()
         fun keys(node: Any?) {
@@ -138,8 +239,11 @@ object GameState {
         keys(state)
         val resources = resources(statics).filter { r -> held.any { k -> k == r || k.endsWith("_$r") } }
         fun resource(key: String): String? = resources.firstOrNull { r -> key == r || key.endsWith("_$r") }
-        val labels = HashMap<String, String>()
-        fun label(element: Map<*, *>): String = labels[element["id"].toString()] ?: "#${element["id"]}"
+        val resourceWords = resourceNames(statics, resources.toSet())
+        // By the element itself: a second base reuses the ids of the first.
+        val labels = java.util.IdentityHashMap<Map<*, *>, String>()
+        val names = java.util.IdentityHashMap<Map<*, *>, String>()
+        fun label(element: Map<*, *>): String = labels[element] ?: "#${element["id"]}"
         fun walk(node: Any?, path: String, element: Map<*, *>?, listed: Boolean) {
             when (node) {
                 is Map<*, *> -> node.forEach { (k, v) -> walk(v, "$path/$k", element, listed) }
@@ -150,8 +254,12 @@ object GameState {
                         return
                     }
                     val elements = node.map { it as Map<*, *> }
-                    val naming = naming(elements, lists)
-                    for (e in elements) labels[e["id"].toString()] = naming?.second?.get(e[naming.first].toString())?.let { "$it #${e["id"]}" } ?: "#${e["id"]}"
+                    val naming = shownNaming(elements, lists)
+                    for (e in elements) {
+                        val word = naming?.second?.get(e[naming.first].toString())?.let { words[it] ?: it }
+                        if (word != null) names[e] = word
+                        labels[e] = word?.let { "$it #${e["id"]}" } ?: "#${e["id"]}"
+                    }
                     // The numbers of an element itself, its name and its times left out. A
                     // number other elements hold and this one not yet (a building at its
                     // first grade has none) is offered empty, to be given.
@@ -159,7 +267,7 @@ object GameState {
                     for (e in elements) {
                         val at = "$path/#${e["id"]}"
                         walk(e, at, e, listed)
-                        for (k in numbers) out.add(Field(Group.ELEMENTS, label(e) + " · " + k, "$at/$k", e[k]))
+                        for (k in numbers) out.add(Field(Group.ELEMENTS, label(e) + " · " + k, "$at/$k", e[k], section(path), names[e] ?: "", k))
                     }
                 }
                 is Number -> {
@@ -167,8 +275,10 @@ object GameState {
                     val r = resource(key)
                     when {
                         // A resource in a list that is not the player's elements (the prizes of a tourney) is not held.
-                        r != null && !listed -> out.add(Field(Group.RESOURCES, r + " · " + (element?.let { label(it) + " · " } ?: "") + key, path, node))
-                        element == null -> out.add(Field(Group.PLAYER, path, path, node))
+                        r != null && !listed -> out.add(
+                            Field(Group.RESOURCES, r + " · " + (element?.let { label(it) + " · " } ?: "") + key, path, node, resourceWords[r]?.let { words[it] ?: it } ?: r, element?.let { names[it] ?: label(it) } ?: "", key),
+                        )
+                        element == null -> out.add(Field(Group.PLAYER, path, path, node, path.substringBefore('/'), "", path.split('/').drop(1).filter { it !in containers }.joinToString("/")))
                     }
                 }
             }
