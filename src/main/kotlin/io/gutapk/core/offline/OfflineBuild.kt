@@ -33,6 +33,9 @@ object OfflineBuild {
     const val RECORDINGS = "recordings"
     private val ASSETS = Inject.CONFIG.substringBeforeLast('/') + "/$RECORDINGS/"
 
+    // Where the local game server's files sit, CacheProvider.SERVER on the phone.
+    private val SERVER_ASSETS = Inject.CONFIG.substringBeforeLast('/') + "/${ServerRules.SERVER}/"
+
     // The suffix of a recording's metadata file, one per recording (Store.java).
     const val ENTRY = ".0"
 
@@ -67,6 +70,7 @@ object OfflineBuild {
         blocked: Set<String> = emptySet(),
         consent: Boolean = true,
         signIn: Boolean = true,
+        served: List<ServerRules.Learned> = emptyList(),
     ): SignatureInfo {
         val part = SplitSet.part(input, "")
         if (!SplitSet.standalone(part)) {
@@ -159,7 +163,18 @@ object OfflineBuild {
                 }
                 val name = Inject.nextDexName(names)
                 added[name] = Files.write(work.resolve("server.dex"), dex)
-                added[Inject.CONFIG] = Files.write(work.resolve("offline.properties"), Inject.config(packageName, ports, blocked).toByteArray())
+                // The local game server, learnt from the recordings: its rules and the
+                // progress it starts from, as assets the phone copies into its server
+                // folder. The phone holds one game server, so the first origin learnt
+                // and moved to the phone has it.
+                // https://github.com/213YaZ786/GutapK/blob/ca70230/src/main/kotlin/io/gutapk/core/offline/OfflineBuild.kt#run
+                val game = served.firstOrNull { it.origin in ports.keys && it.origin !in blocked }
+                if (game != null) {
+                    ServerRules.files(game).forEach { (fileName, bytes) -> added[SERVER_ASSETS + fileName] = Files.write(work.resolve(fileName), bytes) }
+                    sink.emit(JobEvent.Line("local game server for ${game.origin}: the progress is kept on the phone"))
+                    game.lines.forEach { sink.emit(JobEvent.Line(it)) }
+                }
+                added[Inject.CONFIG] = Files.write(work.resolve("offline.properties"), Inject.config(packageName, ports, blocked, setOfNotNull(game?.origin)).toByteArray())
                 sink.emit(JobEvent.Line("server added as $name, provider ${Inject.authority(packageName)}"))
                 val answeredHere = ports.keys.count { it in blocked }
                 if (answeredHere > 0) sink.emit(JobEvent.Line("$answeredHere servers answered on the phone, never called"))

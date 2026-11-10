@@ -49,6 +49,7 @@ import io.gutapk.core.offline.Endpoints
 import io.gutapk.core.offline.Inject
 import io.gutapk.core.offline.OfflineBuild
 import io.gutapk.core.offline.Redirect
+import io.gutapk.core.offline.ServerRules
 import io.gutapk.core.sign.ApkSigning
 import io.gutapk.core.sign.KeyChoice
 import io.gutapk.core.sign.TestKey
@@ -170,6 +171,11 @@ fun OfflineDialog(
     var refused by remember(all, analysis) { mutableStateOf<Set<String>?>(null) }
     var skipConsent by remember { mutableStateOf(true) }
     var skipSignIn by remember { mutableStateOf(true) }
+    // The local game server, learnt from the recordings kept on the PC.
+    val learned by produceState<List<ServerRules.Learned>>(emptyList(), dir, recorded) {
+        value = withContext(Dispatchers.IO) { runCatching { ServerRules.learn(ServerRules.read(OfflineBuild.recordings(dir))) }.getOrDefault(emptyList()) }
+    }
+    var keepProgress by remember { mutableStateOf(true) }
     val blocked = refused ?: advised.keys
     val shown = chosen ?: (listing.servers.map { it.origin } + advised.keys).toSet()
     var serial by remember { mutableStateOf<String?>(null) }
@@ -375,6 +381,18 @@ fun OfflineDialog(
                                 Switch(checked = skipSignIn, onCheckedChange = { skipSignIn = it })
                             }
                         }
+                        learned.firstOrNull { game -> fitting.any { it.origin == game.origin } }?.let { game ->
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(t("offline_server"), style = MaterialTheme.typography.bodyLarge)
+                                    Text(t("offline_server_d", recorded.toString(), game.origin), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    game.lines.drop(1).forEach {
+                                        Text(it.trim(), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                                Switch(checked = keepProgress, onCheckedChange = { keepProgress = it })
+                            }
+                        }
                         Text(t("try_phone"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                         f.phones.forEach { phone ->
                             PhoneRow(phone, host == phone.serial) { serial = phone.serial }
@@ -410,6 +428,7 @@ fun OfflineDialog(
                             val refusing = blocked.intersect(fitting.map { it.origin }.toSet())
                             val skipping = skipConsent && windows.isNotEmpty()
                             val signing = skipSignIn && helpers.isNotEmpty()
+                            val serving = if (keepProgress) learned else emptyList()
                             val phone = host
                             askingLibs = Libraries.missing(root, Libraries.DEXLIB2 + if (store) Libraries.AIRCOMPRESSOR else emptyList())
                             if (askingLibs.isNotEmpty()) return@TextButton
@@ -421,7 +440,7 @@ fun OfflineDialog(
                                 // The test key signs, as the Sign dialog does with it: the
                                 // game is for the user's own phones.
                                 val out = output(dir, info.packageName, info.versionName, KeyChoice.TEST)
-                                OfflineBuild.run(original, servers, dex, strings, dir.resolve("work-offline"), out, TestKey.load(), info.minSdk, version, job, codecs, OfflineBuild.recordings(dir), refusing, skipping, signing)
+                                OfflineBuild.run(original, servers, dex, strings, dir.resolve("work-offline"), out, TestKey.load(), info.minSdk, version, job, codecs, OfflineBuild.recordings(dir), refusing, skipping, signing, serving)
                                 signed = out
                                 OfflineInstall.run(f.adb, phone, out, info.packageName, remove, job, { job.cancelRequested }, first = 2, steps = 3)
                                 finished = true

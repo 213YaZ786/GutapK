@@ -10,6 +10,8 @@ package io.gutapk.offline;
  * (Store.nearest), and a miss is a 502 and not OkHttp's 504 only-if-cached.
  * An origin the user chose to block is answered at once, as mitmproxy's block
  * list answers a matching request, and never reaches the network or the cache.
+ * An origin served locally gets its BSON commands answered by GameServer, from
+ * the progress kept on the phone, before the network and the cache too.
  *
  * https://github.com/mitmproxy/mitmproxy/blob/main/mitmproxy/addons/blocklist.py#request
  * https://github.com/square/okhttp/blob/master/okhttp/src/commonJvmAndroid/kotlin/okhttp3/internal/cache/CacheInterceptor.kt#intercept
@@ -39,6 +41,7 @@ public class CacheInterceptor implements Http.Handler {
     public static final String REPLAY = "replay";
     public static final String MISS = "miss";
     public static final String BLOCKED = "blocked";
+    public static final String LOCAL = "local";
 
     /** What the last request got, for the admin status. */
     public static volatile String lastSeen = "none";
@@ -54,17 +57,31 @@ public class CacheInterceptor implements Http.Handler {
     /** BlockSpec's status_code for this origin, 0 when the origin is not in the block list. */
     private final int status_code;
 
+    /**
+     * The local game server of an origin Offline serves (server.<port> in the
+     * config), null for any other. It answers before the network and the cache.
+     */
+    private final GameServer game;
+
+    /** Set once the log line that says the origin is served locally was written. */
+    private volatile boolean announced;
+
     public CacheInterceptor(String origin, Store cache, Overrides overrides, ProxyResponseRenderer proceed, Map<String, String> targets) {
         this(origin, cache, overrides, proceed, targets, 0);
     }
 
     public CacheInterceptor(String origin, Store cache, Overrides overrides, ProxyResponseRenderer proceed, Map<String, String> targets, int status_code) {
+        this(origin, cache, overrides, proceed, targets, status_code, null);
+    }
+
+    public CacheInterceptor(String origin, Store cache, Overrides overrides, ProxyResponseRenderer proceed, Map<String, String> targets, int status_code, GameServer game) {
         this.origin = origin;
         this.targets = targets;
         this.cache = cache;
         this.overrides = overrides;
         this.proceed = proceed;
         this.status_code = status_code;
+        this.game = game;
     }
 
     @Override
@@ -81,6 +98,21 @@ public class CacheInterceptor implements Http.Handler {
         String upgrade = chain.getHeaders().get("upgrade");
         if (upgrade != null && upgrade.toLowerCase().contains("websocket")) {
             return error(501, "websocket", "WebSocket upgrades are not served by the offline cache");
+        }
+        // A served origin answers from the phone's own state before any network or cache,
+        // a body that is not a command of the rules goes on as it always did.
+        if (game != null) {
+            GameServer.Response local = game.answer(chain.getBody());
+            if (local != null) {
+                if (!announced) {
+                    announced = true;
+                    Server.LOG.info("Local game server answers " + origin + ": progress kept on the phone");
+                }
+                lastSeen = LOCAL;
+                Http.Response response = Http.Response.newFixedLengthResponse(200, local.type, local.body);
+                response.addHeader(HEADER, LOCAL);
+                return response;
+            }
         }
         String method = chain.getMethod();
         String bodyHash = Store.sha256(chain.getBody());
@@ -109,6 +141,11 @@ public class CacheInterceptor implements Http.Handler {
         Store.Entry cacheResponse = cacheCandidate != null ? cacheCandidate
                 : cache.nearest(method, origin, chain.getUri(), chain.getQueryParameterString(), chain.getBody());
 
+        if (cacheCandidate == null) {
+            // Logged so the user sees which request was never recorded online.
+            Server.LOG.info("No exact recording: " + method + " " + origin + chain.getUri() + " (" + chain.getBody().length + " bytes sent), "
+                    + (cacheResponse == null ? "no answer" : "answered with the nearest recorded one"));
+        }
         // If the network failed and the cache is insufficient, fail.
         if (cacheResponse == null) {
             lastSeen = MISS;

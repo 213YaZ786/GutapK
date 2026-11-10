@@ -61,6 +61,9 @@ public class CacheProvider extends ContentProvider {
   /** Where the recordings kept on the PC sit in the game's assets. */
   static final String RECORDINGS = "gutapk/recordings";
 
+  /** Where the local game server's rules.bson and state.bson sit in the game's assets. */
+  static final String SERVER = "gutapk/server";
+
   private static void start(final Context context) throws IOException {
     InputStream source = context.getAssets().open(CONFIG);
     try {
@@ -70,19 +73,28 @@ public class CacheProvider extends ContentProvider {
       // https://github.com/EKA2L1/EKA2L1/blob/6ad873a07ee3d745cd17179026dca247f6d11f6b/src/emu/android/app/src/main/java/com/github/eka2l1/util/FileUtils.java#copyAssetFolder
       // Not ported: the other helpers of FileUtils (see Seed)
       final AssetManager assets = context.getAssets();
+      Seed.Assets seed = new Seed.Assets() {
+        @Override
+        public String[] list(String path) throws IOException {
+          return assets.list(path);
+        }
+
+        @Override
+        public InputStream open(String fileName) throws IOException {
+          return assets.open(fileName);
+        }
+      };
       String[] fileList = assets.list(RECORDINGS);
       if (fileList != null && fileList.length != 0) {
-        Seed.copyAssetFolder(new Seed.Assets() {
-          @Override
-          public String[] list(String path) throws IOException {
-            return assets.list(path);
-          }
-
-          @Override
-          public InputStream open(String fileName) throws IOException {
-            return assets.open(fileName);
-          }
-        }, RECORDINGS, new File(root, "cache").getPath());
+        Seed.copyAssetFolder(seed, RECORDINGS, new File(root, "cache").getPath());
+      }
+      // The rules and the progress of the local game server join the server folder the same way,
+      // a file the phone holds already is kept: the player's progress survives an install over the old one.
+      // The rules are the APK's own, so a build learnt from more recordings brings its rules in place of the old ones.
+      String[] serverList = assets.list(SERVER);
+      if (serverList != null && serverList.length != 0) {
+        new File(new File(root, "server"), "rules.bson").delete();
+        Seed.copyAssetFolder(seed, SERVER, new File(root, "server").getPath());
       }
       Offline.start(source, root);
     } finally {

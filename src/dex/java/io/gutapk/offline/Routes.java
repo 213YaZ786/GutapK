@@ -67,10 +67,18 @@ public final class Routes implements Http.Handler {
 
     private final Map<Integer, String> origins;
 
+    /** The local game server whose state /state reads and replaces, null when the app has none. */
+    private final GameServer game;
+
     public Routes(Store cache, Overrides overrides, Map<Integer, String> origins) {
+        this(cache, overrides, origins, null);
+    }
+
+    public Routes(Store cache, Overrides overrides, Map<Integer, String> origins, GameServer game) {
         this.cache = cache;
         this.overrides = overrides;
         this.origins = origins;
+        this.game = game;
         addMappings();
     }
 
@@ -85,6 +93,7 @@ public final class Routes implements Http.Handler {
         addRoute("/reset-overrides", new ResetHandler());
         addRoute("/clear", new ClearHandler());
         addRoute("/export", new ExportHandler());
+        addRoute("/state", new StateHandler());
     }
 
     public void addRoute(String url, UriResponder handler) {
@@ -118,7 +127,7 @@ public final class Routes implements Http.Handler {
         String work = normalizeUri(session.getUri());
         UriResponder responder = router.get(work);
         if (responder == null) {
-            return json(404, error("not found", "Routes: /status /entries /values /set /reset-overrides /clear /export"));
+            return json(404, error("not found", "Routes: /status /entries /values /set /reset-overrides /clear /export /state"));
         }
         String error = "General error!";
         try {
@@ -264,6 +273,39 @@ public final class Routes implements Http.Handler {
         public Http.Response post(Http session) {
             overrides.reset();
             return json(200, ok());
+        }
+    }
+
+    /**
+     * GET /state returns the progress of the local game server as the BSON
+     * bytes it keeps in state.bson, PUT /state replaces it with a BSON
+     * document that holds a messages list, so GutapK's Admin can edit the
+     * game's resources later. A phone without rules answers 404.
+     * https://github.com/NanoHttpd/nanohttpd/blob/master/nanolets/src/main/java/org/nanohttpd/router/RouterNanoHTTPD.java#UriResponder
+     * Not ported: other (the base class answers 405)
+     */
+    private class StateHandler extends UriResponder {
+        @Override
+        public Http.Response get(Http session) {
+            if (game == null || !game.ready()) {
+                return json(404, error("not found", "No local game server on this phone"));
+            }
+            return Http.Response.newFixedLengthResponse(200, "application/octet-stream", game.stateBytes());
+        }
+
+        @Override
+        public Http.Response put(Http session) {
+            if (game == null || !game.ready()) {
+                return json(404, error("not found", "No local game server on this phone"));
+            }
+            try {
+                game.replaceState(session.getBody());
+                return json(200, ok());
+            } catch (IllegalArgumentException e) {
+                return json(400, error("bad request", "The body is not a state: " + e.getMessage()));
+            } catch (IOException e) {
+                return json(500, error("internal", "State not saved: " + e.getMessage()));
+            }
         }
     }
 

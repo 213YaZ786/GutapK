@@ -480,7 +480,7 @@ object Inject {
     // port it listens on, the address the app holds in its place (the server
     // points a redirect to the origin there), and the name of the socket the
     // admin side reaches it by (abstract, so no file is left on the phone).
-    fun config(packageName: String, ports: Map<String, Int>, blocked: Set<String> = emptySet()): String {
+    fun config(packageName: String, ports: Map<String, Int>, blocked: Set<String> = emptySet(), served: Set<String> = emptySet()): String {
         require(ports.keys.none { '\n' in it || '\r' in it || '\\' in it }) { "an origin cannot be written to a properties file" }
         return buildString {
             ports.forEach { (origin, port) -> append("listen.$port=$origin\n") }
@@ -488,6 +488,8 @@ object Inject {
             // block.<port>: that origin is answered on the phone, as mitmproxy's block_list answers a matching request.
             // https://github.com/mitmproxy/mitmproxy/blob/main/mitmproxy/addons/blocklist.py#configure
             ports.forEach { (origin, port) -> if (origin in blocked) append("block.$port=true\n") }
+            // server.<port>: that origin is answered by the local game server (Offline.SERVER), from the progress kept on the phone.
+            ports.forEach { (origin, port) -> if (origin in served) append("server.$port=true\n") }
             append("admin=gutapk.$packageName\n")
         }
     }

@@ -22,7 +22,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.logging.Level;
 
 public class Offline {
@@ -39,7 +41,19 @@ public class Offline {
      */
     public static final String BLOCK = "block.";
 
+    /**
+     * server.<port> is true when that origin is answered by the local game
+     * server (GameServer), from the progress kept on the phone.
+     */
+    public static final String SERVER = "server.";
+
     public static final int NO_CONTENT = 204;
+
+    /** The ports of the origins the local game server answers. */
+    public final Set<Integer> served = new TreeSet<Integer>();
+
+    /** The local game server, ready only when the server folder holds rules. */
+    public GameServer game;
 
     /** The block list: the port of a blocked origin to the status_code it is answered with. */
     public final Map<Integer, Integer> items = new TreeMap<Integer, Integer>();
@@ -85,6 +99,11 @@ public class Offline {
                     // OptionsError in mitmproxy stops the run, here the origin is only served as any other.
                     Server.LOG.log(Level.WARNING, "Cannot parse block_list option " + name + ": " + e.getMessage());
                 }
+            } else if (name.startsWith(SERVER)) {
+                // server.<port>=true: that origin is answered by the local game server, only when its value is true.
+                if ("true".equals(args.getProperty(name).trim())) {
+                    options.served.add(Integer.parseInt(name.substring(SERVER.length()).trim()));
+                }
             } else if ("admin".equals(name)) {
                 admin = args.getProperty(name).trim();
             }
@@ -99,9 +118,12 @@ public class Offline {
         options.cache = new Store(new File(rootDirs, "cache"));
         options.overrides = new Overrides(new File(rootDirs, "overrides.json"));
         ProxyResponseRenderer renderer = new ProxyResponseRenderer();
+        // The rules and the progress of the local game server sit in the server folder, seeded from the assets.
+        options.game = new GameServer(new File(rootDirs, "server"));
         for (Map.Entry<Integer, String> origin : options.origins.entrySet()) {
             int status_code = options.items.containsKey(origin.getKey()) ? options.items.get(origin.getKey()) : 0;
-            Server server = new Server(host, origin.getKey(), new CacheInterceptor(origin.getValue(), options.cache, options.overrides, renderer, targets, status_code));
+            GameServer game = options.served.contains(origin.getKey()) && options.game.ready() ? options.game : null;
+            Server server = new Server(host, origin.getKey(), new CacheInterceptor(origin.getValue(), options.cache, options.overrides, renderer, targets, status_code, game));
             try {
                 server.start();
                 options.servers.add(server);
@@ -112,7 +134,7 @@ public class Offline {
         }
         if (admin != null) {
             try {
-                Admin socket = new Admin(admin, new Routes(options.cache, options.overrides, options.origins));
+                Admin socket = new Admin(admin, new Routes(options.cache, options.overrides, options.origins, options.game));
                 socket.start();
                 options.admin = socket;
                 Server.LOG.info("Offline admin on @" + admin);
