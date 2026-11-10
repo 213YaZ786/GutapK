@@ -183,18 +183,22 @@ fun EditScreen(
     val highestSdk = Sdk.highest(info.minSdk, info.targetSdk)
     // The patches made in the hex view, on by default: making them was the
     // user's request already.
-    val patches by produceState(emptyList<BytePatch>(), packageDir) {
+    // Null while read, as the folder below: a build started then would leave them out.
+    val patchesRead by produceState<List<BytePatch>?>(null, packageDir) {
         value = withContext(Dispatchers.IO) { Patches.read(packageDir) }
     }
+    val patches = patchesRead.orEmpty()
     var applyPatches by draft::applyPatches
     // The decoded folder, on by default for the same reason as the patches:
     // what the user changed there is what they expect in the app. Its
     // changed files are listed, null when there is no folder.
+    var codeRead by remember(packageDir) { mutableStateOf(false) }
     val codeChanged by produceState<List<String>?>(null, packageDir) {
         value = withContext(Dispatchers.IO) {
             val code = SmaliCode.dir(packageDir)
             if (SmaliCode.record(code) == null) null else runCatching { SmaliCode.touched(code) }.getOrDefault(emptyList())
         }
+        codeRead = true
     }
     var applySmali by draft::applySmali
     val useSmali = applySmali && !codeChanged.isNullOrEmpty()
@@ -237,7 +241,7 @@ fun EditScreen(
     }
     val ownMissing = choice == KeyChoice.OWN && !OwnKey.exists()
     val keyReady = choice != null && !ownMissing
-    val ready = anyChange && keyReady && spec != null && !(usePatches && lostAbis.isNotEmpty())
+    val ready = anyChange && keyReady && spec != null && !(usePatches && lostAbis.isNotEmpty()) && patchesRead != null && codeRead
 
     val changed: @Composable () -> Unit = {
         Text(t("edit_changed"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)

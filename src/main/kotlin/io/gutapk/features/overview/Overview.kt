@@ -47,7 +47,6 @@ import io.gutapk.core.apk.UnityReader
 import io.gutapk.core.il2cpp.MethodEntry
 import io.gutapk.core.offline.Endpoint
 import io.gutapk.core.offline.Endpoints
-import io.gutapk.core.offline.OfflineBuild
 import io.gutapk.core.edit.Engine
 import io.gutapk.core.edit.CodeSource
 import io.gutapk.core.edit.JavaCode
@@ -189,9 +188,6 @@ fun OverviewScreen(
         value = withContext(Dispatchers.IO) { runCatching { Endpoints.scan(original) }.getOrDefault(emptyList()) }
     }
     var dialog by remember { mutableStateOf<String?>(null) }
-    // The recordings a local game server is learnt from, counted again when a
-    // dialog closes (Offline and Admin keep new ones on the PC).
-    val recorded by produceState(0, dir, dialog) { value = withContext(Dispatchers.IO) { OfflineBuild.count(OfflineBuild.recordings(dir)) } }
     var editing by remember { mutableStateOf(false) }
     var methods by remember { mutableStateOf(false) }
     var methodQuery by remember { mutableStateOf("") }
@@ -270,11 +266,11 @@ fun OverviewScreen(
                 root != null && info?.engines?.isEmpty() == true -> "java"
                 else -> null
             }
-            // One Values button: the values the local game server serves once it
-            // has recordings to learn from (Admin then opens the code's values
-            // too), else the values written in the game's code.
-            val served = scanned && (recorded > 0 || code == null)
-            if (served || code != null) FilledTonalButton(onClick = { dialog = if (served) "admin" else code }) { Text(t("admin_action")) }
+            // One Admin button, always the game's live values: they come from the
+            // game on the phone, not from the recordings of this folder, which
+            // another root may not hold. The values written in the game's code
+            // open from a row of Admin's own.
+            if (scanned || code != null) FilledTonalButton(onClick = { dialog = "admin" }) { Text(t("admin_action")) }
         }
     }
     val detection = if (root != null && loaded != null) rememberDetection(root, loaded.classes) else null

@@ -70,19 +70,21 @@ fun SignDialog(
     // What the user changed in the Code and Unity zones goes into the
     // signed app: the decoded folder when it holds changes, the hex
     // patches when there are some. Without either the original is signed
-    // as it is.
-    val codeChanged by produceState(0, dir) {
+    // as it is. Both null while read: signing then would leave them out.
+    val changedRead by produceState<Int?>(null, dir) {
         value = withContext(Dispatchers.IO) {
             val code = SmaliCode.dir(dir)
             if (SmaliCode.record(code) == null) 0 else runCatching { SmaliCode.touched(code).size }.getOrDefault(0)
         }
     }
-    val patches by produceState(emptyList<BytePatch>(), dir) {
+    val patchesRead by produceState<List<BytePatch>?>(null, dir) {
         value = withContext(Dispatchers.IO) { runCatching { Patches.read(dir) }.getOrDefault(emptyList()) }
     }
+    val codeChanged = changedRead ?: 0
+    val patches = patchesRead.orEmpty()
     val rebuild = root != null && (codeChanged > 0 || patches.isNotEmpty())
     val output = when {
-        choice == null || parts == null -> null
+        choice == null || parts == null || changedRead == null || patchesRead == null -> null
         set != null -> ApkSigning.setOutput(dir, info.packageName, info.versionName, choice)
         else -> ApkSigning.output(dir, info.packageName, info.versionName, choice)
     }

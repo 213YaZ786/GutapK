@@ -181,10 +181,13 @@ fun OfflineDialog(
     var refused by remember(all, analysis) { mutableStateOf<Set<String>?>(null) }
     var skipConsent by remember { mutableStateOf(true) }
     var skipSignIn by remember { mutableStateOf(true) }
-    // The local game server, learnt from the recordings kept on the PC.
-    val learned by produceState<List<ServerRules.Learned>>(emptyList(), dir, recorded) {
+    // The local game server, learnt from the recordings kept on the PC. Null
+    // while learning: a build started then would leave the server out.
+    val learning by produceState<List<ServerRules.Learned>?>(null, dir, recorded) {
+        value = null
         value = withContext(Dispatchers.IO) { runCatching { ServerRules.learn(ServerRules.read(OfflineBuild.recordings(dir)), dir.resolve("original.apk")) }.getOrDefault(emptyList()) }
     }
+    val learned = learning.orEmpty()
     var keepProgress by remember { mutableStateOf(true) }
     var unlockAll by remember { mutableStateOf(true) }
     val blocked = refused ?: advised.keys
@@ -302,7 +305,7 @@ fun OfflineDialog(
         f is Seen.Ready -> {
             val host = serial?.takeIf { s -> f.phones.any { it.serial == s } } ?: f.phones.first().serial
             val fitting = all.filter { it.origin in shown && Redirect.target(it.origin, port = Redirect.FITTING_PORT) != null }
-            val ready = fitting.isNotEmpty()
+            val ready = fitting.isNotEmpty() && learning != null
             // What each ticked address becomes, as OfflineBuild writes it.
             val ports = Inject.ports(info.packageName, fitting.map { it.origin })
             val changes = ports.mapValues { (origin, port) -> Redirect.target(origin, port = port) }
@@ -420,7 +423,11 @@ fun OfflineDialog(
                             PhoneRow(phone, host == phone.serial) { serial = phone.serial }
                         }
                         Text(
-                            if (recorded > 0) t("offline_recordings", recorded.toString()) else t("offline_no_recordings"),
+                            when {
+                                learning == null -> t("offline_learning", recorded.toString())
+                                recorded > 0 -> t("offline_recordings", recorded.toString())
+                                else -> t("offline_no_recordings")
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                         )
                         Text(t("sign_test_warning"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
@@ -873,6 +880,14 @@ fun AdminDialog(
                         }
                         if (working) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                         failure?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error) }
+                        // A game without a local game server has only these: the row is
+                        // offered before the phone is read, as AdminValues offers it after.
+                        if (onCodeValues != null) {
+                            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = onCodeValues).padding(vertical = 8.dp)) {
+                                Text(t("admin_code"), style = MaterialTheme.typography.bodyLarge)
+                                Text(t("admin_code_d"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
                     }
                 },
                 confirmButton = {
