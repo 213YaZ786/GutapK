@@ -114,6 +114,9 @@ public final class GameServer {
     /** Commands already logged as unknown, so the line comes once per command. */
     private final List<String> unknown = new ArrayList<String>();
 
+    /** Commands already logged as sent unlike the requests their rules were learnt from. */
+    private final List<String> unlearnt = new ArrayList<String>();
+
     /** Set when a rule changed the state, cleared when it is saved. */
     private boolean dirty;
 
@@ -203,6 +206,8 @@ public final class GameServer {
         }
         ResponseDefinition responseDefinition;
         try {
+            // The works whose time is up end first, so a login shows them done.
+            elapse(System.currentTimeMillis() / 1000L);
             Map<String, Object> pack = map(rules.get("pack"));
             String packName = pack == null ? null : string(pack.get("command"));
             String listField = pack == null ? null : string(pack.get("list"));
@@ -274,11 +279,18 @@ public final class GameServer {
                 apply(rule, body, false, request);
             }
         }
-        // The scenarios move on: the rules of the command edit the state.
+        // The scenarios move on: the rules of the command edit the state, those
+        // learnt from requests like this one only.
         for (Object item : list(rules.get("rules"))) {
             Map<String, Object> rule = map(item);
-            if (rule != null && name.equals(rule.get("command"))) {
+            if (rule == null || !name.equals(rule.get("command"))) {
+                continue;
+            }
+            if (matches(rule, request)) {
                 apply(rule, state, true, request);
+            } else if (!unlearnt.contains(name)) {
+                unlearnt.add(name);
+                Server.LOG.info("Local game server: " + name + " was learnt from requests with " + rule.get("when") + " only, this one leaves the progress as it is");
             }
         }
         return new ResponseDefinition(body, type);
@@ -313,6 +325,22 @@ public final class GameServer {
             }
         }
         return nearest;
+    }
+
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/dex/java/io/gutapk/offline/GameServer.java#findNearestTo
+    // Not ported: the count of the fields shared (a rule holds for every field of its when or not at all)
+    /** True when the request holds every field of the rule's when with its value, as the requests the rule was learnt from did. */
+    private static boolean matches(Map<String, Object> rule, Map<String, Object> request) {
+        Map<String, Object> recorded = map(rule.get("when"));
+        if (recorded == null) {
+            return true;
+        }
+        for (Map.Entry<String, Object> entry : recorded.entrySet()) {
+            if (!request.containsKey(entry.getKey()) || !same(entry.getValue(), request.get(entry.getKey()))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static boolean ignored(String field) {
@@ -715,6 +743,94 @@ public final class GameServer {
         } catch (Unreachable e) {
             skipped(name, op, path, e);
         }
+    }
+
+    /**
+     * The timers of the rules: an element of a list whose field holds the value
+     * of a work under way (an upgrade) ends it once its time is up, the time
+     * looked up by the element's key in the durations the PC found in the game's
+     * data. The end is applied to the element: a number up, the field set back,
+     * the time set to the end.
+     */
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/dex/java/io/gutapk/offline/GameServer.java#apply
+    // not ported: the ops append and remove (a timer ends a work, it adds or removes nothing)
+    private void elapse(long now) {
+        for (Object item : list(rules.get("timers"))) {
+            Map<String, Object> rule = map(item);
+            String path = rule == null ? null : string(rule.get("list"));
+            String field = rule == null ? null : string(rule.get("field"));
+            String since = rule == null ? null : string(rule.get("since"));
+            Map<String, Object> durations = rule == null ? null : map(rule.get("durations"));
+            List<String> key = rule == null ? new ArrayList<String>() : strings(rule.get("key"));
+            if (path == null || field == null || since == null || durations == null || key.size() != 2) {
+                continue;
+            }
+            Object parentNode;
+            try {
+                parentNode = new Patch(state, true, new LinkedHashMap<String, Object>()).evaluate(Pointer.parse(path), false);
+            } catch (Unreachable e) {
+                continue;
+            }
+            for (Object element : list(parentNode)) {
+                Map<String, Object> target = map(element);
+                if (target == null || !same(valueAt(target, field), rule.get("value")) || !(valueAt(target, since) instanceof Number)) {
+                    continue;
+                }
+                Object grade = valueAt(target, key.get(1));
+                Object duration = durations.get(token(valueAt(target, key.get(0))) + "," + token(grade == null ? rule.get("default") : grade));
+                if (!(duration instanceof Number)) {
+                    continue;
+                }
+                long end = ((Number) valueAt(target, since)).longValue() + ((Number) duration).longValue();
+                if (end > now) {
+                    continue;
+                }
+                for (Object then : list(rule.get("then"))) {
+                    Map<String, Object> op = map(then);
+                    String inner = op == null ? null : string(op.get("path"));
+                    if (inner == null) {
+                        continue;
+                    }
+                    if ("increment".equals(op.get("op"))) {
+                        Object valueNode = valueAt(target, inner);
+                        put(target, inner, sum(valueNode instanceof Number ? valueNode : rule.get("default"), Integer.valueOf(1)));
+                    } else if ("$end".equals(op.get("value"))) {
+                        put(target, inner, (int) end == end ? (Object) Integer.valueOf((int) end) : (Object) Long.valueOf(end));
+                    } else {
+                        put(target, inner, copy(op.get("value")));
+                    }
+                }
+                dirty = true;
+                Server.LOG.info("Local game server: " + field + " " + rule.get("value") + " of " + path + " #" + target.get(ID) + " ended");
+            }
+        }
+    }
+
+    /** The value at a path of a document, its segments joined by "/", null when it is not there. */
+    private static Object valueAt(Map<String, Object> document, String path) {
+        Object valueNode = document;
+        for (String token : path.split("/")) {
+            valueNode = valueNode instanceof Map ? castMap(valueNode).get(token) : null;
+        }
+        return valueNode;
+    }
+
+    /** Sets the value at a path of a document, making the documents on its way. */
+    private static void put(Map<String, Object> document, String path, Object value) {
+        String[] tokens = path.split("/");
+        Map<String, Object> parentNode = document;
+        for (int i = 0; i < tokens.length - 1; i++) {
+            if (!(parentNode.get(tokens[i]) instanceof Map)) {
+                parentNode.put(tokens[i], new LinkedHashMap<String, Object>());
+            }
+            parentNode = castMap(parentNode.get(tokens[i]));
+        }
+        parentNode.put(tokens[tokens.length - 1], value);
+    }
+
+    /** A key segment: a number written without its width, as the PC writes the durations. */
+    private static String token(Object value) {
+        return value instanceof Number && !(value instanceof Double) ? String.valueOf(((Number) value).longValue()) : String.valueOf(value);
     }
 
     private static void skipped(String command, String op, String path, Unreachable why) {

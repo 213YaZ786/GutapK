@@ -179,15 +179,21 @@ object ServerRules {
 
         val snapshots = logins.map { c -> Snapshot(c.time, messages(c.answer!!, command).filter { (it[command] as String) in state }.associateBy { it[command] as String }) }
         val others = calls.filter { it.name !in login && it.name !in packs }
-        val rules = setRules(snapshots, others) + appendRules(snapshots, others) + incrementRules(snapshots, others)
+        val increments = incrementRules(snapshots, others)
+        val whens = whenRules(others)
+        val rules = (setRules(snapshots, others, increments) + appendRules(snapshots, others) + increments).map { r ->
+            whens[r["command"]]?.let { linkedMapOf<String, Any?>().apply { putAll(r); put("when", it) } } ?: r
+        }
         val answerRules = answerRules(others, command)
+        val timers = timerRules(snapshots, others, statics(recordings))
 
-        val document = linkedMapOf<String, Any?>("command" to command, "login" to login.toList(), "time" to time, "answers" to samples, "answerRules" to answerRules, "rules" to rules)
+        val document = linkedMapOf<String, Any?>("command" to command, "login" to login.toList(), "time" to time, "answers" to samples, "answerRules" to answerRules, "rules" to rules, "timers" to timers)
         packs.entries.firstOrNull()?.let { (name, list) -> document["pack"] = linkedMapOf("command" to name, "list" to list) }
         val lines = listOf(
             "$origin: a local game server learnt from ${calls.size} commands, login ${login.joinToString()}, " +
                 "${state.size} messages kept, ${rules.size} rules, ${answerRules.size} answer rules, ${samples.size} commands answered alike",
-        ) + (rules + answerRules).map { r -> "  ${r["command"]}: ${r["op"] ?: "answer"} ${r["path"]}" + (r["value"]?.let { v -> " = " + (if (v is Map<*, *>) "{${v.keys.joinToString()}}" else v.toString()) } ?: "") }
+        ) + (rules + answerRules).map { r -> "  ${r["command"]}: ${r["op"] ?: "answer"} ${r["path"]}" + (r["value"]?.let { v -> " = " + (if (v is Map<*, *>) "{${v.keys.joinToString()}}" else v.toString()) } ?: "") } +
+            timers.map { t -> "  timer: ${t["list"]} ${t["field"]} ${t["value"]} ends after the time of ${(t["durations"] as Map<*, *>).size} documents of the game's data" }
         return Learned(origin, document, linkedMapOf("messages" to state.values.toList()), lines)
     }
 
@@ -250,9 +256,10 @@ object ServerRules {
     // sent between (RelationFinder's x_values and y_values, one pair per interval).
     // https://github.com/netzob/netzob/blob/master/src/netzob/Inference/Vocabulary/RelationFinder.py#executeOnFields
     // not ported: relation_fcts, _sizeRelation (equality only)
-    private fun setRules(snapshots: List<Snapshot>, calls: List<Call>): List<Map<String, Any?>> {
+    private fun setRules(snapshots: List<Snapshot>, calls: List<Call>, increments: List<Map<String, Any?>>): List<Map<String, Any?>> {
         val intervals = intervals(snapshots, calls)
         val results = mutableListOf<Map<String, Any?>>()
+        // A field of a message (the player's step): the last call of the command between two logins sets it.
         for (name in calls.map { it.name }.distinct()) {
             val found = intervals.filter { i -> i.between.any { it.name == name } }
             val fieldsValues = found.map { i -> i.between.last { it.name == name } }
@@ -260,7 +267,7 @@ object ServerRules {
             val relations = LinkedHashSet<Pair<String, String>>()
             found.forEachIndexed { k, i ->
                 for (d in i.diffs) {
-                    if (d.operation == StateDiff.Operation.REMOVE || added(d.path, i.diffs)) continue
+                    if (d.operation == StateDiff.Operation.REMOVE || added(d.path, i.diffs) || '#' in d.path) continue
                     for ((xField, x) in fieldsValues[k].xFields) {
                         if (RelationFinder.equalRelation(x, d.value) && !(x is Number && x.toDouble() == 0.0) && x != "") general(d.path, fieldsValues[k])?.let { relations.add(xField to it) }
                     }
@@ -274,6 +281,57 @@ object ServerRules {
                     results.add(linkedMapOf("command" to name, "op" to "set", "path" to yField, "value" to "$$xField"))
                 }
             }
+        }
+        // A field of an element (a building's state, its time): the last call naming
+        // the element between two logins sets it, to a field the call sent (its time
+        // included) or to the same value every time. The fields are those that
+        // changed in some element of a list. The loop above, its sightings per element.
+        // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/core/offline/ServerRules.kt#setRules
+        val attributes = LinkedHashSet<Pair<String, String>>()
+        val kept = mutableListOf<Triple<Map<String, Any?>, Pair<String, String>, Boolean>>()
+        for (i in intervals) {
+            for (d in i.diffs) {
+                if (d.operation == StateDiff.Operation.REMOVE || d.value is Map<*, *> || d.value is List<*> || added(d.path, i.diffs)) continue
+                val at = d.path.indexOf("/#")
+                val inner = if (at < 0) "" else d.path.substring(at + 2).substringAfter('/', "")
+                if (inner.isNotEmpty() && '#' !in inner) attributes.add(d.path.substring(0, at) to inner)
+            }
+        }
+        for (name in calls.map { it.name }.distinct()) {
+            for (xField in calls.filter { it.name == name }.flatMap { it.xFields.keys }.toSet()) {
+                for ((list, inner) in attributes) {
+                    val yField = "$list/#$$xField/$inner"
+                    if (increments.any { it["command"] == name && it["path"] == yField }) continue
+                    val found = intervals.flatMap { i ->
+                        i.between.filter { c ->
+                            val id = c.xFields[xField]?.toString()
+                            c.name == name && id != null && i.between.last { o -> o.xFields.values.any { it.toString() == id } } === c && valueAt(i.target.state, "$list/#$id") != null
+                        }.map { i to it }
+                    }
+                    if (found.isEmpty()) continue
+                    val yValues = found.map { (i, c) -> valueAt(i.target.state, concrete(yField, c)) }
+                    if (yValues.any { it is Map<*, *> || it is List<*> }) continue
+                    val relation = (found.first().second.xFields.keys + "optime").firstOrNull { x ->
+                        // Seen once, a text or a time (the call's own time) is taken, a small number is chance.
+                        val single = yValues.singleOrNull()
+                        RelationFinder.executeOnFields(found.map { it.second.fields[x] }, yValues, allowConstant = single is String || (single as? Number)?.toLong()?.let { it > 1_000_000_000L } == true)
+                    }
+                    val constant = yValues.first().takeIf { y -> y != null && yValues.all { StateDiff.same(it, y) } && (found.size >= 2 || y is String) }
+                    // Whether the call changed it once at least: a value it only left as it was proves nothing.
+                    val changed = found.indices.any { k -> !StateDiff.same(valueAt(found[k].first.source.state, concrete(yField, found[k].second)), yValues[k]) }
+                    if (relation != null && changed) {
+                        results.add(linkedMapOf("command" to name, "op" to "set", "path" to yField, "value" to "$$relation"))
+                    } else if (constant != null) {
+                        kept.add(Triple(linkedMapOf("command" to name, "op" to "set", "path" to yField, "value" to constant), list to inner, changed))
+                    }
+                }
+            }
+        }
+        // A value a call left as it was is a rule when another call sets that field to
+        // another value: the upgrade that ends with diamonds puts back the state the
+        // start of the upgrade changed.
+        for ((relation, attribute, changed) in kept) {
+            if (changed || kept.any { (o, a, c) -> c && a == attribute && !StateDiff.same(o["value"], relation["value"]) }) results.add(relation)
         }
         return results.distinctBy { it["command"] to it["path"] }
     }
@@ -317,7 +375,7 @@ object ServerRules {
     // https://github.com/flipkart-incubator/zjsonpatch/blob/master/src/main/java/com/flipkart/zjsonpatch/AbstractJsonDiff.java#generateDiffs
     // not ported: Operation.TEST, Diff.generateDiff (the diff is read, not written)
     private fun incrementRules(snapshots: List<Snapshot>, calls: List<Call>): List<Map<String, Any?>> {
-        val results = LinkedHashMap<Pair<String, String>, Map<String, Any?>>()
+        val results = LinkedHashMap<Pair<String, String>, MutableMap<String, Any?>>()
         for (i in intervals(snapshots, calls)) {
             for (d in i.diffs) {
                 val target = d.value as? Number ?: continue
@@ -326,33 +384,135 @@ object ServerRules {
                 if (source != null && (source !is Number || source is Double)) continue
                 val id = d.path.split('/').lastOrNull { it.startsWith("#") }?.substring(1) ?: continue
                 val related = i.between.filter { c -> c.xFields.values.any { it.toString() == id } }.groupBy { it.name }
-                val first = related.entries.firstOrNull { (_, group) ->
+                // Every command that explains it is a candidate, the check below keeps those that hold.
+                for ((_, group) in related) {
                     val start = (source as? Number)?.toLong() ?: (target.toLong() - group.size)
-                    target.toLong() - start == group.size.toLong() && start >= 0
-                } ?: continue
-                val call = first.value.first()
-                val path = general(d.path, call) ?: continue
-                val relation = linkedMapOf<String, Any?>("command" to call.name, "op" to "increment", "path" to path)
-                if (source == null) relation["default"] = (target.toLong() - first.value.size).toInt()
-                results.putIfAbsent(call.name to path, relation)
+                    if (target.toLong() - start != group.size.toLong() || start < 0) continue
+                    val call = group.first()
+                    val path = general(d.path, call) ?: continue
+                    val relation = results.getOrPut(call.name to path) { linkedMapOf("command" to call.name, "op" to "increment", "path" to path) }
+                    // A number the element does not hold yet starts at the default: a building without a grade is at 1.
+                    if (source == null && relation["default"] == null) relation["default"] = start.toInt()
+                }
             }
         }
         // Kept only when it holds between every two logins the command named an
         // element in, as RelationFinder keeps a relation that holds for every pair:
-        // each element named went up by as many times as it was named. Where
-        // another command named the same element too, the interval says nothing.
+        // each element named went up by as many times as it was named, a number it
+        // holds in neither login being its default. Where another command named the
+        // same element too, the interval says nothing.
         val intervals = intervals(snapshots, calls)
         return results.values.filter { relation ->
             val path = relation["path"] as String
             intervals.all { i ->
                 i.between.filter { it.name == relation["command"] }.groupBy { concrete(path, it) }.all { (p, group) ->
                     val shared = results.values.any { o -> o !== relation && o["path"] == path && i.between.any { it.name == o["command"] && concrete(path, it) == p } }
-                    val target = valueAt(i.target.state, p) as? Number
-                    val source = valueAt(i.source.state, p) as? Number ?: relation["default"] as? Number
-                    shared || target == null || source == null || target.toLong() - source.toLong() == group.size.toLong()
+                    val element = p.substringBeforeLast('/')
+                    val present = valueAt(i.source.state, element) != null && valueAt(i.target.state, element) != null
+                    val after = valueAt(i.target.state, p) as? Number
+                    val before = valueAt(i.source.state, p) as? Number
+                    // Held in neither login, the number did not move.
+                    val target = after ?: relation["default"] as? Number ?: if (before == null) 0 else null
+                    val source = before ?: relation["default"] as? Number ?: if (after == null) 0 else null
+                    // Shared with another command, the number went up by as many at least.
+                    val delta = if (target == null || source == null) null else target.toLong() - source.toLong()
+                    !present || delta == null || (if (shared) delta >= group.size else delta == group.size.toLong())
                 }
             }
         }
+    }
+
+    // timers: an element that changed between two logins though no call named it
+    // finished something the server timed: a text went from A to B (UPGRADE to
+    // NORMAL), a time from t1 to t2, a number up by one (the grade). The time it
+    // took is found in the game's data files the game downloaded: the document
+    // whose id is a field of the element (its article), and in it the document
+    // whose field is the element's new number and another field t2 - t1. Every
+    // document of the file gives its duration to the rule, by article and number
+    // before, and the phone ends a timer once its time is up.
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/core/offline/ServerRules.kt#incrementRules
+    // not ported: read, valueAt (called as they are, not copied)
+    private fun timerRules(snapshots: List<Snapshot>, calls: List<Call>, statics: List<Any?>): List<Map<String, Any?>> {
+        val results = LinkedHashMap<String, Map<String, Any?>>()
+        for (i in intervals(snapshots, calls)) {
+            val changed = i.diffs.filter { d -> d.operation != StateDiff.Operation.REMOVE && "/#" in d.path && !added(d.path, i.diffs) }
+                .groupBy { d -> d.path.substring(0, d.path.indexOf('/', d.path.indexOf("/#") + 2).let { if (it < 0) d.path.length else it }) }
+            for ((element, diffs) in changed) {
+                val id = element.substringAfterLast("/#")
+                if (i.between.any { c -> c.xFields.values.any { it.toString() == id } }) continue
+                val target = valueAt(i.target.state, element) as? Map<*, *> ?: continue
+                val inner = { d: StateDiff.Diff -> d.path.removePrefix("$element/") }
+                val texts = diffs.filter { it.value is String && it.srcValue is String }
+                val times = diffs.filter { d ->
+                    val t2 = (d.value as? Number)?.toLong()
+                    val t1 = (d.srcValue as? Number)?.toLong()
+                    t1 != null && t2 != null && t1 > 1_000_000_000L && t2 > t1 && t2 <= i.target.time / 1000 + TIME_SLACK
+                }
+                val counters = diffs.filter { d -> d !in times && d.value is Number && ((d.srcValue as? Number)?.let { (d.value as Number).toLong() - it.toLong() == 1L } ?: (d.srcValue == null)) }
+                if (texts.size != 1 || times.size != 1 || counters.size != 1) continue
+                val duration = (times[0].value as Number).toLong() - (times[0].srcValue as Number).toLong()
+                val grade = (counters[0].value as Number).toLong()
+                val (key, table) = lookup(statics, target, grade, duration) ?: continue
+                val path = element.substringBeforeLast("/#")
+                val relation = linkedMapOf<String, Any?>(
+                    "list" to path, "field" to inner(texts[0]), "value" to texts[0].srcValue, "since" to inner(times[0]),
+                    "key" to listOf(key, inner(counters[0])), "default" to (grade - 1).toInt(), "durations" to table,
+                    "then" to listOf(
+                        linkedMapOf("op" to "increment", "path" to inner(counters[0])),
+                        linkedMapOf("op" to "set", "path" to inner(texts[0]), "value" to texts[0].value),
+                        linkedMapOf("op" to "set", "path" to inner(times[0]), "value" to "\$end"),
+                    ),
+                )
+                results.putIfAbsent("$path ${inner(texts[0])} ${texts[0].srcValue}", relation)
+            }
+        }
+        return results.values.toList()
+    }
+
+    // The durations of a timer in the game's data: a list of documents with an id
+    // one of which has the id a field of the element holds, holding a list whose
+    // document has the element's new number in one field and the duration seen in
+    // another. Every document of the list gives its durations, keyed by its id and
+    // the number before. Null when no data file holds the duration seen.
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/core/offline/ServerRules.kt#valueAt
+    private fun lookup(statics: List<Any?>, element: Map<*, *>, grade: Long, duration: Long): Pair<String, Map<String, Any?>>? {
+        val lists = mutableListOf<List<Map<*, *>>>()
+        fun walk(node: Any?) {
+            when (node) {
+                is Map<*, *> -> node.values.forEach { walk(it) }
+                is List<*> -> if (node.isNotEmpty() && node.all { it is Map<*, *> && it["id"] != null }) lists.add(node.map { it as Map<*, *> }) else node.forEach { walk(it) }
+            }
+        }
+        statics.forEach { walk(it) }
+        for (list in lists) {
+            for ((key, value) in element) {
+                if (key == "id" || (value !is Number && value !is String)) continue
+                val document = list.firstOrNull { it["id"].toString() == value.toString() } ?: continue
+                for ((listKey, inner) in document) {
+                    val grades = (inner as? List<*>)?.filterIsInstance<Map<*, *>>() ?: continue
+                    val sample = grades.firstOrNull { g -> g.values.any { (it as? Number)?.toLong() == grade } } ?: continue
+                    val gradeKey = sample.entries.firstOrNull { (it.value as? Number)?.toLong() == grade }?.key ?: continue
+                    val durationKey = sample.entries.firstOrNull { it.key != gradeKey && (it.value as? Number)?.toLong() == duration }?.key ?: continue
+                    val table = LinkedHashMap<String, Any?>()
+                    for (other in list) {
+                        for (g in (other[listKey] as? List<*>).orEmpty().filterIsInstance<Map<*, *>>()) {
+                            val number = (g[gradeKey] as? Number)?.toLong() ?: continue
+                            val seconds = (g[durationKey] as? Number)?.toLong() ?: continue
+                            table["${other["id"]},${number - 1}"] = seconds.toInt()
+                        }
+                    }
+                    return key.toString() to table
+                }
+            }
+        }
+        return null
+    }
+
+    // The game's data files: the recorded answers that are JSON.
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/core/offline/ServerRules.kt#read
+    private fun statics(recordings: List<Recording>): List<Any?> = recordings.filter { it.requestMethod == "GET" && it.body.size in 2..16_000_000 }.mapNotNull { r ->
+        val text = String(r.body, Charsets.UTF_8).trimStart()
+        if (text.startsWith("[") || text.startsWith("{")) runCatching { io.gutapk.tools.Json.parse(text) }.getOrNull() else null
     }
 
     // answer rules: a path of a command's answer that is, in every sample, the
@@ -368,6 +528,25 @@ object ServerRules {
                     if (RelationFinder.executeOnFields(xValues, group.map { valueAt(it.answer, yField) })) results.add(linkedMapOf("command" to name, "path" to yField, "value" to "$$xField"))
                 }
             }
+        }
+        return results
+    }
+
+    // when: the text fields of a command's request that held one value in every
+    // call recorded ({"locationType": "MAIN"}). The rules learnt from them hold
+    // for such a request only: one the recordings never showed (the second base,
+    // whose elements share the ids of the first) leaves the state as it is.
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/core/offline/ServerRules.kt#answerRules
+    // not ported: getValues, executeOnFields (the request alone is read, no path of the answer)
+    private fun whenRules(calls: List<Call>): Map<String, Map<String, Any?>> {
+        val results = LinkedHashMap<String, Map<String, Any?>>()
+        for ((name, group) in calls.groupBy { it.name }) {
+            val fields = LinkedHashMap<String, Any?>()
+            for (xField in group.flatMap { it.xFields.keys }.toSet()) {
+                val xValues = group.map { it.fields[xField] }
+                if (xValues.all { it is String && it == xValues.first() }) fields[xField] = xValues.first()
+            }
+            if (fields.isNotEmpty()) results[name] = fields
         }
         return results
     }

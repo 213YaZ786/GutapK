@@ -45,6 +45,7 @@ import io.gutapk.core.offline.AssemblyStore
 import io.gutapk.core.offline.DexHeader
 import io.gutapk.core.offline.DexStringRewrite
 import io.gutapk.core.offline.Endpoint
+import io.gutapk.core.offline.GameState
 import io.gutapk.core.offline.Endpoints
 import io.gutapk.core.offline.Inject
 import io.gutapk.core.offline.OfflineBuild
@@ -586,6 +587,27 @@ private fun typed(v: Value, text: String): Any? = when (v.type) {
 // The status and every value the server holds, read over the forward.
 private fun readServer(l: Link): Pair<Status, List<Value>> = ServerAdmin.status(l.local) to ServerAdmin.values(l.local)
 
+// The progress the local game server keeps and its values by group, named from
+// the game's data files: the APK's and the answers recorded. Null when the phone
+// has no local game server.
+// https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#readServer
+private fun readGame(l: Link, dir: Path): Pair<Map<String, Any?>, List<GameState.Field>>? {
+    val state = ServerAdmin.state(l.local)?.let { GameState.read(it) } ?: return null
+    val statics = GameState.statics(dir.resolve("original.apk"), ServerRules.read(OfflineBuild.recordings(dir)))
+    return state to GameState.fields(state, statics)
+}
+
+// The number a field of the game's progress was given, null when it is none.
+// https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#typed
+// not ported: typed (the bool and text branches, the progress shows numbers only)
+// not ported: rowKey (stateKey below names a field of the progress, not a leaf of an answer)
+private fun typedNumber(text: String): Number? = text.trim().let { n -> n.toLongOrNull() ?: n.toDoubleOrNull()?.takeIf { it.isFinite() } }
+
+// The key of a field of the progress in the edits, apart from the server's values.
+// https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#rowKey
+// not ported: typed (typedNumber above reads the value)
+private fun stateKey(f: GameState.Field): String = "state:" + f.path
+
 // Every JSON value of the answers the game's server recorded, read from the
 // server running on a phone and sent back as it is changed. The server
 // answers only the adb daemon, reached through an adb forward to its abstract
@@ -618,7 +640,13 @@ fun AdminDialog(
     var kind by remember { mutableStateOf("set") }
     var confirming by remember { mutableStateOf<String?>(null) }
     var kept by remember { mutableStateOf<Int?>(null) }
+    var game by remember { mutableStateOf<Pair<Map<String, Any?>, List<GameState.Field>>?>(null) }
+    var stored by remember { mutableStateOf<Int?>(null) }
     val noAnswer = t("admin_no_answer")
+    val resourcesTitle = t("admin_resources")
+    val elementsTitle = t("admin_elements")
+    val playerTitle = t("admin_player")
+    val restartFailed = t("admin_restart_failed")
     val scope = rememberCoroutineScope()
 
     // The forward lives as long as the dialog shows the values. Removed on
@@ -641,7 +669,12 @@ fun AdminDialog(
                 val text = edits[rowKey(v)] ?: return@mapNotNull null
                 if (text == shownValue(v.override ?: v.value)) null else v to typed(v, text)
             }
-            val invalid = changes.any { it.second == null }
+            val g = game
+            val gameChanges = g?.second.orEmpty().mapNotNull { field ->
+                val text = edits[stateKey(field)] ?: return@mapNotNull null
+                if (text == shownValue(field.value)) null else field.path to typedNumber(text)
+            }
+            val invalid = changes.any { it.second == null } || gameChanges.any { it.second == null }
             val a = answer
             AlertDialog(
                 onDismissRequest = onDismiss,
@@ -664,9 +697,7 @@ fun AdminDialog(
                         item { Fact(t("try_package"), info.packageName) }
                         item { Fact(t("admin_status"), t(if (s.mode in listOf("live", "replay", "miss")) "admin_mode_" + s.mode else "admin_mode_none")) }
                         item { Text(t("admin_counts", s.entries.toString(), s.overrides.toString()), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                        if (list.isEmpty()) {
-                            item { Text(t("admin_no_values"), style = MaterialTheme.typography.bodyMedium) }
-                        } else {
+                        if (list.isNotEmpty() || g != null) {
                             item {
                                 OutlinedTextField(
                                     value = search,
@@ -676,6 +707,62 @@ fun AdminDialog(
                                     modifier = Modifier.fillMaxWidth(),
                                 )
                             }
+                        }
+                        // The game's progress first: the resources open, each element
+                        // and each part of the player under its own header, as the
+                        // answers below.
+                        // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#L680-L702
+                        item {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(t("admin_game"), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                                // The progress is read after the values: the game's data files take a moment.
+                                if (working) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                if (g != null || !working) Text(t(if (g == null) "admin_no_game" else "admin_game_d"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                stored?.let { Text(t("admin_state_saved", it.toString()), style = MaterialTheme.typography.bodyMedium) }
+                            }
+                        }
+                        if (g != null) {
+                            val shownFields = g.second.filter { field -> needle.isEmpty() || needle in field.label || needle in field.path }
+                            val parts = listOf(
+                                resourcesTitle to shownFields.filter { it.group == GameState.Group.RESOURCES }.groupBy { resourcesTitle },
+                                elementsTitle to shownFields.filter { it.group == GameState.Group.ELEMENTS }.groupBy { it.label.substringBefore(" · ") },
+                                playerTitle to shownFields.filter { it.group == GameState.Group.PLAYER }.groupBy { it.path.substringBefore('/') },
+                            )
+                            for ((part, groups) in parts) {
+                                if (groups.isEmpty()) continue
+                                if (part != resourcesTitle) {
+                                    item { Text(part, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) }
+                                }
+                                groups.forEach { (section, members) ->
+                                    val key = "state:$part:$section"
+                                    val shown = needle.isNotEmpty() || (opened[key] ?: (part == resourcesTitle))
+                                    stickyHeader {
+                                        Text(
+                                            (if (shown) "▾ " else "▸ ") + section + "  (" + members.size + ")",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                                                .clickable { opened[key] = !shown }.padding(vertical = 4.dp),
+                                        )
+                                    }
+                                    if (shown) {
+                                        items(members.take(SHOWN), key = { stateKey(it) }) { field ->
+                                            val label = when (field.group) {
+                                                GameState.Group.RESOURCES -> field.label
+                                                GameState.Group.ELEMENTS -> field.label.substringAfter(" · ")
+                                                GameState.Group.PLAYER -> field.path.substringAfter('/')
+                                            }
+                                            StateRow(label, edits[stateKey(field)] ?: shownValue(field.value)) { edits[stateKey(field)] = it }
+                                        }
+                                        if (members.size > SHOWN) {
+                                            item { Text(t("admin_more", (members.size - SHOWN).toString()), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (list.isEmpty()) {
+                            item { Text(t("admin_no_values"), style = MaterialTheme.typography.bodyMedium) }
                         }
                         sections.forEach { (section, members) ->
                             val shown = needle.isNotEmpty() || opened[section] == true
@@ -770,25 +857,48 @@ fun AdminDialog(
                 },
                 confirmButton = {
                     TextButton(
-                        enabled = changes.isNotEmpty() && !invalid && !working,
+                        enabled = (changes.isNotEmpty() || gameChanges.isNotEmpty()) && !invalid && !working,
                         onClick = {
                             val send = changes.map { (v, x) -> Change(v.key, v.pointer, x ?: "") }
                             working = true
                             answer = null
+                            stored = null
                             kind = "set"
                             scope.launch {
-                                val reply = withContext(Dispatchers.IO) {
-                                    runCatching { ServerAdmin.set(l.local, send) }
-                                        .getOrElse { Answer(0, false, it.message ?: it.javaClass.simpleName, 0) }
+                                // The progress first, sent whole with its numbers changed and
+                                // read again, as the values are after their set.
+                                // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#L840-L866
+                                if (g != null && gameChanges.isNotEmpty()) {
+                                    val reply = withContext(Dispatchers.IO) {
+                                        runCatching { ServerAdmin.putState(l.local, GameState.write(GameState.with(g.first, gameChanges.toMap()))) }
+                                            .getOrElse { Answer(0, false, it.message ?: it.javaClass.simpleName, 0) }
+                                    }
+                                    if (reply.ok) {
+                                        val fresh = withContext(Dispatchers.IO) { runCatching { readGame(l, dir) }.getOrNull() }
+                                        if (fresh != null) game = fresh
+                                        // The game shows the new values from its next login only.
+                                        withContext(Dispatchers.IO) { runCatching { ServerAdmin.restart(l.adb, l.serial, info.packageName) }.getOrElse { it.message } }
+                                            ?.let { failure = restartFailed + " (" + it + ")" }
+                                        stored = gameChanges.size
+                                        gameChanges.forEach { edits.remove("state:" + it.first) }
+                                    } else {
+                                        answer = reply
+                                    }
                                 }
-                                answer = reply
-                                if (reply.ok) {
-                                    // Read again: the server may have refused a path or changed a type.
-                                    val fresh = withContext(Dispatchers.IO) { runCatching { readServer(l) }.getOrNull() }
-                                    if (fresh != null) {
-                                        status = fresh.first
-                                        values = fresh.second
-                                        edits.clear()
+                                if (send.isNotEmpty()) {
+                                    val reply = withContext(Dispatchers.IO) {
+                                        runCatching { ServerAdmin.set(l.local, send) }
+                                            .getOrElse { Answer(0, false, it.message ?: it.javaClass.simpleName, 0) }
+                                    }
+                                    answer = reply
+                                    if (reply.ok) {
+                                        // Read again: the server may have refused a path or changed a type.
+                                        val fresh = withContext(Dispatchers.IO) { runCatching { readServer(l) }.getOrNull() }
+                                        if (fresh != null) {
+                                            status = fresh.first
+                                            values = fresh.second
+                                            send.forEach { edits.remove(it.key + "\n" + it.pointer) }
+                                        }
                                     }
                                 }
                                 working = false
@@ -839,6 +949,11 @@ fun AdminDialog(
                                     status = it.second.first
                                     values = it.second.second
                                 }.onFailure { failure = it.message ?: it.javaClass.simpleName }
+                                val held = outcome.getOrNull()?.first
+                                if (held != null) {
+                                    withContext(Dispatchers.IO) { runCatching { readGame(held, dir) } }
+                                        .onSuccess { game = it }.onFailure { failure = it.message ?: it.javaClass.simpleName }
+                                }
                                 working = false
                             }
                         },
@@ -901,4 +1016,20 @@ private fun ValueRow(v: Value, text: String, onChange: (String) -> Unit) {
             Text(t("admin_original", shownValue(v.value)), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
+}
+
+// One number of the game's progress, the number field of ValueRow. An element
+// without the number yet shows it empty.
+// https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#ValueRow
+// not ported: the bool and text editors and the server value line (the progress holds numbers, set by nobody else)
+@Composable
+private fun StateRow(label: String, text: String, onChange: (String) -> Unit) {
+    OutlinedTextField(
+        value = text,
+        onValueChange = { onChange(it.filter { c -> c.isDigit() || c in "-+.eE" }) },
+        label = { Text(label) },
+        singleLine = true,
+        isError = text.isNotEmpty() && typedNumber(text) == null,
+        modifier = Modifier.fillMaxWidth(),
+    )
 }

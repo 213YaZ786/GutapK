@@ -55,11 +55,11 @@ class ServerRulesTest {
         val status = doc("name" to "status")
         put(1_000_000, doc("name" to "authorize"), login(1_000_000, 0, listOf(building(1, 5, 1, 1, 1))))
         put(1_002_000, doc("name" to "set_tutorial_step", "tutorial_step" to 3), status)
-        put(1_002_500, doc("name" to "upgrade_action", "id" to 1), status)
+        put(1_002_500, doc("name" to "upgrade_action", "id" to 1, "locationType" to "MAIN"), status)
         put(1_003_000, doc("name" to "reload_game"), login(1_003_000, 3, listOf(building(1, 5, 1, 1, 2))))
         put(1_004_000, doc("name" to "set_tutorial_step", "tutorial_step" to 7), status)
         put(1_004_200, doc("name" to "buy_building", "id" to 2, "articleId" to 9, "cellI" to 4, "cellJ" to 6), status)
-        put(1_004_500, doc("name" to "upgrade_action", "id" to 1), status)
+        put(1_004_500, doc("name" to "upgrade_action", "id" to 1, "locationType" to "MAIN"), status)
         put(1_005_000, doc("name" to "reload_game"), login(1_005_000, 7, listOf(building(1, 5, 1, 1, 3), building(2, 9, 4, 6, 1))))
         put(1_005_500, doc("name" to "attack_mission", "missionId" to 1), doc("name" to "attack_mission", "location" to doc("locationId" to 1)))
         put(1_005_600, doc("name" to "attack_mission", "missionId" to 2), doc("name" to "attack_mission", "location" to doc("locationId" to 2)))
@@ -115,7 +115,10 @@ class ServerRulesTest {
         assertTrue(game.ready())
         game.ask("name" to "set_tutorial_step", "tutorial_step" to 9)
         game.ask("name" to "buy_building", "id" to 3, "articleId" to 4, "cellI" to 8, "cellJ" to 2)
-        game.ask("name" to "upgrade_action", "id" to 2)
+        game.ask("name" to "upgrade_action", "id" to 2, "locationType" to "MAIN")
+        // A request the recordings never showed, for another list whose elements share
+        // the ids of this one, leaves the progress as it is.
+        game.ask("name" to "upgrade_action", "id" to 1, "locationType" to "SECOND")
         assertEquals(5, (game.ask("name" to "attack_mission", "missionId" to 5)["location"] as Map<*, *>)["locationId"])
 
         // A new start of the game: the server reads its folder again.
@@ -127,7 +130,72 @@ class ServerRulesTest {
         val buildings = ((location["location"] as Map<*, *>)["location"] as List<*>).map { it as Map<*, *> }.associateBy { it["id"] }
         assertEquals(setOf(1, 2, 3), buildings.keys)
         assertEquals(2, buildings[2]!!["grade"])
+        assertEquals(3, buildings[1]!!["grade"])
         assertEquals(listOf(4, 8, 2, 1), listOf("articleId", "cellI", "cellJ", "grade").map { buildings[3]!![it] })
+    }
+
+    // An upgrade as the server timed it: the command puts the building under way at
+    // its time, the next login shows it so, the one after shows it done with no
+    // command, after the time the game's data file gives its article and grade.
+    // As record above, with a data file among the answers.
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/test/kotlin/io/gutapk/ServerRulesTest.kt#record
+    private fun recordUpgrade(): File {
+        val dir = Files.createTempDirectory("gutapk-recordings").toFile()
+        val store = Store(dir)
+        val t0 = 1_700_000_000L
+        var n = 0
+        fun put(seconds: Long, request: Map<String, Any?>, answer: ByteArray, method: String = "POST", path: String = "/") {
+            val body = if (method == "GET") ByteArray(0) else Bson.encode(doc("name" to request["name"], "n" to ++n, "optime" to seconds.toInt()).apply { putAll(request - "name") })
+            store.put(Store.Entry(origin, method, path, "r=${++n}", Integer.toHexString(body.contentHashCode() + n), 200, mapOf("Content-Type" to "text/plain"), answer, seconds * 1000), body)
+        }
+        fun cannon(state: Map<String, Any?>, grade: Int? = null) = doc("id" to 1, "articleId" to 5, "cellI" to 2, "cellJ" to 3, "state" to state).apply { if (grade != null) put("grade", grade) }
+        val status = Bson.encode(doc("name" to "status"))
+        put(t0 - 5, emptyMap(), "[{\"id\": 5, \"grades\": [{\"gradeId\": 2, \"buildTime\": 120}, {\"gradeId\": 3, \"buildTime\": 600}]}, {\"id\": 6, \"grades\": [{\"gradeId\": 2, \"buildTime\": 50}]}]".toByteArray(), "GET", "/data/building.json")
+        put(t0, doc("name" to "authorize"), Bson.encode(login(t0 * 1000, 1, listOf(cannon(doc("type" to "NORMAL", "updateTime" to (t0 - 900).toInt()))))))
+        put(t0 + 10, doc("name" to "upgrade_action", "id" to 1), status)
+        put(t0 + 11, doc("name" to "set_tutorial_step", "tutorial_step" to 2), status)
+        put(t0 + 20, doc("name" to "reload_game"), Bson.encode(login((t0 + 20) * 1000, 2, listOf(cannon(doc("type" to "UPGRADE", "updateTime" to (t0 + 10).toInt()))))))
+        put(t0 + 30, doc("name" to "set_tutorial_step", "tutorial_step" to 3), status)
+        put(t0 + 200, doc("name" to "reload_game"), Bson.encode(login((t0 + 200) * 1000, 3, listOf(cannon(doc("type" to "NORMAL", "updateTime" to (t0 + 130).toInt()), 2)))))
+        return dir
+    }
+
+    // As theLearntServerKeepsTheProgressOnThePhone, the progress being a timer.
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/test/kotlin/io/gutapk/ServerRulesTest.kt#theLearntServerKeepsTheProgressOnThePhone
+    @Test
+    fun anUpgradeIsUnderWayUntilTheTimeTheGamesDataGivesIt() {
+        val learned = ServerRules.learn(ServerRules.read(recordUpgrade().toPath())).single()
+        val rules = rules(learned, "rules").map { "${it["command"]} ${it["op"]} ${it["path"]} ${it["value"]}" }
+        assertTrue("upgrade_action set location/location/location/#\$id/state/type UPGRADE" in rules, rules.toString())
+        assertTrue("upgrade_action set location/location/location/#\$id/state/updateTime \$optime" in rules, rules.toString())
+        assertFalse(rules.any { it.startsWith("upgrade_action increment") }, rules.toString())
+        val timer = rules(learned, "timers").single()
+        assertEquals("location/location/location", timer["list"])
+        assertEquals(listOf("state/type", "UPGRADE", "state/updateTime"), listOf(timer["field"], timer["value"], timer["since"]))
+        assertEquals(listOf("articleId", "grade"), timer["key"])
+        assertEquals(mapOf("5,1" to 120, "5,2" to 600, "6,1" to 50), timer["durations"])
+
+        val folder = Files.createTempDirectory("gutapk-game").toFile()
+        ServerRules.files(learned).forEach { (name, bytes) -> File(folder, name).writeBytes(bytes) }
+        val now = System.currentTimeMillis() / 1000
+        fun GameServer.ask(name: String, optime: Long, vararg fields: Pair<String, Any?>): Map<*, *> =
+            Bson.document(assertNotNull(answer(Bson.encode(doc("name" to name, "n" to 1, "optime" to optime.toInt()).apply { putAll(fields) }))).body)!!
+        fun Map<*, *>.cannon(): Map<*, *> {
+            val location = (this["data"] as List<*>).single { (it as Map<*, *>)["name"] == "location" } as Map<*, *>
+            return ((location["location"] as Map<*, *>)["location"] as List<*>).single() as Map<*, *>
+        }
+        // The cannon is at grade 2 in the latest login: its next upgrade takes 600 s.
+        // Started 200 s ago: still under way at the next login.
+        val game = GameServer(folder)
+        game.ask("upgrade_action", now - 200, "id" to 1)
+        val underWay = GameServer(folder).ask("authorize", now).cannon()
+        assertEquals("UPGRADE", (underWay["state"] as Map<*, *>)["type"])
+        assertEquals(2, underWay["grade"])
+        // Started 700 s ago: the 600 s are up, the login shows grade 3 since then.
+        game.ask("upgrade_action", now - 700, "id" to 1)
+        val done = GameServer(folder).ask("authorize", now).cannon()
+        assertEquals(3, done["grade"])
+        assertEquals(mapOf("type" to "NORMAL", "updateTime" to (now - 100).toInt()), done["state"])
     }
 
     @Test

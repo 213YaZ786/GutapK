@@ -137,6 +137,47 @@ object ServerAdmin {
     // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#set
     fun clear(local: Int): Answer = send(local, "/clear", post = true).let { parseAnswer(it.statusCode(), it.body()) }
 
+    // GET /state: the progress the local game server keeps, its BSON bytes. Null
+    // when the phone has no local game server (404).
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#send
+    fun state(local: Int): ByteArray? {
+        val response = send(local, "/state", null, false, HttpResponse.BodyHandlers.ofByteArray())
+        if (response.statusCode() == 404) return null
+        if (response.statusCode() != 200) throw IOException("the server answered ${response.statusCode()} to the state: ${String(response.body(), Charsets.UTF_8).take(200)}")
+        return response.body()
+    }
+
+    // PUT /state with the BSON bytes of the new progress. The server keeps it at
+    // once, the game reads it at its next login.
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/ServerAdmin.kt#send
+    fun putState(local: Int, bytes: ByteArray): Answer {
+        val client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).connectTimeout(Duration.ofSeconds(TIMEOUT_S)).build()
+        val uri = URI("http", null, "127.0.0.1", local, "/state", null, null)
+        val request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(TIMEOUT_S))
+            .header("Content-Type", "application/octet-stream").PUT(HttpRequest.BodyPublishers.ofByteArray(bytes)).build()
+        val response = try {
+            client.send(request, HttpResponse.BodyHandlers.ofString())
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw IOException("the request was interrupted")
+        }
+        return parseAnswer(response.statusCode(), response.body())
+    }
+
+    // The game reads its progress at its login only: it is stopped and launched
+    // again, as the app actions do, once its progress was replaced. The forward
+    // names the socket, it reaches the new process when its server is up.
+    // https://github.com/213YaZ786/GutapK/blob/2ceb889/src/main/kotlin/io/gutapk/device/AppActions.kt#command
+    // not ported: permission, parseUserState (no permission is changed, the app is only restarted)
+    fun restart(adb: Path, serial: String, packageName: String): String? {
+        for (action in listOf(AppAction.FORCE_STOP, AppAction.LAUNCH)) {
+            val r = AppActions.run(adb, serial, AppActions.command(action, packageName, 0))
+            val failed = AppActions.failed(r.out) ?: if (r.code != 0) r.out.trim().take(200) else null
+            if (failed != null) return failed
+        }
+        return null
+    }
+
     // GET /export: the zip of every file of the store, unzipped into the given
     // folder, which is emptied first. Returns the recordings, the files of
     // metadata. The folder is emptied only once the zip is in hand, so a phone
