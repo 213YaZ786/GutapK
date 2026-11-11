@@ -44,9 +44,25 @@ object ApkSigning {
         try {
             sink.emit(JobEvent.Step("sign", 1, 2))
             val schemes = schemesFor(minSdk)
-            sink.emit(JobEvent.Line("signing ${input.fileName} with ${key.sha256}, schemes ${schemes.joinToString(" ")}"))
-            val config = ApkSigner.SignerConfig.Builder(key.name, KeyConfig.Jca(key.privateKey), listOf(key.certificate)).build()
-            val builder = ApkSigner.Builder(listOf(config))
+            val lineage = key.lineage
+            val lineageNote = if (lineage == null) "" else ", lineage of ${lineage.size()} certificates"
+            sink.emit(JobEvent.Line("signing ${input.fileName} with ${key.sha256}, schemes ${schemes.joinToString(" ")}$lineageNote"))
+            // apksigner sign --lineage: the signers are the lineage's certificates,
+            // oldest first. v1 and v2 are signed by signerConfigs[0] only, which
+            // DefaultApkSignerEngine requires to be the lineage's oldest, the
+            // newest goes to v3.1 from API 33. Both use the one private key.
+            // https://android.googlesource.com/platform/tools/apksig/+/b741c26163bd17eb3cbe9f90d9cc4c2879dd3b70/src/apksigner/java/com/android/apksigner/ApkSignerTool.java#L344-L400
+            // https://android.googlesource.com/platform/tools/apksig/+/b741c26163bd17eb3cbe9f90d9cc4c2879dd3b70/src/main/java/com/android/apksig/DefaultApkSignerEngine.java#L228-L330
+            // not ported: the stamp, v4, verity and provider options, setMinSdkVersionForRotation (the default is kept, v3.0 carries the oldest signer)
+            val signerConfigs = ArrayList<ApkSigner.SignerConfig>()
+            if (lineage == null) {
+                signerConfigs.add(ApkSigner.SignerConfig.Builder(key.name, KeyConfig.Jca(key.privateKey), listOf(key.certificate)).build())
+            } else {
+                val oldest = lineage.certificatesInLineage.first()
+                signerConfigs.add(ApkSigner.SignerConfig.Builder(key.name, KeyConfig.Jca(key.privateKey), listOf(oldest)).build())
+                signerConfigs.add(ApkSigner.SignerConfig.Builder(key.name + "-new", KeyConfig.Jca(key.privateKey), listOf(key.certificate)).build())
+            }
+            val builder = ApkSigner.Builder(signerConfigs)
                 .setInputApk(input.toFile())
                 .setOutputApk(part.toFile())
                 .setV1SigningEnabled("v1" in schemes)
@@ -55,6 +71,7 @@ object ApkSigning {
                 .setCreatedBy("GutapK $version")
                 .setLibraryPageAlignmentBytes(LIBRARY_ALIGNMENT)
             if (minSdk != null) builder.setMinSdkVersion(minSdk)
+            if (lineage != null) builder.setSigningCertificateLineage(lineage)
             builder.build().sign()
 
             sink.emit(JobEvent.Step("verify", 2, 2))

@@ -46,6 +46,7 @@ import io.gutapk.core.edit.PermissionAdvice
 import io.gutapk.core.edit.PermissionRisks
 import io.gutapk.core.edit.PackageIdRefusal
 import io.gutapk.core.edit.Tweaks
+import io.gutapk.core.sign.Der
 import io.gutapk.core.sign.KeyChoice
 import io.gutapk.core.sign.OwnKey
 import io.gutapk.core.sign.TestKey
@@ -57,10 +58,12 @@ import io.gutapk.tools.Tools
 import io.gutapk.ui.BodyText
 import io.gutapk.ui.ChoiceDialog
 import io.gutapk.ui.Chooser
+import io.gutapk.ui.IdentityDialog
 import io.gutapk.ui.KeyChooser
 import io.gutapk.ui.Page
 import io.gutapk.ui.Zone
 import io.gutapk.ui.ZoneRow
+import io.gutapk.ui.identityCertificate
 import io.gutapk.ui.keyLabel
 import io.gutapk.ui.t
 import java.nio.file.Path
@@ -574,6 +577,13 @@ fun EditScreen(
 
         Zone(t("edit_zone_signing")) {
             ZoneRow(t("sign_key"), keyLabel(choice), onClick = { dialog = "key" })
+            if (choice == KeyChoice.TEST || (choice == KeyChoice.OWN && OwnKey.exists())) {
+                // Read again once the identity dialog closes.
+                val commonName by produceState("", choice, dialog) {
+                    value = withContext(Dispatchers.IO) { identityCertificate(choice)?.let { Der.getSubject(it).cn } ?: "" }
+                }
+                ZoneRow(t("key_identity"), commonName, onClick = { dialog = "identity" })
+            }
             if (choice == KeyChoice.TEST) {
                 Text(
                     t("sign_test_warning"),
@@ -688,6 +698,7 @@ fun EditScreen(
             },
             onDismiss = { dialog = null },
         )
+        "identity" -> choice?.let { IdentityDialog(it, onDismiss = { dialog = null }) }
     }
 }
 

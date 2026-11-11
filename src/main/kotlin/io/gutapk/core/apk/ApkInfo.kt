@@ -3,9 +3,18 @@ package io.gutapk.core.apk
 import com.android.apksig.ApkVerifier
 import java.nio.file.Path
 import java.security.MessageDigest
+import java.security.cert.X509Certificate
 import java.util.zip.ZipFile
 
-data class Signer(val subject: String, val sha256: String, val algorithm: String)
+// The certificate itself, for the read only view, and the schemes whose signer
+// list holds it.
+data class Signer(
+    val subject: String,
+    val sha256: String,
+    val algorithm: String,
+    val certificate: X509Certificate,
+    val schemes: List<String>,
+)
 
 data class SignatureInfo(
     val verified: Boolean,
@@ -260,15 +269,58 @@ object Signatures {
         SignatureInfo(
             verified = r.isVerified,
             schemes = schemes,
-            signers = r.signerCertificates.map { c ->
-                val md = MessageDigest.getInstance("SHA-256").digest(c.encoded)
-                Signer(
-                    subject = c.subjectX500Principal.name,
-                    sha256 = md.joinToString(":") { "%02X".format(it) },
-                    algorithm = c.sigAlgName,
-                )
-            },
+            signers = signerCertificates(r).map { c -> printCertificate(c, schemesOf(r, c)) },
             problems = r.errors.map { it.toString() },
         )
     }.getOrElse { SignatureInfo(false, emptyList(), emptyList(), listOf(it.message ?: it.javaClass.simpleName)) }
+
+    // The signers' certificates in apksig's order, which Sign.kt reads the first
+    // of. With a v3.1 block the rotated key is the one Android 13 and later
+    // sees, apksigner prints it, then the v3 signers' certificates (the original
+    // key): each one not yet listed follows. apksig's signerCertificates holds
+    // only the last v3.1 signer in that case.
+    // https://android.googlesource.com/platform/tools/apksig/+/b741c26163bd17eb3cbe9f90d9cc4c2879dd3b70/src/apksigner/java/com/android/apksigner/ApkSignerTool.java#verify
+    // not ported: verify (the argument parsing, the verbose and min/max SDK lines, the source stamp, the DOES NOT VERIFY output and the exit code: the view shows none of them)
+    private fun signerCertificates(r: ApkVerifier.Result): List<X509Certificate> {
+        val certificates = r.signerCertificates.toMutableList()
+        if (r.isVerifiedUsingV31Scheme) {
+            for (signer in r.v31SchemeSigners + r.v3SchemeSigners) {
+                val certificate = signer.certificate ?: continue
+                if (certificates.none { it.encoded.contentEquals(certificate.encoded) }) certificates.add(certificate)
+            }
+        }
+        return certificates
+    }
+
+    // The distinguished name and the SHA-256 digest of the encoded certificate,
+    // as apksigner prints them, plus the signature algorithm.
+    // https://android.googlesource.com/platform/tools/apksig/+/b741c26163bd17eb3cbe9f90d9cc4c2879dd3b70/src/apksigner/java/com/android/apksigner/ApkSignerTool.java#printCertificate
+    // not ported: SHA-1 and MD5 digests (weak hashes, the SHA-256 identifies the certificate), the verbose public key lines (the algorithm shown is the signature's), the PEM output (nothing is exported here), the printed name and stdout lines (the Signer holds the fields)
+    private fun printCertificate(cert: X509Certificate, schemes: List<String>): Signer {
+        val encodedCert = cert.encoded
+        val md = MessageDigest.getInstance("SHA-256").digest(encodedCert)
+        return Signer(
+            subject = cert.subjectX500Principal.name,
+            sha256 = md.joinToString(":") { "%02X".format(it) },
+            algorithm = cert.sigAlgName,
+            certificate = cert,
+            schemes = schemes,
+        )
+    }
+
+    // Which schemes one certificate signed: the names whose signer list holds
+    // it, each signer info giving its certificate.
+    // https://android.googlesource.com/platform/tools/apksig/+/b741c26163bd17eb3cbe9f90d9cc4c2879dd3b70/src/main/java/com/android/apksig/ApkVerifier.java#getV1SchemeSigners
+    // not ported: getV1SchemeIgnoredSigners (signers Android ignores), getSourceStampInfo (not a signing scheme), each signer's errors, warnings and lineage (the problems list reads the result's errors)
+    private fun schemesOf(r: ApkVerifier.Result, cert: X509Certificate): List<String> {
+        val encoded = cert.encoded
+        val bySchemes = listOf(
+            "v1" to r.v1SchemeSigners.map { it.certificate },
+            "v2" to r.v2SchemeSigners.map { it.certificate },
+            "v3" to r.v3SchemeSigners.map { it.certificate },
+            "v3.1" to r.v31SchemeSigners.map { it.certificate },
+            "v4" to r.v4SchemeSigners.map { it.certificate },
+        )
+        return bySchemes.filter { (_, certificates) -> certificates.any { it != null && it.encoded.contentEquals(encoded) } }.map { it.first }
+    }
 }

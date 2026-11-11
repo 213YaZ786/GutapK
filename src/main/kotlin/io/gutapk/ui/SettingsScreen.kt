@@ -8,8 +8,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import io.gutapk.core.sign.Der
 import io.gutapk.core.sign.KeyChoice
 import io.gutapk.core.sign.OwnKey
 import io.gutapk.core.sign.keyChoiceOf
@@ -18,6 +20,8 @@ import io.gutapk.settings.SettingsStore
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 // Two columns from this width, one below it.
 private val TwoColumnsFrom = 900.dp
@@ -65,6 +69,13 @@ fun SettingsScreen(
             ZoneRow(t("set_sign_key"), keyLabel(choice), onClick = { dialog = "key" })
             keyFingerprint(choice)?.let { ZoneRow(t("signed_signer"), it) }
             if (choice == KeyChoice.OWN) ZoneRow(t("set_key_file"), OwnKey.keystore.toString())
+            if (choice == KeyChoice.TEST || (choice == KeyChoice.OWN && OwnKey.exists())) {
+                // Read again once the identity dialog closes.
+                val commonName by produceState("", choice, dialog) {
+                    value = withContext(Dispatchers.IO) { identityCertificate(choice)?.let { Der.getSubject(it).cn } ?: "" }
+                }
+                ZoneRow(t("key_identity"), commonName, onClick = { dialog = "identity" })
+            }
             if (OwnKey.exists()) {
                 ZoneRow(t("key_backup"), t("key_backup_d"), onClick = { dialog = "backup" })
             } else {
@@ -130,6 +141,7 @@ fun SettingsScreen(
             },
             onDismiss = { dialog = null },
         )
+        "identity" -> keyChoiceOf(settings.signKey)?.let { IdentityDialog(it, onDismiss = { dialog = null }) }
         "backup" -> KeyBackupDialog(onDismiss = { dialog = null })
         "restore" -> KeyRestoreDialog(
             onRestored = { onChange(settings.copy(signKey = KeyChoice.OWN.name)) },

@@ -1,5 +1,6 @@
 package io.gutapk.core.sign
 
+import com.android.apksig.SigningCertificateLineage
 import java.security.KeyFactory
 import java.security.MessageDigest
 import java.security.PrivateKey
@@ -19,6 +20,10 @@ class SigningKey(
     val name: String,
     val privateKey: PrivateKey,
     val certificate: X509Certificate,
+    // The certificates this key was issued before, oldest first and the
+    // certificate last, when its identity was edited. Null for a key never
+    // re-issued, then only the certificate signs.
+    val lineage: SigningCertificateLineage? = null,
 ) {
     val sha256: String get() = fingerprint(certificate)
 }

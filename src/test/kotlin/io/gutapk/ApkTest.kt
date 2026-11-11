@@ -24,17 +24,27 @@ import io.gutapk.core.apk.ResourceTable
 import io.gutapk.core.apk.Signatures
 import io.gutapk.core.apk.Tracker
 import io.gutapk.core.apk.Trackers
+import com.android.apksig.ApkVerifier
+import com.android.apksig.KeyConfig
+import com.android.apksig.SigningCertificateLineage
 import io.gutapk.core.sign.ApkSigning
+import io.gutapk.core.sign.Der
 import io.gutapk.core.sign.KeyChoice
+import io.gutapk.core.sign.OwnKey
+import io.gutapk.core.sign.SigningKey
+import io.gutapk.core.sign.Subject
 import io.gutapk.core.sign.TestKey
+import io.gutapk.core.sign.fingerprint
 import io.gutapk.job.JobEvent
 import io.gutapk.job.JobSink
 import io.gutapk.tools.Storage
+import io.gutapk.ui.isOwnCertificate
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.file.Files
 import java.nio.file.Path
+import java.security.cert.X509Certificate
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlin.test.Test
@@ -239,6 +249,15 @@ class ApkTest {
         assertTrue(check.verified, check.problems.joinToString())
         assertEquals(listOf("v1", "v2", "v3"), check.schemes.filter { it != "v3.1" })
         assertEquals(TestKey.CERT_SHA256, check.signers.single().sha256)
+        // The signer view: the certificate itself, its digest, and the schemes
+        // that carry it (a single key signed every verified scheme). ApkSignerTool's
+        // verify prints this certificate once per signer.
+        // https://android.googlesource.com/platform/tools/apksig/+/b741c26163bd17eb3cbe9f90d9cc4c2879dd3b70/src/apksigner/java/com/android/apksigner/ApkSignerTool.java#verify
+        val signer = check.signers.single()
+        val certificate = TestKey.load().certificate
+        assertEquals(certificate, signer.certificate)
+        assertEquals(fingerprint(certificate), signer.sha256)
+        assertEquals(check.schemes, signer.schemes)
         assertTrue(Files.isRegularFile(out))
         assertFalse(Files.exists(out.resolveSibling(out.fileName.toString() + ".part")))
         assertEquals(listOf("v2", "v3"), ApkSigning.schemesFor(24))
@@ -425,9 +444,107 @@ class ApkTest {
         gen.initialize(2048, random)
         val a = gen.generateKeyPair()
         val b = gen.generateKeyPair()
-        val certA = io.gutapk.core.sign.Der.selfSigned(a, "A", 1, random)
+        val certA = io.gutapk.core.sign.Der.selfSigned(a, io.gutapk.core.sign.Subject("A"), 1, random)
         assertTrue(io.gutapk.core.sign.OwnKey.matches(a.private, certA))
         assertFalse(io.gutapk.core.sign.OwnKey.matches(b.private, certA))
+    }
+
+    private fun testKeys(): Pair<java.security.KeyPair, java.security.SecureRandom> {
+        val random = java.security.SecureRandom()
+        val gen = java.security.KeyPairGenerator.getInstance("RSA")
+        gen.initialize(2048, random)
+        return gen.generateKeyPair() to random
+    }
+
+    // The encoded name read back by hand: one (tag, text) per RDN, in order.
+    // Each RDN is a SET of one SEQUENCE of an OID and a string.
+    private fun rdnValues(name: ByteArray): List<Pair<Int, String>> {
+        var at = 0
+        fun length(): Int {
+            val first = name[at++].toInt() and 0xff
+            if (first < 0x80) return first
+            var n = 0
+            repeat(first and 0x7f) { n = (n shl 8) or (name[at++].toInt() and 0xff) }
+            return n
+        }
+        assertEquals(0x30, name[at++].toInt())
+        val end = at + length()
+        val out = ArrayList<Pair<Int, String>>()
+        while (at < end) {
+            assertEquals(0x31, name[at++].toInt())
+            length()
+            assertEquals(0x30, name[at++].toInt())
+            length()
+            assertEquals(0x06, name[at++].toInt())
+            val oidSize = length()
+            at += oidSize
+            val tag = name[at++].toInt()
+            val size = length()
+            out.add(tag to String(name, at, size, Charsets.UTF_8))
+            at += size
+        }
+        return out
+    }
+
+    // The JDK is the oracle: its RFC 2253 string, its own parse of that
+    // string and its encoded name, C first and CN last.
+    @Test
+    fun selfSignedCarriesEveryField() {
+        val (keys, random) = testKeys()
+        val dn = "CN=Yazid X,OU=Dev,O=Example,L=Lyon,ST=Rhone,C=FR"
+        val subject = io.gutapk.core.sign.Subject("Yazid X", "Dev", "Example", "Lyon", "Rhone", "FR")
+        val cert = io.gutapk.core.sign.Der.selfSigned(keys, subject, 1, random)
+        assertEquals(dn, cert.subjectX500Principal.getName(javax.security.auth.x500.X500Principal.RFC2253))
+        assertEquals(javax.security.auth.x500.X500Principal(dn), cert.subjectX500Principal)
+        assertEquals(cert.subjectX500Principal, cert.issuerX500Principal)
+        val expected = listOf(0x13 to "FR", 0x0c to "Rhone", 0x0c to "Lyon", 0x0c to "Example", 0x0c to "Dev", 0x0c to "Yazid X")
+        assertEquals(expected, rdnValues(cert.subjectX500Principal.encoded))
+        assertEquals(listOf("FR", "Rhone", "Lyon", "Example", "Dev", "Yazid X"), rdnValues(javax.security.auth.x500.X500Principal(dn).encoded).map { it.second })
+    }
+
+    @Test
+    fun selfSignedDropsEmptyFieldsAndTrims() {
+        val (keys, random) = testKeys()
+        val cert = io.gutapk.core.sign.Der.selfSigned(keys, io.gutapk.core.sign.Subject("  x ", o = "  ", c = "FR"), 1, random)
+        assertEquals("CN=x,C=FR", cert.subjectX500Principal.getName(javax.security.auth.x500.X500Principal.RFC2253))
+        assertEquals(listOf(0x13 to "FR", 0x0c to "x"), rdnValues(cert.subjectX500Principal.encoded))
+    }
+
+    @Test
+    fun selfSignedKeepsUnicodeNames() {
+        val (keys, random) = testKeys()
+        for (name in listOf("Yazid Ɣ ⵣ", "Zoé Çelik", "213ⵣ786")) {
+            val cert = io.gutapk.core.sign.Der.selfSigned(keys, io.gutapk.core.sign.Subject(name, o = "Équipe"), 1, random)
+            assertEquals("CN=$name,O=Équipe", cert.subjectX500Principal.getName(javax.security.auth.x500.X500Principal.RFC2253))
+            assertEquals(listOf(0x0c to "Équipe", 0x0c to name), rdnValues(cert.subjectX500Principal.encoded))
+        }
+    }
+
+    @Test
+    fun selfSignedRefusesWhatTheStandardRefuses() {
+        val (keys, random) = testKeys()
+        val s = io.gutapk.core.sign.Subject("x")
+        for (country in listOf("FRA", "F", "Fé", "fr", "F1", "1A")) {
+            kotlin.test.assertFailsWith<IllegalArgumentException>(country) {
+                io.gutapk.core.sign.Der.selfSigned(keys, s.copy(c = country), 1, random)
+            }
+        }
+        kotlin.test.assertFailsWith<IllegalArgumentException> {
+            io.gutapk.core.sign.Der.selfSigned(keys, io.gutapk.core.sign.Subject("x".repeat(65)), 1, random)
+        }
+        kotlin.test.assertFailsWith<IllegalArgumentException> {
+            io.gutapk.core.sign.Der.selfSigned(keys, io.gutapk.core.sign.Subject(""), 1, random)
+        }
+        kotlin.test.assertFailsWith<IllegalArgumentException> {
+            io.gutapk.core.sign.Der.selfSigned(keys, io.gutapk.core.sign.Subject("   "), 1, random)
+        }
+        kotlin.test.assertFailsWith<IllegalArgumentException> { io.gutapk.core.sign.Der.selfSigned(keys, s.copy(o = "o".repeat(65)), 1, random) }
+        kotlin.test.assertFailsWith<IllegalArgumentException> { io.gutapk.core.sign.Der.selfSigned(keys, s.copy(ou = "o".repeat(65)), 1, random) }
+        kotlin.test.assertFailsWith<IllegalArgumentException> { io.gutapk.core.sign.Der.selfSigned(keys, s.copy(l = "l".repeat(129)), 1, random) }
+        kotlin.test.assertFailsWith<IllegalArgumentException> { io.gutapk.core.sign.Der.selfSigned(keys, s.copy(st = "s".repeat(129)), 1, random) }
+        // The bounds themselves are accepted.
+        val edge = io.gutapk.core.sign.Subject("x".repeat(64), "u".repeat(64), "o".repeat(64), "l".repeat(128), "s".repeat(128), "FR")
+        assertEquals(6, rdnValues(io.gutapk.core.sign.Der.selfSigned(keys, edge, 1, random).subjectX500Principal.encoded).size)
     }
 
     // The table lists size and signer, then only what differs.
@@ -447,5 +564,407 @@ class ApkTest {
         assertEquals(listOf("size", "signer", "label", "target_sdk", "permissions_removed", "abis", "backup"), c.map { it.key })
         assertEquals(listOf("android.permission.READ_CONTACTS"), c.first { it.key == "permissions_removed" }.before)
         assertEquals(listOf("size", "signer"), io.gutapk.core.apk.Compare.changes(a, a, 1, 1, "AA", "AA").map { it.key })
+    }
+
+    // getDName and getSubject are inverse: UTF8String fields, accents, the
+    // PrintableString country, and an absent field read back as "".
+    @Test
+    fun subjectReadsBackWhatWasWritten() {
+        val (keys, random) = testKeys()
+        val subjects = listOf(
+            Subject("Yazid Ɣ ⵣ", "Équipe", "Société Ünïcode", "Zürich", "Île-de-France", "FR"),
+            Subject("213ⵣ786"),
+            Subject("x", o = "Example, Inc.", c = "US"),
+            Subject("x".repeat(64), "u".repeat(64), "o".repeat(64), "l".repeat(128), "s".repeat(128), "DE"),
+        )
+        for (subject in subjects) {
+            val cert = Der.selfSigned(keys, subject, 1, random)
+            assertEquals(subject, Der.getSubject(cert))
+        }
+        assertEquals(Subject("x", c = "FR"), Der.getSubject(Der.selfSigned(keys, Subject("  x ", o = "  ", c = "FR"), 1, random)))
+        // A name written by another tool, with an e-mail field Subject does not carry.
+        assertEquals(Subject("Android", "Android", "Android", "Mountain View", "California", "US"), Der.getSubject(TestKey.load().certificate))
+    }
+
+    // The test key's six names, read by Der.getSubject, equal the JDK's own
+    // reading of the same certificate, so the identity dialog shows the real ones.
+    // https://raw.githubusercontent.com/openjdk/jdk/jdk-21-ga/src/java.naming/share/classes/javax/naming/ldap/LdapName.java#getRdns
+    @Test
+    fun testKeySubjectMatchesTheJdk() {
+        val cert = TestKey.load().certificate
+        val jdk = javax.naming.ldap.LdapName(cert.subjectX500Principal.getName(javax.security.auth.x500.X500Principal.RFC2253))
+            .rdns.associate { it.type.uppercase() to it.value.toString() }
+        val subject = Der.getSubject(cert)
+        val read = mapOf("C" to subject.c, "ST" to subject.st, "L" to subject.l, "O" to subject.o, "OU" to subject.ou, "CN" to subject.cn)
+        for ((type, value) in read) {
+            assertEquals(jdk[type], value, type)
+            assertTrue(value.isNotEmpty(), type)
+        }
+    }
+
+    private val silent = object : JobSink {
+        override fun emit(event: JobEvent) {}
+    }
+
+    private fun lineageOf(keys: java.security.KeyPair, first: X509Certificate, vararg next: X509Certificate): SigningCertificateLineage {
+        fun config(cert: X509Certificate) = SigningCertificateLineage.SignerConfig.Builder(KeyConfig.Jca(keys.private), cert).build()
+        var lineage = SigningCertificateLineage.Builder(config(first), config(next[0])).build()
+        for (i in 1 until next.size) lineage = lineage.spawnDescendant(config(next[i - 1]), config(next[i]))
+        return lineage
+    }
+
+    // apksig's SigningCertificateLineageTest protocol: write the lineage,
+    // read it back, same certificates in the same order.
+    @Test
+    fun lineageRoundTripsThroughBytes() {
+        val (keys, random) = testKeys()
+        val a = Der.selfSigned(keys, Subject("A"), 1, random)
+        val b = Der.selfSigned(keys, Subject("B"), 1, random)
+        val c = Der.selfSigned(keys, Subject("C"), 1, random)
+        assertEquals(a.publicKey, b.publicKey)
+        val lineage = lineageOf(keys, a, b, c)
+        assertEquals(listOf(a, b, c), lineage.certificatesInLineage)
+        val back = SigningCertificateLineage.readFromBytes(lineage.bytes)
+        assertEquals(listOf(a, b, c), back.certificatesInLineage)
+        assertEquals(2, back.getSubLineage(b).size())
+        assertEquals(1, back.getSubLineage(a).size())
+    }
+
+    // An APK signed with A, then signed again with [A, B] and the lineage:
+    // apksig's verifier sees A in v1 and v2, A in v3 and B in v3.1, the
+    // lineage A then B, and GutapK's own check agrees.
+    @Test
+    fun signsWithTwoCertificatesAndALineage() = withDir { dir ->
+        val (keys, random) = testKeys()
+        val a = Der.selfSigned(keys, Subject("Old name"), 1, random)
+        val b = Der.selfSigned(keys, Subject("New name", c = "FR"), 2, random)
+        val source = dir.resolve("app.apk")
+        apk(source)
+        val first = dir.resolve("a.apk")
+        val second = dir.resolve("b.apk")
+
+        ApkSigning.sign(source, first, SigningKey("CERT", keys.private, a), 21, "test", silent)
+        val check = ApkSigning.sign(first, second, SigningKey("CERT", keys.private, b, lineageOf(keys, a, b)), 21, "test", silent)
+
+        assertTrue(check.verified, check.problems.joinToString())
+        assertTrue(Signatures.verify(second, 21).verified)
+        val result = ApkVerifier.Builder(second.toFile()).setMinCheckedPlatformVersion(21).build().verify()
+        assertTrue(result.isVerified, result.errors.joinToString())
+        assertTrue(result.isVerifiedUsingV1Scheme && result.isVerifiedUsingV2Scheme && result.isVerifiedUsingV3Scheme)
+        assertTrue(result.isVerifiedUsingV31Scheme)
+        assertEquals(a, result.v1SchemeSigners.single().certificate)
+        assertEquals(a, result.v2SchemeSigners.single().certificate)
+        assertEquals(a, result.v3SchemeSigners.single().certificate)
+        assertEquals(b, result.v31SchemeSigners.single().certificate)
+        assertEquals(listOf(a, b), result.v31SchemeSigners.single().signingCertificateLineage.certificatesInLineage)
+        assertEquals(listOf(a, b), result.signingCertificateLineage.certificatesInLineage)
+        // GutapK's own list: the rotated certificate first as apksig's
+        // signerCertificates gives it (what Sign.kt reads), with v3.1 among its
+        // schemes, then the old one, as apksigner prints both.
+        // https://android.googlesource.com/platform/tools/apksig/+/b741c26163bd17eb3cbe9f90d9cc4c2879dd3b70/src/apksigner/java/com/android/apksigner/ApkSignerTool.java#verify
+        val signers = Signatures.verify(second, 21).signers
+        assertEquals(listOf(b, a), signers.map { it.certificate })
+        assertEquals(listOf("v3.1"), signers[0].schemes)
+        assertEquals(listOf("v1", "v2", "v3"), signers[1].schemes)
+        // A bare B, without the lineage, is a different signer: Android would refuse the update.
+        ApkSigning.sign(source, dir.resolve("c.apk"), SigningKey("CERT", keys.private, b), 21, "test", silent)
+        val bare = ApkVerifier.Builder(dir.resolve("c.apk").toFile()).setMinCheckedPlatformVersion(21).build().verify()
+        assertEquals(listOf(b), bare.v3SchemeSigners.map { it.certificate })
+    }
+
+    // The folder, the keyring and the key size are the test's: nothing of
+    // the user's config folder or Secret Service is touched. The keyring
+    // answers like the Secret Service, an item matches when it holds every
+    // attribute asked for.
+    private class MemoryRing {
+        val items = LinkedHashMap<Map<String, String>, ByteArray>()
+
+        fun store(label: String, attributes: Map<String, String>, secret: ByteArray) {
+            items[attributes] = secret.copyOf()
+        }
+
+        fun lookup(attributes: Map<String, String>): ByteArray? =
+            items.entries.firstOrNull { e -> attributes.all { e.key[it.key] == it.value } }?.value?.copyOf()
+    }
+
+    private fun withOwnKey(block: (Path, MemoryRing, MutableList<String>) -> Unit) = withDir { dir ->
+        val ring = MemoryRing()
+        val warnings = ArrayList<String>()
+        val folder = OwnKey.folder
+        val store = OwnKey.keyringStore
+        val lookup = OwnKey.keyringLookup
+        val bits = OwnKey.bits
+        val warn = OwnKey.warn
+        OwnKey.folder = dir.resolve("config")
+        OwnKey.keyringStore = ring::store
+        OwnKey.keyringLookup = ring::lookup
+        OwnKey.bits = 2048
+        OwnKey.warn = { warnings.add(it) }
+        try {
+            block(dir, ring, warnings)
+        } finally {
+            OwnKey.folder = folder
+            OwnKey.keyringStore = store
+            OwnKey.keyringLookup = lookup
+            OwnKey.bits = bits
+            OwnKey.warn = warn
+        }
+    }
+
+    private fun useFreshMachine(dir: Path, name: String): MemoryRing {
+        val ring = MemoryRing()
+        OwnKey.folder = dir.resolve(name)
+        OwnKey.keyringStore = ring::store
+        OwnKey.keyringLookup = ring::lookup
+        return ring
+    }
+
+    // apksig's SigningCertificateLineageTest protocol: a lineage read from its
+    // file holds its signers and not an unknown one, an invalid file fails.
+    // https://android.googlesource.com/platform/tools/apksig/+/b741c26163bd17eb3cbe9f90d9cc4c2879dd3b70/src/test/java/com/android/apksig/SigningCertificateLineageTest.java#testLineageFromFileContainsExpectedSigners
+    // https://android.googlesource.com/platform/tools/apksig/+/b741c26163bd17eb3cbe9f90d9cc4c2879dd3b70/src/test/java/com/android/apksig/SigningCertificateLineageTest.java#testLineageFromFileDoesNotContainUnknownSigner
+    // not ported: the rotation, capability and v3 attribute tests (apksig's own, not GutapK's)
+    @Test
+    fun ownCertificateIsFalseWithoutAKey() = withOwnKey { _, _, _ ->
+        assertFalse(isOwnCertificate(TestKey.load().certificate))
+    }
+
+    @Test
+    fun ownCertificateIsTheCreatedKeyOnly() = withOwnKey { _, _, _ ->
+        val a = OwnKey.create(Subject("Mine"), 1, silent)
+        assertTrue(isOwnCertificate(a))
+        assertFalse(isOwnCertificate(TestKey.load().certificate))
+    }
+
+    @Test
+    fun ownCertificateCountsThePastCertificatesOfTheLineage() = withOwnKey { _, _, _ ->
+        val a = OwnKey.create(Subject("Old name"), 1, silent)
+        val b = OwnKey.reissue(Subject("New name"), 2, silent)
+        assertTrue(isOwnCertificate(a))
+        assertTrue(isOwnCertificate(b))
+        assertFalse(isOwnCertificate(TestKey.load().certificate))
+
+        // An unreadable lineage is not own, only the current certificate stays.
+        Files.write(OwnKey.lineage, byteArrayOf(1, 2, 3, 4, 5, 6))
+        assertFalse(isOwnCertificate(a))
+        assertTrue(isOwnCertificate(b))
+    }
+
+    @Test
+    fun reissueKeepsTheKeyAndChainsTheCertificates() = withOwnKey { dir, ring, warnings ->
+        val a = OwnKey.create(Subject("Old name", o = "Org"), 1, silent)
+        val before = OwnKey.load()
+        assertEquals(null, before.lineage)
+        assertEquals(1, ring.items.size)
+
+        val b = OwnKey.reissue(Subject("Nouveau nom", o = "Équipe", c = "FR"), 2, silent)
+
+        val after = OwnKey.load()
+        assertTrue(before.privateKey.encoded.contentEquals(after.privateKey.encoded))
+        assertEquals(b, after.certificate)
+        assertEquals(b, OwnKey.readCertificate())
+        assertEquals(a.publicKey, b.publicKey)
+        assertFalse(fingerprint(a) == fingerprint(b))
+        assertEquals(Subject("Nouveau nom", o = "Équipe", c = "FR"), Der.getSubject(b))
+        assertEquals(listOf(a, b), after.lineage?.certificatesInLineage)
+        assertEquals(2, ring.items.size)
+        assertTrue(OwnKey.lineage.let { Files.isRegularFile(it) })
+        assertEquals(listOf("signing.crt", "signing.lineage", "signing.p12"), Files.list(OwnKey.keystore.parent).use { s -> s.map { it.fileName.toString() }.sorted().toList() })
+        assertTrue(warnings.isEmpty(), warnings.joinToString())
+
+        // A third certificate extends the chain.
+        val c = OwnKey.reissue(Subject("Troisieme"), 3, silent)
+        assertEquals(listOf(a, b, c), OwnKey.load().lineage?.certificatesInLineage)
+        assertEquals(3, ring.items.size)
+        assertTrue(before.privateKey.encoded.contentEquals(OwnKey.load().privateKey.encoded))
+
+        // What it signs verifies, with the oldest in v1 and v2 and the newest in v3.1.
+        val source = dir.resolve("app.apk")
+        apk(source)
+        val out = dir.resolve("signed.apk")
+        ApkSigning.sign(source, out, OwnKey.load(), 21, "test", silent)
+        val result = ApkVerifier.Builder(out.toFile()).setMinCheckedPlatformVersion(21).build().verify()
+        assertTrue(result.isVerified, result.errors.joinToString())
+        assertEquals(a, result.v2SchemeSigners.single().certificate)
+        assertEquals(c, result.v31SchemeSigners.single().certificate)
+        assertEquals(listOf(a, b, c), result.signingCertificateLineage.certificatesInLineage)
+    }
+
+    @Test
+    fun reissueRefusesWhatItCannotDo() = withOwnKey { _, _, _ ->
+        assertFailsWith<java.io.IOException> { OwnKey.reissue(Subject("x"), 1, silent) }
+        OwnKey.create(Subject("Old name"), 1, silent)
+        val key = OwnKey.load().privateKey.encoded
+        for (years in listOf(0L, 101L, -1L)) {
+            assertFailsWith<IllegalArgumentException> { OwnKey.reissue(Subject("x"), years, silent) }
+        }
+        assertFailsWith<IllegalArgumentException> { OwnKey.reissue(Subject(""), 1, silent) }
+        assertFailsWith<IllegalArgumentException> { OwnKey.reissue(Subject("x", c = "FRA"), 1, silent) }
+        assertTrue(key.contentEquals(OwnKey.load().privateKey.encoded))
+        assertEquals(null, OwnKey.load().lineage)
+        assertFalse(Files.exists(OwnKey.lineage))
+    }
+
+    // A lineage that does not hold the key's certificate is ignored with its
+    // reason and never deleted. Installing a new certificate moves it aside.
+    @Test
+    fun aForeignLineageIsIgnoredAndKept() = withOwnKey { dir, _, warnings ->
+        val a = OwnKey.create(Subject("Old name"), 1, silent)
+        val (other, random) = testKeys()
+        val x = Der.selfSigned(other, Subject("X"), 1, random)
+        val y = Der.selfSigned(other, Subject("Y"), 1, random)
+        val foreign = lineageOf(other, x, y).bytes
+        Files.write(OwnKey.lineage, foreign)
+
+        assertEquals(null, OwnKey.load().lineage)
+        assertEquals(1, warnings.size)
+        assertTrue("does not hold the certificate" in warnings[0], warnings[0])
+        assertTrue(foreign.contentEquals(Files.readAllBytes(OwnKey.lineage)))
+
+        val b = OwnKey.reissue(Subject("New name"), 1, silent)
+        assertEquals(listOf(a, b), OwnKey.load().lineage?.certificatesInLineage)
+        val aside = Files.list(OwnKey.lineage.parent).use { s -> s.filter { it.fileName.toString().endsWith(".old") }.toList() }
+        assertEquals(1, aside.size)
+        assertTrue(foreign.contentEquals(Files.readAllBytes(aside[0])))
+
+        // Garbage is ignored the same way.
+        Files.write(OwnKey.lineage, byteArrayOf(1, 2, 3, 4, 5, 6))
+        assertEquals(null, OwnKey.load().lineage)
+        assertTrue("cannot be read" in warnings.last(), warnings.last())
+        assertEquals(6, Files.size(OwnKey.lineage))
+    }
+
+    // A plain restore of a key whose old lineage file is still in the folder:
+    // the file is used when it holds the certificate, else moved aside.
+    @Test
+    fun aStaleLineageFollowsTheKeyBeingInstalled() = withOwnKey { dir, ring, _ ->
+        val a = OwnKey.create(Subject("Old name"), 1, silent)
+        val b = OwnKey.reissue(Subject("New name"), 1, silent)
+        val lineageBytes = Files.readAllBytes(OwnKey.lineage)
+        val target = dir.resolve("plain.p12")
+        // A plain backup of B alone, as another tool writes it.
+        val key = OwnKey.load()
+        val ks = java.security.KeyStore.getInstance("PKCS12")
+        ks.load(null, null)
+        ks.setKeyEntry("k", key.privateKey, "pw".toCharArray(), arrayOf(b))
+        Files.newOutputStream(target).use { ks.store(it, "pw".toCharArray()) }
+        Files.delete(OwnKey.keystore)
+        Files.delete(OwnKey.certificate)
+
+        OwnKey.restore(target, "pw".toCharArray(), silent)
+
+        assertTrue(lineageBytes.contentEquals(Files.readAllBytes(OwnKey.lineage)))
+        assertEquals(listOf(a, b), OwnKey.load().lineage?.certificatesInLineage)
+        assertTrue(ring.items.size >= 2)
+
+        // A lineage of other certificates is moved aside, never deleted.
+        val (other, random) = testKeys()
+        val foreign = lineageOf(other, Der.selfSigned(other, Subject("X"), 1, random), Der.selfSigned(other, Subject("Y"), 1, random)).bytes
+        Files.delete(OwnKey.keystore)
+        Files.delete(OwnKey.certificate)
+        Files.write(OwnKey.lineage, foreign)
+        OwnKey.restore(target, "pw".toCharArray(), silent)
+        assertFalse(Files.exists(OwnKey.lineage))
+        assertEquals(null, OwnKey.load().lineage)
+        val aside = Files.list(OwnKey.keystore.parent).use { s -> s.filter { it.fileName.toString().endsWith(".old") }.toList() }
+        assertEquals(1, aside.size)
+        assertTrue(foreign.contentEquals(Files.readAllBytes(aside[0])))
+    }
+
+    @Test
+    fun backupAndRestoreKeepTheLineage() = withOwnKey { dir, _, _ ->
+        val a = OwnKey.create(Subject("Old name"), 1, silent)
+        val b = OwnKey.reissue(Subject("New name"), 1, silent)
+        val c = OwnKey.reissue(Subject("Third name"), 1, silent)
+        val encodedKey = OwnKey.load().privateKey.encoded
+        val target = dir.resolve("backup.p12")
+        val password = "backup password".toCharArray()
+
+        OwnKey.backup(target, password, silent)
+
+        val lineageFile = OwnKey.backupLineage(target)
+        assertEquals(dir.resolve("backup.lineage"), lineageFile)
+        assertTrue(Files.isRegularFile(lineageFile))
+        assertEquals(listOf(a, b, c), SigningCertificateLineage.readFromFile(lineageFile.toFile()).certificatesInLineage)
+        val ks = java.security.KeyStore.getInstance("PKCS12")
+        Files.newInputStream(target).use { ks.load(it, password) }
+        assertEquals(setOf("gutapk", "lineage-1", "lineage-2"), ks.aliases().toList().toSet())
+        assertTrue(ks.isCertificateEntry("lineage-1") && ks.isCertificateEntry("lineage-2") && ks.isKeyEntry("gutapk"))
+        assertEquals(a, ks.getCertificate("lineage-1"))
+        assertEquals(b, ks.getCertificate("lineage-2"))
+        assertEquals(c, ks.getCertificate("gutapk"))
+        // Not replaced.
+        assertFailsWith<java.io.IOException> { OwnKey.backup(target, password, silent) }
+        Files.delete(target)
+        assertFailsWith<java.io.IOException> { OwnKey.backup(target, password, silent) }
+        assertFalse(Files.exists(target))
+        assertFalse(Files.exists(target.resolveSibling("backup.p12.part")))
+        Files.delete(lineageFile)
+        OwnKey.backup(target, password, silent)
+
+        // With the lineage file.
+        useFreshMachine(dir, "config-with-file")
+        assertEquals(c, OwnKey.restore(target, password, silent))
+        assertEquals(listOf(a, b, c), OwnKey.load().lineage?.certificatesInLineage)
+        assertTrue(encodedKey.contentEquals(OwnKey.load().privateKey.encoded))
+
+        // Without it: rebuilt from lineage-1 to lineage-n, signed by the key.
+        Files.delete(lineageFile)
+        useFreshMachine(dir, "config-without-file")
+        assertEquals(c, OwnKey.restore(target, password, silent))
+        val rebuilt = OwnKey.load()
+        assertEquals(listOf(a, b, c), rebuilt.lineage?.certificatesInLineage)
+        val source = dir.resolve("app.apk")
+        apk(source)
+        val out = dir.resolve("signed.apk")
+        ApkSigning.sign(source, out, rebuilt, 21, "test", silent)
+        val result = ApkVerifier.Builder(out.toFile()).setMinCheckedPlatformVersion(21).build().verify()
+        assertTrue(result.isVerified, result.errors.joinToString())
+        assertEquals(listOf(a, b, c), result.signingCertificateLineage.certificatesInLineage)
+    }
+
+    @Test
+    fun aKeyWithoutLineageBacksUpAndRestoresAsBefore() = withOwnKey { dir, _, _ ->
+        val a = OwnKey.create(Subject("Only name"), 1, silent)
+        val target = dir.resolve("plain.p12")
+        val password = "pw".toCharArray()
+
+        OwnKey.backup(target, password, silent)
+
+        assertFalse(Files.exists(OwnKey.backupLineage(target)))
+        val ks = java.security.KeyStore.getInstance("PKCS12")
+        Files.newInputStream(target).use { ks.load(it, password) }
+        assertEquals(listOf("gutapk"), ks.aliases().toList())
+        useFreshMachine(dir, "other")
+        assertEquals(a, OwnKey.restore(target, password, silent))
+        assertEquals(null, OwnKey.load().lineage)
+        assertFalse(Files.exists(OwnKey.lineage))
+    }
+
+    @Test
+    fun restoreRefusesAForeignLineage() = withOwnKey { dir, _, _ ->
+        val (mine, random) = testKeys()
+        val (other, _) = testKeys()
+        val certificate = Der.selfSigned(mine, Subject("Mine"), 1, random)
+        val x = Der.selfSigned(other, Subject("X"), 1, random)
+        val y = Der.selfSigned(other, Subject("Y"), 1, random)
+        val password = "pw".toCharArray()
+
+        // Older certificates of another key in the file, no lineage file.
+        val target = dir.resolve("foreign.p12")
+        val ks = java.security.KeyStore.getInstance("PKCS12")
+        ks.load(null, null)
+        ks.setKeyEntry("gutapk", mine.private, password, arrayOf(certificate))
+        ks.setCertificateEntry("lineage-1", x)
+        Files.newOutputStream(target).use { ks.store(it, password) }
+        val failure = assertFailsWith<java.io.IOException> { OwnKey.restore(target, password, silent) }
+        assertTrue("foreign.lineage" in failure.message.orEmpty(), failure.message)
+        assertFalse(OwnKey.exists())
+
+        // A lineage file that does not hold the key's certificate.
+        Files.write(dir.resolve("foreign.lineage"), lineageOf(other, x, y).bytes)
+        val failure2 = assertFailsWith<java.io.IOException> { OwnKey.restore(target, password, silent) }
+        assertTrue("does not hold the certificate" in failure2.message.orEmpty(), failure2.message)
+        assertFalse(OwnKey.exists())
     }
 }

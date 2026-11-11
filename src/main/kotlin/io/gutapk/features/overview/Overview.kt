@@ -42,6 +42,7 @@ import io.gutapk.core.apk.Parts
 import io.gutapk.core.apk.SetRecord
 import io.gutapk.core.apk.SignatureInfo
 import io.gutapk.core.apk.Signatures
+import io.gutapk.core.apk.Signer
 import io.gutapk.core.apk.UnityInfo
 import io.gutapk.core.apk.UnityReader
 import io.gutapk.core.il2cpp.MethodEntry
@@ -53,6 +54,7 @@ import io.gutapk.core.edit.JavaCode
 import io.gutapk.core.edit.JavaSource
 import io.gutapk.core.edit.SmaliCode
 import io.gutapk.core.edit.SmaliSource
+import io.gutapk.core.sign.Der
 import io.gutapk.core.sign.KeyChoice
 import io.gutapk.core.sign.keyChoiceOf
 import io.gutapk.job.Job
@@ -63,6 +65,9 @@ import io.gutapk.registry.Source
 import io.gutapk.tools.Hash
 import io.gutapk.ui.AppIcon
 import io.gutapk.ui.BodyText
+import io.gutapk.ui.CertificateDialog
+import io.gutapk.ui.IdentityDialog
+import io.gutapk.ui.isOwnCertificate
 import io.gutapk.ui.Page
 import io.gutapk.ui.Zone
 import io.gutapk.ui.KeyChooser
@@ -557,14 +562,39 @@ private fun Body(l: Loaded, info: ApkInfo, original: Path, root: Path?, detectio
                         color = if (sig.verified) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
                     )
                 }
+                var opened by remember { mutableStateOf<Signer?>(null) }
+                // Reads the key's files, so off the UI thread. Keyed on opened too:
+                // a certificate reissued in the dialog is seen once it closes.
+                // https://raw.githubusercontent.com/androidx/androidx/androidx-main/compose/runtime/runtime/src/commonMain/kotlin/androidx/compose/runtime/ProduceState.kt#produceState
+                // not ported: produceState (called as it is)
+                val own by produceState(emptySet<String>(), sig, opened) {
+                    value = withContext(Dispatchers.IO) {
+                        sig.signers.filter { isOwnCertificate(it.certificate) }.map { it.sha256 }.toSet()
+                    }
+                }
                 SelectionContainer {
                     Column {
                         sig.signers.forEach { signer ->
-                            val cn = Regex("""CN=([^,]+)""").find(signer.subject)?.groupValues?.get(1)
-                            ZoneRow(t("ov_signer"), cn ?: signer.subject)
+                            // Der reads an escaped comma where a regex on the name breaks.
+                            val cn = runCatching { Der.getSubject(signer.certificate).cn }.getOrNull()?.ifEmpty { null } ?: signer.subject
+                            ZoneRow(t("ov_signer"), cn, onClick = { opened = signer })
                             ZoneRow("SHA-256", signer.sha256)
                             ZoneRow(t("ov_algorithm"), signer.algorithm)
                         }
+                    }
+                }
+                opened?.let { signer ->
+                    // The user's own key is editable, any other signer is read only.
+                    if (signer.sha256 in own) {
+                        IdentityDialog(KeyChoice.OWN, onDismiss = { opened = null })
+                    } else {
+                        CertificateDialog(
+                            title = t("ov_signer"),
+                            certificate = signer.certificate,
+                            facts = listOf(t("ov_algorithm") to signer.algorithm, t("ov_schemes") to signer.schemes.joinToString(", ")),
+                            note = null,
+                            onDismiss = { opened = null },
+                        )
                     }
                 }
                 sig.problems.take(3).forEach { problem ->
