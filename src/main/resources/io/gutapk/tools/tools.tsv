@@ -30,8 +30,8 @@
 #              tools/Libraries.kt.
 #
 # id	source	index	package	entry	execDir	licence	licenceUrl	what
-apkeditor	github	https://github.com/REAndroid/APKEditor	APKEditor-[0-9][0-9.]*\.jar	APKEditor.jar	-	Apache-2.0	https://github.com/REAndroid/APKEditor/blob/master/LICENSE	Decodes and rebuilds APKs, pure Java, merges split APKs. First engine.
-apktool	github	https://github.com/iBotPeaches/Apktool	apktool_[0-9][0-9.]*\.jar	apktool.jar	-	Apache-2.0	https://github.com/iBotPeaches/Apktool/blob/main/LICENSE.md	Decodes and rebuilds APKs with aapt2. Fallback engine.
+apkeditor	github	https://github.com/REAndroid/APKEditor	APKEditor-[0-9][0-9.]*\.jar	APKEditor.jar	-	Apache-2.0	https://github.com/REAndroid/APKEditor/blob/master/LICENSE	Decodes and rebuilds APKs, pure Java, merges split APKs. Offered when apktool fails.
+apktool	github	https://github.com/iBotPeaches/Apktool	apktool_[0-9][0-9.]*\.jar	apktool.jar	-	Apache-2.0	https://github.com/iBotPeaches/Apktool/blob/main/LICENSE.md	Decodes and rebuilds APKs with aapt2. First engine.
 platform-tools	google-repo	https://dl.google.com/android/repository/repository2-3.xml	platform-tools	platform-tools/adb	platform-tools	Android Software Development Kit License Agreement	https://developer.android.com/studio/terms	adb and fastboot
 cpp2il	github-pre	https://github.com/SamboyCoding/Cpp2IL	Cpp2IL-[0-9][0-9A-Za-z.-]*-Linux	Cpp2IL	.	MIT	https://github.com/SamboyCoding/Cpp2IL/blob/development/LICENSE	Dumps Unity IL2CPP games: types, methods and their offsets in libil2cpp.so. Pre-releases only.
 cpp2il-nightly	github-nightly	https://github.com/SamboyCoding/Cpp2IL	dotnet-core.yml@development/Cpp2IL-net9-linux-x64	Cpp2IL	.	MIT	https://github.com/SamboyCoding/Cpp2IL/blob/development/LICENSE	Cpp2IL built from its newest code, a development build that may be broken. Kept by GitHub 90 days.
