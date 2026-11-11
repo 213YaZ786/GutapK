@@ -78,7 +78,7 @@ internal fun hexChar(b: Byte): Char {
 // left and the printable characters on the right. Changed bytes are drawn
 // in the accent colour.
 @Composable
-fun HexScreen(packageDir: Path, apk: Path, method: MethodEntry, onBack: () -> Unit) {
+fun HexScreen(root: Path?, packageDir: Path, apk: Path, method: MethodEntry, onBack: () -> Unit) {
     // Bumped after each change to the patch list, which reads it again.
     var revision by remember { mutableStateOf(0) }
     val state by produceState<HexState>(HexState.Reading, method, revision) {
@@ -120,13 +120,14 @@ fun HexScreen(packageDir: Path, apk: Path, method: MethodEntry, onBack: () -> Un
                 val d = s.data
                 val mine = d.patches.filter { it.entry == null && it.abi == d.abi && it.offset < method.offset + d.original.size && method.offset < it.end }
                 Zone(t("hex_zone", d.abi)) {
-                    ZoneRow(t("hex_where"), listOf(offsetText(method.offset), t("me_length", method.length.toString())).joinToString("  ·  "))
+                    ZoneRow(t("hex_where"), listOf(offsetText(method.offset), t("me_length", method.length.toString())).joinToString(", "))
                     HexRows(d, method.offset)
                     if (method.length > d.original.size) BodyText(t("hex_truncated", d.original.size.toString()))
                 }
                 if (d.abi == Arm64Presets.ABI && method.offset % 4 == 0L) {
                     Zone(t("hex_code")) { CodeRows(d, method.offset) }
                 }
+                if (d.abi == Arm64Presets.ABI && root != null) CZoneAt(root, packageDir, apk, method)
                 Zone(t("hex_patches", mine.size.toString())) {
                     if (mine.isEmpty()) {
                         BodyText(t("hex_patches_none"))

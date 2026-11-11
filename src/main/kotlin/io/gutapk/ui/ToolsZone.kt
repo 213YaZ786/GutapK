@@ -83,6 +83,7 @@ private fun stepKey(step: String): String = when (step) {
     "verify" -> "job_verify"
     "replace" -> "job_replace"
     "dump" -> "job_dump"
+    "analyse" -> "job_analyse"
     "pull" -> "job_pull"
     "install" -> "job_install"
     "push" -> "job_push"

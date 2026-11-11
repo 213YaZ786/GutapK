@@ -317,7 +317,7 @@ fun OverviewScreen(
             onBack = { code = false },
         )
     } else if (methods && shownMethod != null) {
-        HexScreen(dir, original, shownMethod, onBack = { method = null })
+        HexScreen(root, dir, original, shownMethod, onBack = { method = null })
     } else if (methods) {
         MethodsScreen(
             dir,
