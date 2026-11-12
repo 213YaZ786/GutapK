@@ -16,12 +16,15 @@ object OfflineInstall {
     private const val ALREADY_THERE = "INSTALL_FAILED_UPDATE_INCOMPATIBLE"
 
     // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/TryOut.kt#plan
-    fun plan(serial: String, apk: Path, pkg: String, uninstallFirst: Boolean): List<String> = buildList {
-        add("adb " + DeviceInstall.args(serial, listOf(apk), false).joinToString(" "))
+    fun plan(serial: String, apk: Path, pkg: String, uninstallFirst: Boolean): List<String> = plan(serial, listOf(apk), pkg, uninstallFirst)
+
+    // A split set: every part in one install-multiple, as the platform keeps a set.
+    fun plan(serial: String, apks: List<Path>, pkg: String, uninstallFirst: Boolean): List<String> = buildList {
+        add("adb " + DeviceInstall.args(serial, apks, false).joinToString(" "))
         // Only after the phone refused the install for another signature.
         if (uninstallFirst) {
             add("$ALREADY_THERE: adb " + TryOut.uninstallArgs(serial, pkg).joinToString(" "))
-            add("$ALREADY_THERE: adb " + DeviceInstall.args(serial, listOf(apk), false).joinToString(" "))
+            add("$ALREADY_THERE: adb " + DeviceInstall.args(serial, apks, false).joinToString(" "))
         }
         add("adb -s $serial shell " + TryOut.launchCommand(pkg))
     }
@@ -29,18 +32,21 @@ object OfflineInstall {
     // first and steps place the two steps in the job that builds the file
     // before them.
     // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/device/TryOut.kt#run
-    fun run(adb: Path, serial: String, apk: Path, pkg: String, uninstallFirst: Boolean, sink: JobSink, cancelled: () -> Boolean, first: Int = 1, steps: Int = 2) {
+    fun run(adb: Path, serial: String, apk: Path, pkg: String, uninstallFirst: Boolean, sink: JobSink, cancelled: () -> Boolean, first: Int = 1, steps: Int = 2) =
+        run(adb, serial, listOf(apk), pkg, uninstallFirst, sink, cancelled, first, steps)
+
+    fun run(adb: Path, serial: String, apks: List<Path>, pkg: String, uninstallFirst: Boolean, sink: JobSink, cancelled: () -> Boolean, first: Int = 1, steps: Int = 2) {
         var step = first
         sink.emit(JobEvent.Step("install", step++, steps))
         try {
-            DeviceInstall.install(adb, serial, listOf(apk), false, sink, cancelled)
+            DeviceInstall.install(adb, serial, apks, false, sink, cancelled)
         } catch (e: InstallRefused) {
             if (!uninstallFirst || e.code != ALREADY_THERE) throw e
             val args = TryOut.uninstallArgs(serial, pkg)
             sink.emit(JobEvent.Line("adb " + args.joinToString(" ")))
             val r = Adb.run(adb, args, 120, cancelled)
             r.out.lines().filter { it.isNotBlank() }.forEach { sink.emit(JobEvent.Line(it.trim())) }
-            DeviceInstall.install(adb, serial, listOf(apk), false, sink, cancelled)
+            DeviceInstall.install(adb, serial, apks, false, sink, cancelled)
         }
 
         sink.emit(JobEvent.Step("open", step, steps))

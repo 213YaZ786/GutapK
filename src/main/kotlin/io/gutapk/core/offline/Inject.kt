@@ -516,7 +516,7 @@ object Inject {
         return writer.toString()
     }
 
-    private fun read(bytes: ByteArray): Axml {
+    internal fun read(bytes: ByteArray): Axml {
         val axml = Axml()
         try {
             AxmlReader(bytes).accept(axml)
@@ -526,7 +526,7 @@ object Inject {
         return axml
     }
 
-    private fun write(axml: Axml): ByteArray {
+    internal fun write(axml: Axml): ByteArray {
         val writer = AxmlWriter()
         axml.accept(writer)
         return writer.toByteArray()

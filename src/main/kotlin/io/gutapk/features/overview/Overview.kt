@@ -190,7 +190,7 @@ fun OverviewScreen(
     // still looking.
     // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/features/overview/Overview.kt#OverviewScreen
     val endpoints by produceState<List<Endpoint>?>(null, dir) {
-        value = withContext(Dispatchers.IO) { runCatching { Endpoints.scan(original) }.getOrDefault(emptyList()) }
+        value = withContext(Dispatchers.IO) { runCatching { if (Parts.isSet(dir)) Endpoints.scan(Parts.of(dir).map { it.file }) else Endpoints.scan(original) }.getOrDefault(emptyList()) }
     }
     var dialog by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf(false) }

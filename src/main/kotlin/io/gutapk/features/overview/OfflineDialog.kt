@@ -46,6 +46,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import io.gutapk.core.apk.ApkInfo
 import io.gutapk.core.apk.DexClasses
+import io.gutapk.core.apk.Packages
+import io.gutapk.core.apk.Parts
 import io.gutapk.core.apk.Trackers
 import io.gutapk.core.offline.AssemblyCodecs
 import io.gutapk.core.offline.AssemblyStore
@@ -56,6 +58,8 @@ import io.gutapk.core.offline.GameState
 import io.gutapk.core.offline.Endpoints
 import io.gutapk.core.offline.Inject
 import io.gutapk.core.offline.OfflineBuild
+import io.gutapk.core.edit.PackageId
+import io.gutapk.core.edit.PackageIdRefusal
 import io.gutapk.core.offline.Redirect
 import io.gutapk.core.offline.ServerRules
 import io.gutapk.core.sign.ApkSigning
@@ -158,13 +162,18 @@ fun OfflineDialog(
     // the Overview's scan leaves it out, it is scanned again here with it,
     // once the library is in, as GodotDialog reads its scripts.
     // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/main/kotlin/io/gutapk/features/device/MirrorPage.kt#L80-L85
-    val store = remember(original) { runCatching { ZipFile(original.toFile()).use { z -> z.entries().asSequence().any { AssemblyStore.isStore(it.name) } } }.getOrDefault(false) }
+    val set = remember(dir) { Parts.isSet(dir) }
+    val parts = remember(dir) { if (set) Parts.of(dir) else emptyList() }
+    val store = remember(original) { runCatching { (if (set) parts.map { it.file } else listOf(original)).any { f -> ZipFile(f.toFile()).use { z -> z.entries().asSequence().any { AssemblyStore.isStore(it.name) } } } }.getOrDefault(false) }
     var storeRead by remember { mutableStateOf(0) }
     var waiting by remember { mutableStateOf<String?>(null) }
     val read by produceState<List<Endpoint>?>(if (store) null else endpoints, endpoints, storeRead) {
         value = if (!store) endpoints else withContext(Dispatchers.IO) {
             if (Libraries.missing(root, Libraries.AIRCOMPRESSOR).isNotEmpty()) null
-            else runCatching { Endpoints.scan(original, Libraries.load(root, Libraries.AIRCOMPRESSOR, "io.gutapk.core.offline.AircompressorCodecs", AssemblyCodecs::class.java)) }.getOrDefault(endpoints)
+            else runCatching {
+                val codecs = Libraries.load(root, Libraries.AIRCOMPRESSOR, "io.gutapk.core.offline.AircompressorCodecs", AssemblyCodecs::class.java)
+                if (set) Endpoints.scan(parts.map { it.file }, codecs) else Endpoints.scan(original, codecs)
+            }.getOrDefault(endpoints)
         }
     }
     // The recordings kept on the PC, read off the composition thread.
@@ -194,6 +203,13 @@ fun OfflineDialog(
     val shown = chosen ?: (listing.servers.map { it.origin } + advised.keys).toSet()
     var serial by remember { mutableStateOf<String?>(null) }
     var uninstallFirst by remember { mutableStateOf(false) }
+    // A new package name installs the copy beside the phone's own, which is then left as it is.
+    var beside by remember { mutableStateOf(true) }
+    var besideName by remember { mutableStateOf(info.packageName + ".offline") }
+    val refusal = if (beside) (if (besideName == info.packageName) PackageIdRefusal.FORMAT else PackageId.check(besideName)) else null
+    val formatText = t("edit_package_format")
+    val reservedText = t("edit_package_reserved")
+    val installedName = if (beside) besideName else info.packageName
     var started by remember { mutableStateOf<Job?>(null) }
     var finished by remember { mutableStateOf(false) }
     var signed by remember { mutableStateOf<Path?>(null) }
@@ -264,7 +280,7 @@ fun OfflineDialog(
                 },
                 confirmButton = { TextButton(onClick = onDismiss) { Text(t("close")) } },
                 dismissButton = {
-                    if (code == "INSTALL_FAILED_UPDATE_INCOMPATIBLE" && !uninstallFirst) {
+                    if (code == "INSTALL_FAILED_UPDATE_INCOMPATIBLE" && !uninstallFirst && !beside) {
                         TextButton(onClick = {
                             failure = null
                             uninstallFirst = true
@@ -433,15 +449,38 @@ fun OfflineDialog(
                         Text(t("sign_test_warning"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             Column(Modifier.weight(1f)) {
-                                Text(t("offline_uninstall"), style = MaterialTheme.typography.bodyLarge)
-                                Text(t("offline_uninstall_d"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(t("offline_beside"), style = MaterialTheme.typography.bodyLarge)
+                                Text(t("offline_beside_d"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
-                            Switch(checked = uninstallFirst, onCheckedChange = { uninstallFirst = it })
+                            Switch(checked = beside, onCheckedChange = { beside = it })
+                        }
+                        if (beside) {
+                            OutlinedTextField(
+                                value = besideName,
+                                onValueChange = { besideName = it.trim() },
+                                label = { Text(t("offline_beside_name")) },
+                                singleLine = true,
+                                isError = refusal != null,
+                                supportingText = if (refusal != null) {
+                                    { Text(if (refusal == PackageIdRefusal.RESERVED) reservedText else formatText) }
+                                } else {
+                                    null
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        } else {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(t("offline_uninstall"), style = MaterialTheme.typography.bodyLarge)
+                                    Text(t("offline_uninstall_d"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Switch(checked = uninstallFirst, onCheckedChange = { uninstallFirst = it })
+                            }
                         }
                         Text(t("try_commands"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                         SelectionContainer {
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                OfflineInstall.plan(host, Path.of("<offline game>"), info.packageName, uninstallFirst).forEach {
+                                OfflineInstall.plan(host, if (set) parts.map { Path.of("<offline game>", it.fileName) } else listOf(Path.of("<offline game>")), installedName, uninstallFirst && !beside).forEach {
                                     Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
                                 }
                             }
@@ -450,9 +489,11 @@ fun OfflineDialog(
                 },
                 confirmButton = {
                     TextButton(
-                        enabled = ready,
+                        enabled = ready && refusal == null,
                         onClick = {
-                            val remove = uninstallFirst
+                            val remove = uninstallFirst && !beside
+                            val installing = installedName
+                            val renaming = if (beside) installedName else null
                             val servers = fitting
                             val refusing = blocked.intersect(fitting.map { it.origin }.toSet())
                             val skipping = skipConsent && windows.isNotEmpty()
@@ -469,10 +510,18 @@ fun OfflineDialog(
                                 val codecs = if (store) Libraries.load(root, Libraries.AIRCOMPRESSOR, "io.gutapk.core.offline.AircompressorCodecs", AssemblyCodecs::class.java) else null
                                 // The test key signs, as the Sign dialog does with it: the
                                 // game is for the user's own phones.
-                                val out = output(dir, info.packageName, info.versionName, KeyChoice.TEST)
-                                OfflineBuild.run(original, servers, dex, strings, dir.resolve("work-offline"), out, TestKey.load(), info.minSdk, version, job, codecs, OfflineBuild.recordings(dir), refusing, skipping, signing, if (unlocking) serving.map { ServerRules.unlocked(it, original) } else serving)
+                                // A set comes out as a folder of APKs, named as ApkSigning.setOutput names it.
+                                Packages.setInstalledName(dir, renaming)
+                                val file = output(dir, installing, info.versionName, KeyChoice.TEST)
+                                val out = if (set) file.resolveSibling(file.fileName.toString().removeSuffix(".apk")) else file
+                                val learnt = if (unlocking) serving.map { ServerRules.unlocked(it, original) } else serving
+                                if (set) {
+                                    OfflineBuild.runSet(parts, servers, dex, strings, dir.resolve("work-offline"), out, TestKey.load(), info.minSdk, version, job, codecs, OfflineBuild.recordings(dir), refusing, skipping, signing, learnt, renaming)
+                                } else {
+                                    OfflineBuild.run(original, servers, dex, strings, dir.resolve("work-offline"), out, TestKey.load(), info.minSdk, version, job, codecs, OfflineBuild.recordings(dir), refusing, skipping, signing, learnt, renaming)
+                                }
                                 signed = out
-                                OfflineInstall.run(f.adb, phone, out, info.packageName, remove, job, { job.cancelRequested }, first = 2, steps = 3)
+                                OfflineInstall.run(f.adb, phone, Parts.apks(out), installing, remove, job, { job.cancelRequested }, first = 2, steps = 3)
                                 finished = true
                                 job.result = out.toString()
                             }
@@ -681,6 +730,8 @@ fun AdminDialog(
         value = Seen.Looking
         value = withContext(Dispatchers.IO) { runCatching { probe(root) }.getOrElse { Seen.Failed(it.message ?: "?") } }
     }
+    // The name the game was installed under, the original's or the one beside it.
+    val installedName by produceState(info.packageName, dir) { value = withContext(Dispatchers.IO) { Packages.installedName(dir, info.packageName) } }
     var serial by remember { mutableStateOf<String?>(null) }
     var link by remember { mutableStateOf<Link?>(null) }
     var status by remember { mutableStateOf<Status?>(null) }
@@ -731,7 +782,7 @@ fun AdminDialog(
                 title = { Text(title) },
                 text = {
                     AdminValues(
-                        packageName = info.packageName,
+                        packageName = installedName,
                         status = s,
                         values = list,
                         game = g?.second,
@@ -834,7 +885,7 @@ fun AdminDialog(
                                         val fresh = withContext(Dispatchers.IO) { runCatching { readGame(l, dir, language) }.getOrNull() }
                                         if (fresh != null) game = fresh
                                         // The game shows the new values from its next login only.
-                                        withContext(Dispatchers.IO) { runCatching { ServerAdmin.restart(l.adb, l.serial, info.packageName) }.getOrElse { it.message } }
+                                        withContext(Dispatchers.IO) { runCatching { ServerAdmin.restart(l.adb, l.serial, installedName) }.getOrElse { it.message } }
                                             ?.let { failure = restartFailed + " (" + it + ")" }
                                         stored = gameChanges.size
                                         gameChanges.forEach { edits.remove("state:" + it.first) }
@@ -873,7 +924,7 @@ fun AdminDialog(
                 title = { Text(title) },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Fact(t("try_package"), info.packageName)
+                        Fact(t("try_package"), installedName)
                         Text(t("try_phone"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                         f.phones.forEach { p ->
                             PhoneRow(p, phone == p.serial) { serial = p.serial }
@@ -899,7 +950,7 @@ fun AdminDialog(
                             scope.launch {
                                 val outcome = withContext(Dispatchers.IO) {
                                     runCatching {
-                                        val local = ServerAdmin.forward(f.adb, phone, info.packageName)
+                                        val local = ServerAdmin.forward(f.adb, phone, installedName)
                                         val held = Link(f.adb, phone, local)
                                         try {
                                             held to readServer(held)

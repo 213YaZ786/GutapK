@@ -365,4 +365,23 @@ object Endpoints {
             Endpoint(origin, occurrences, urls.getValue(origin), likelyServer(origin.substringAfter("://").substringBefore(':')))
         }
     }
+
+    // A split set: every part scanned, the lists merged with the same dedup,
+    // an origin met again adding its occurrences and up to three urls.
+    // not ported: runs (the scan of one APK above keeps it, the merge reads its result)
+    // https://github.com/213YaZ786/GutapK/blob/531ee678f6805e43115bb9ddf6ca80f40df43c41/src/main/kotlin/io/gutapk/core/offline/Endpoints.kt#scan
+    fun scan(apks: List<Path>, codecs: AssemblyCodecs? = null): List<Endpoint> {
+        val found = LinkedHashMap<String, MutableList<Occurrence>>()
+        val urls = HashMap<String, MutableList<String>>()
+        for (apk in apks) {
+            for (endpoint in scan(apk, codecs)) {
+                found.getOrPut(endpoint.origin) { mutableListOf() }.addAll(endpoint.occurrences)
+                val list = urls.getOrPut(endpoint.origin) { mutableListOf() }
+                for (link in endpoint.urls) if (list.size < 3 && link !in list) list.add(link)
+            }
+        }
+        return found.map { (origin, occurrences) ->
+            Endpoint(origin, occurrences, urls.getValue(origin), likelyServer(origin.substringAfter("://").substringBefore(':')))
+        }
+    }
 }

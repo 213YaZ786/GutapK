@@ -61,7 +61,7 @@ class DexStringsTest {
         val target = Redirect.target(api, port = 29477)!!
         val out = Files.createTempFile("gutapk", ".dex")
         try {
-            val changed = DexStrings().writeTo(out, dex(), mapOf(api to target), emptyMap())
+            val changed = DexStrings().writeTo(out, dex(), mapOf(api to target), emptyMap(), emptyMap())
             assertEquals(setOf("$api/static", "$api/decide"), changed)
             val back = DexBackedDexFile(null, Files.readAllBytes(out))
             val strings = back.stringSection.toList()
@@ -73,7 +73,7 @@ class DexStringsTest {
             val url = classDef.methods.single { it.name == "url" }.implementation!!.instructions.first() as ReferenceInstruction
             assertEquals("$target/decide", (url.reference as StringReference).string)
             // A dex with none of the origins is written again unchanged in its strings.
-            assertEquals(emptySet(), DexStrings().writeTo(out, dex(), mapOf("https://api.example-game.com" to "http://127.0.0.1:00020000"), emptyMap()))
+            assertEquals(emptySet(), DexStrings().writeTo(out, dex(), mapOf("https://api.example-game.com" to "http://127.0.0.1:00020000"), emptyMap(), emptyMap()))
         } finally {
             Files.deleteIfExists(out)
         }
@@ -121,7 +121,7 @@ class DexStringsTest {
         assertEquals(emptySet(), DexStrings().found(dex(), Inject.CONSENT_CALLS))
         val out = Files.createTempFile("gutapk", ".dex")
         try {
-            val changed = DexStrings().writeTo(out, dataStore.data, emptyMap(), Inject.CONSENT_CALLS)
+            val changed = DexStrings().writeTo(out, dataStore.data, emptyMap(), Inject.CONSENT_CALLS, emptyMap())
             assertEquals(setOf("$sdk->showAgreementAtActivity($activity$string$string)V"), changed)
             val instructions = DexBackedDexFile(null, Files.readAllBytes(out)).classes.single().methods.single().implementation!!.instructions.toList()
             // Another call of the SDK is left alone.
@@ -169,7 +169,7 @@ class DexStringsTest {
         dexPool.writeTo(dataStore)
         val out = Files.createTempFile("gutapk", ".dex")
         try {
-            val changed = DexStrings().writeTo(out, dataStore.data, emptyMap(), Inject.NETWORK_CALLS)
+            val changed = DexStrings().writeTo(out, dataStore.data, emptyMap(), Inject.NETWORK_CALLS, emptyMap())
             assertEquals(setOf("$manager->getActiveNetworkInfo()$info"), changed)
             val instructions = DexBackedDexFile(null, Files.readAllBytes(out)).classes.single().methods.single().implementation!!.instructions.toList()
             val call = instructions[0] as Instruction35c
@@ -246,7 +246,7 @@ class DexStringsTest {
         val out = Files.createTempFile("gutapk", ".dex")
         try {
             // Only the start is called in this dex, the sign-in method is only defined.
-            assertEquals(setOf(start), DexStrings().writeTo(out, input, emptyMap(), calls))
+            assertEquals(setOf(start), DexStrings().writeTo(out, input, emptyMap(), calls, emptyMap()))
             val back = DexBackedDexFile(null, Files.readAllBytes(out))
             val call = back.classes.single { it.type == "Lgame/Main;" }.methods.single().implementation!!.instructions.first() as Instruction35c
             assertEquals(Opcode.INVOKE_STATIC, call.opcode)

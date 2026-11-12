@@ -60,7 +60,9 @@ import java.nio.file.Path
 // not ported: getReference2, getReferenceType2 (an invoke-virtual has one reference)
 interface DexStringRewrite {
     // Writes the dex to dataStore's file and returns the strings and calls it changed.
-    fun writeTo(dataStore: Path, input: ByteArray, targets: Map<String, String>, calls: Map<String, String>): Set<String>
+    // whole: strings that are replaced only when they are the whole string
+    // (see renameLiterals), the package id of a copy installed beside the original.
+    fun writeTo(dataStore: Path, input: ByteArray, targets: Map<String, String>, calls: Map<String, String>, whole: Map<String, String>): Set<String>
 
     // The classes whose code holds each origin, as a const-string or as the
     // constant value of a field: origin to class descriptors. An origin the
@@ -76,6 +78,22 @@ interface DexStringRewrite {
     // define every method of Inject.GameHelper, whatever the class is called.
     // https://github.com/google/smali/blob/3.0.9/third_party/baksmali/src/main/java/com/android/tools/smali/baksmali/Adaptors/ClassDefinition.java#writeVirtualMethods
     fun helpers(input: ByteArray): Set<String>
+}
+
+// A string of the dex that is an old name as a whole, or a content URI on it:
+// the new name replaces it. A longer string that merely starts with the old
+// id, a class name or a preferences file for instance, is left alone. PackageId's
+// renameLiterals on text, here on one dex string, the longest name first.
+// https://github.com/213YaZ786/GutapK/blob/531ee67/src/main/kotlin/io/gutapk/core/edit/PackageId.kt#renameLiterals
+// not ported: swap (the counting replace on a text, a dex string is compared once)
+// not ported: the quoted and XML text forms ("old", >old<), a dex string has no quotes around it
+fun renameLiterals(string: String, map: Map<String, String>): String {
+    for ((old, new) in map.entries.sortedByDescending { it.key.length }) {
+        if (string == old) return new
+        if (string == "content://$old") return "content://$new"
+        if (string.startsWith("content://$old/")) return "content://$new" + string.removePrefix("content://$old")
+    }
+    return string
 }
 
 class DexStrings : DexStringRewrite {
@@ -154,10 +172,10 @@ class DexStrings : DexStringRewrite {
         return helpers
     }
 
-    override fun writeTo(dataStore: Path, input: ByteArray, targets: Map<String, String>, calls: Map<String, String>): Set<String> {
+    override fun writeTo(dataStore: Path, input: ByteArray, targets: Map<String, String>, calls: Map<String, String>, whole: Map<String, String>): Set<String> {
         val changed = HashSet<String>()
         fun rewrite(string: String): String {
-            val rewritten = targets.entries.fold(string) { s, (origin, target) -> s.replace(origin, target) }
+            val rewritten = renameLiterals(targets.entries.fold(string) { s, (origin, target) -> s.replace(origin, target) }, whole)
             if (rewritten != string) changed.add(string)
             return rewritten
         }

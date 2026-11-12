@@ -143,6 +143,26 @@ object Packages {
         )
     }
 
+    // The name the offline game was installed under on the phone: the game's
+    // own, or the one chosen to install beside it. Kept with the package.
+    // https://github.com/213YaZ786/GutapK/blob/531ee67/src/main/kotlin/io/gutapk/core/apk/Packages.kt#setRecord
+    // not ported: SetRecord's parts and obbs (the record here is one name)
+    private const val INSTALLED = "offline.package"
+
+    fun installedName(dir: Path, fallback: String): String {
+        val p = Properties()
+        runCatching { Files.newBufferedReader(dir.resolve(INFO)).use { p.load(it) } }
+        return p.getProperty(INSTALLED)?.takeIf { it.isNotBlank() } ?: fallback
+    }
+
+    // A null name forgets the choice.
+    fun setInstalledName(dir: Path, name: String?) {
+        val p = Properties()
+        runCatching { Files.newBufferedReader(dir.resolve(INFO)).use { p.load(it) } }
+        if (name == null) p.remove(INSTALLED) else p.setProperty(INSTALLED, name)
+        Files.newBufferedWriter(dir.resolve(INFO)).use { p.store(it, null) }
+    }
+
     // Package names are dotted identifiers, but the manifest is untrusted
     // input and becomes a folder name. Anything else is replaced.
     private fun safe(name: String): String = name.map { c ->
