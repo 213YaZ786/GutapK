@@ -21,6 +21,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -238,7 +239,11 @@ fun LocalDialog(
             val udp = javaServer?.udp ?: server?.udp ?: false
             // The game's own link to the relay's end on the phone, the first scheme its manifest opens.
             val join = if (java == null) null else link ?: java.schemes.firstOrNull()?.let { "$it://127.0.0.1:$port" }.orEmpty()
-            val ready = port != null && (java != null || args.isNotEmpty()) && wanted.isNotEmpty()
+            // One user choice per phone, each with the default rule of the offline dialog.
+            // https://github.com/213YaZ786/GutapK/blob/3295c56/src/main/kotlin/io/gutapk/features/overview/OfflineDialog.kt#OfflineDialog
+            val installers = f.phones.associate { phone -> phone.serial to key(phone.serial) { rememberInstallUser(f.adb, phone.serial, info.packageName) } }
+            val usersKnown = wanted.all { installers[it.serial]?.id != null }
+            val ready = port != null && (java != null || args.isNotEmpty()) && wanted.isNotEmpty() && usersKnown
             AlertDialog(
                 onDismissRequest = onDismiss,
                 title = { Text(title) },
@@ -313,6 +318,7 @@ fun LocalDialog(
                                 guests = if (on) selected + phone.serial else selected - phone.serial
                             }
                         }
+                        wanted.forEach { phone -> installers[phone.serial]?.Row(phoneLabel(phone)) }
                         Text(t("local_wifi"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text(t("sign_test_warning"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -326,8 +332,11 @@ fun LocalDialog(
                         SelectionContainer {
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 wanted.forEach { phone ->
-                                    OfflineInstall.plan(phone.serial, Path.of("<game with Local>"), info.packageName, uninstallFirst).forEach {
-                                        Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                                    val onUser = installers[phone.serial]?.id
+                                    if (onUser != null) {
+                                        OfflineInstall.plan(phone.serial, Path.of("<game with Local>"), info.packageName, uninstallFirst, onUser).forEach {
+                                            Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                                        }
                                     }
                                 }
                             }
@@ -339,7 +348,7 @@ fun LocalDialog(
                         enabled = ready,
                         onClick = {
                             val remove = uninstallFirst
-                            val targets = wanted
+                            val targets = wanted.map { it to installers[it.serial]?.id }
                             val zstd = s.zstd
                             val joinLink = join?.trim()?.takeIf { it.isNotEmpty() }
                             val byScript = binds.groupBy({ it.script }, { it.token to ("127.0.0.1" as Any) }).mapValues { it.value.toMap() }
@@ -350,8 +359,8 @@ fun LocalDialog(
                                 val out = localOutput(dir, info.packageName, info.versionName)
                                 LocalBuild.run(original, args, port!!.toInt(), udp, joinLink, byScript, zstd, dex, dir.resolve("work-local"), out, TestKey.load(), info.minSdk, version, job)
                                 signed = out
-                                targets.forEachIndexed { i, phone ->
-                                    OfflineInstall.run(f.adb, phone.serial, out, info.packageName, remove, job, { job.cancelRequested }, first = 2 + 2 * i, steps = steps)
+                                targets.forEachIndexed { i, (phone, onUser) ->
+                                    OfflineInstall.run(f.adb, phone.serial, out, info.packageName, remove, job, { job.cancelRequested }, first = 2 + 2 * i, steps = steps, user = onUser)
                                 }
                                 finished = true
                                 job.result = out.toString()

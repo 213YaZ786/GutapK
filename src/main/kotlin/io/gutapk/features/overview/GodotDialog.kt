@@ -217,6 +217,8 @@ fun GodotDialog(
                 val text = edits[rowKey(v)] ?: return@mapNotNull null
                 if (text == shownValue(v)) null else v to typed(v, text)
             }
+            val installer = rememberInstallUser(f.adb, host, info.packageName)
+            val installUser = installer.id
             val invalid = changes.any { it.second == null }
             val named = s.values.count { it.name != null }
             AlertDialog(
@@ -257,11 +259,14 @@ fun GodotDialog(
                             }
                             Switch(checked = uninstallFirst, onCheckedChange = { uninstallFirst = it })
                         }
+                        installer.Row()
                         Text(t("try_commands"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                        SelectionContainer {
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                OfflineInstall.plan(host, Path.of("<game with values>"), info.packageName, uninstallFirst).forEach {
-                                    Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                        if (installUser != null) {
+                            SelectionContainer {
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    OfflineInstall.plan(host, Path.of("<game with values>"), info.packageName, uninstallFirst, installUser).forEach {
+                                        Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                                    }
                                 }
                             }
                         }
@@ -269,8 +274,9 @@ fun GodotDialog(
                 },
                 confirmButton = {
                     TextButton(
-                        enabled = changes.isNotEmpty() && !invalid,
+                        enabled = changes.isNotEmpty() && !invalid && installUser != null,
                         onClick = {
+                            val onUser = installUser
                             val remove = uninstallFirst
                             val phone = host
                             val zstd = s.zstd
@@ -280,7 +286,7 @@ fun GodotDialog(
                                 val out = valuesOutput(dir, info.packageName, info.versionName)
                                 GodotBuild.run(original, byScript, zstd, dir.resolve("work-godot"), out, TestKey.load(), info.minSdk, version, job)
                                 signed = out
-                                OfflineInstall.run(f.adb, phone, out, info.packageName, remove, job, { job.cancelRequested }, first = 2, steps = 3)
+                                OfflineInstall.run(f.adb, phone, out, info.packageName, remove, job, { job.cancelRequested }, first = 2, steps = 3, user = onUser)
                                 finished = true
                                 job.result = out.toString()
                             }

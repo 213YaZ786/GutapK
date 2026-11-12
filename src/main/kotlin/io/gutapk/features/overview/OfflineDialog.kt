@@ -69,13 +69,10 @@ import io.gutapk.device.Adb
 import io.gutapk.device.AdbDevice
 import io.gutapk.device.Answer
 import io.gutapk.device.Change
-import io.gutapk.device.DeviceReader
 import io.gutapk.device.DeviceState
 import io.gutapk.device.OfflineInstall
 import io.gutapk.device.ServerAdmin
 import io.gutapk.device.Status
-import io.gutapk.device.User
-import io.gutapk.features.device.installUserName
 import io.gutapk.device.Value
 import io.gutapk.job.Job
 import io.gutapk.job.JobEvent
@@ -212,7 +209,6 @@ fun OfflineDialog(
     // Replace keeps the name and may remove the phone's copy when it is signed with another key.
     var how by remember { mutableStateOf<String?>(null) }
     var choosingHow by remember { mutableStateOf(false) }
-    var choosingUser by remember { mutableStateOf(false) }
     val beside = how == "beside"
     val uninstallFirst = how == "replace"
     var besideName by remember { mutableStateOf(info.packageName + ".offline") }
@@ -332,24 +328,9 @@ fun OfflineDialog(
             val host = serial?.takeIf { s -> f.phones.any { it.serial == s } } ?: f.phones.first().serial
             val fitting = all.filter { it.origin in shown && Redirect.target(it.origin, port = Redirect.FITTING_PORT) != null }
             val ready = fitting.isNotEmpty() && learning != null
-            // The user the copy is installed for: pm installs for all of them when none is given.
-            // The users of the phone, and the ones the game is installed in, which name the default
-            // when there is exactly one.
-            // https://github.com/213YaZ786/GutapK/blob/c688863/src/main/kotlin/io/gutapk/features/device/InstallPage.kt#installUserName
-            var user by remember(host) { mutableStateOf<String?>(null) }
-            val users by produceState<List<User>?>(null, host) {
-                value = withContext(Dispatchers.IO) { runCatching { DeviceReader.users(f.adb, host) }.getOrDefault(emptyList()) }
-            }
-            val installedIn by produceState<List<Int>?>(null, host) {
-                value = withContext(Dispatchers.IO) { runCatching { OfflineInstall.installedUsers(f.adb, host, info.packageName) }.getOrDefault(emptyList()) }
-            }
-            val userList = users.orEmpty()
-            val installUser: String? = user ?: when {
-                users == null -> null
-                userList.size <= 1 -> (userList.firstOrNull()?.id ?: 0).toString()
-                else -> installedIn?.singleOrNull()?.toString()
-            }
-            val userName = installUserName(installUser, userList).takeIf { installUser != null } ?: t("offline_how_none")
+            val installer = rememberInstallUser(f.adb, host, info.packageName)
+            val installUser = installer.id
+            val userName = installer.name
             val howName = when (how) {
                 "beside" -> t("offline_beside")
                 "replace" -> t("offline_replace")
@@ -481,9 +462,7 @@ fun OfflineDialog(
                         )
                         Text(t("sign_test_warning"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
                         ZoneRow(t("offline_how"), howName, onClick = { choosingHow = true })
-                        if (users != null && userList.size > 1) {
-                            ZoneRow(t("ap_user"), userName, onClick = { choosingUser = true })
-                        }
+                        installer.Row()
                         if (beside) {
                             OutlinedTextField(
                                 value = besideName,
@@ -510,8 +489,6 @@ fun OfflineDialog(
                                 }
                             }
                         }
-                        // The Install page's choice of the user: each user by id, then all.
-                        // https://github.com/213YaZ786/GutapK/blob/c688863/src/main/kotlin/io/gutapk/features/device/InstallPage.kt#installUserName
                         if (choosingHow) {
                             ChoiceDialog(
                                 title = t("offline_how"),
@@ -522,18 +499,6 @@ fun OfflineDialog(
                                     choosingHow = false
                                 },
                                 onDismiss = { choosingHow = false },
-                            )
-                        }
-                        if (choosingUser) {
-                            ChoiceDialog(
-                                title = t("ap_user"),
-                                options = userList.map<User, Pair<String?, String>> { u -> u.id.toString() to installUserName(u.id.toString(), userList) } + ("all" to installUserName("all", userList)),
-                                current = installUser,
-                                onPick = {
-                                    user = it
-                                    choosingUser = false
-                                },
-                                onDismiss = { choosingUser = false },
                             )
                         }
                     }

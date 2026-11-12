@@ -227,6 +227,8 @@ fun JavaDialog(
                 val text = edits[valueKey(v)] ?: return@mapNotNull null
                 if (text == valueText(v)) null else v to valueBits(v, text)
             }
+            val installer = rememberInstallUser(f.adb, host, info.packageName)
+            val installUser = installer.id
             val invalid = changes.any { it.second == null }
             val creation = s.values.count { it.creation }
             val words = query.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
@@ -280,11 +282,14 @@ fun JavaDialog(
                             }
                             Switch(checked = uninstallFirst, onCheckedChange = { uninstallFirst = it })
                         }
+                        installer.Row()
                         Text(t("try_commands"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                        SelectionContainer {
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                OfflineInstall.plan(host, Path.of("<game with values>"), info.packageName, uninstallFirst).forEach {
-                                    Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                        if (installUser != null) {
+                            SelectionContainer {
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    OfflineInstall.plan(host, Path.of("<game with values>"), info.packageName, uninstallFirst, installUser).forEach {
+                                        Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                                    }
                                 }
                             }
                         }
@@ -292,8 +297,9 @@ fun JavaDialog(
                 },
                 confirmButton = {
                     TextButton(
-                        enabled = changes.isNotEmpty() && !invalid,
+                        enabled = changes.isNotEmpty() && !invalid && installUser != null,
                         onClick = {
+                            val onUser = installUser
                             val remove = uninstallFirst
                             val phone = host
                             val edit = s.edit
@@ -303,7 +309,7 @@ fun JavaDialog(
                                 val out = valuesOutput(dir, info.packageName, info.versionName)
                                 JavaValuesBuild.run(original, bits, edit, dir.resolve("work-java"), out, TestKey.load(), info.minSdk, version, job)
                                 signed = out
-                                OfflineInstall.run(f.adb, phone, out, info.packageName, remove, job, { job.cancelRequested }, first = 2, steps = 3)
+                                OfflineInstall.run(f.adb, phone, out, info.packageName, remove, job, { job.cancelRequested }, first = 2, steps = 3, user = onUser)
                                 finished = true
                                 job.result = out.toString()
                             }
