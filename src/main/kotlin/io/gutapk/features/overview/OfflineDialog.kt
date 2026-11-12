@@ -69,10 +69,13 @@ import io.gutapk.device.Adb
 import io.gutapk.device.AdbDevice
 import io.gutapk.device.Answer
 import io.gutapk.device.Change
+import io.gutapk.device.DeviceReader
 import io.gutapk.device.DeviceState
 import io.gutapk.device.OfflineInstall
 import io.gutapk.device.ServerAdmin
 import io.gutapk.device.Status
+import io.gutapk.device.User
+import io.gutapk.features.device.installUserName
 import io.gutapk.device.Value
 import io.gutapk.job.Job
 import io.gutapk.job.JobEvent
@@ -81,10 +84,12 @@ import io.gutapk.job.JobState
 import io.gutapk.tools.Libraries
 import io.gutapk.tools.TrackerList
 import io.gutapk.tools.ToolSpec
+import io.gutapk.ui.ChoiceDialog
 import io.gutapk.ui.Fact
 import io.gutapk.ui.GIcons
 import io.gutapk.ui.LocalLang
 import io.gutapk.ui.LookupDialog
+import io.gutapk.ui.ZoneRow
 import io.gutapk.ui.currentJobView
 import io.gutapk.ui.installRefusal
 import io.gutapk.ui.jobTitle
@@ -202,9 +207,14 @@ fun OfflineDialog(
     val blocked = refused ?: advised.keys
     val shown = chosen ?: (listing.servers.map { it.origin } + advised.keys).toSet()
     var serial by remember { mutableStateOf<String?>(null) }
-    var uninstallFirst by remember { mutableStateOf(false) }
-    // A new package name installs the copy beside the phone's own, which is then left as it is.
-    var beside by remember { mutableStateOf(true) }
+    // Beside or replace, chosen by the user: no default, the install waits for it.
+    // Beside gives a new package name and leaves the phone's own copy as it is.
+    // Replace keeps the name and may remove the phone's copy when it is signed with another key.
+    var how by remember { mutableStateOf<String?>(null) }
+    var choosingHow by remember { mutableStateOf(false) }
+    var choosingUser by remember { mutableStateOf(false) }
+    val beside = how == "beside"
+    val uninstallFirst = how == "replace"
     var besideName by remember { mutableStateOf(info.packageName + ".offline") }
     val refusal = if (beside) (if (besideName == info.packageName) PackageIdRefusal.FORMAT else PackageId.check(besideName)) else null
     val formatText = t("edit_package_format")
@@ -283,7 +293,7 @@ fun OfflineDialog(
                     if (code == "INSTALL_FAILED_UPDATE_INCOMPATIBLE" && !uninstallFirst && !beside) {
                         TextButton(onClick = {
                             failure = null
-                            uninstallFirst = true
+                            how = "replace"
                         }) { Text(t("try_retry_uninstall")) }
                     } else {
                         TextButton(onClick = { failure = null }) { Text(t("offline_back")) }
@@ -322,6 +332,29 @@ fun OfflineDialog(
             val host = serial?.takeIf { s -> f.phones.any { it.serial == s } } ?: f.phones.first().serial
             val fitting = all.filter { it.origin in shown && Redirect.target(it.origin, port = Redirect.FITTING_PORT) != null }
             val ready = fitting.isNotEmpty() && learning != null
+            // The user the copy is installed for: pm installs for all of them when none is given.
+            // The users of the phone, and the ones the game is installed in, which name the default
+            // when there is exactly one.
+            // https://github.com/213YaZ786/GutapK/blob/c688863/src/main/kotlin/io/gutapk/features/device/InstallPage.kt#installUserName
+            var user by remember(host) { mutableStateOf<String?>(null) }
+            val users by produceState<List<User>?>(null, host) {
+                value = withContext(Dispatchers.IO) { runCatching { DeviceReader.users(f.adb, host) }.getOrDefault(emptyList()) }
+            }
+            val installedIn by produceState<List<Int>?>(null, host) {
+                value = withContext(Dispatchers.IO) { runCatching { OfflineInstall.installedUsers(f.adb, host, info.packageName) }.getOrDefault(emptyList()) }
+            }
+            val userList = users.orEmpty()
+            val installUser: String? = user ?: when {
+                users == null -> null
+                userList.size <= 1 -> (userList.firstOrNull()?.id ?: 0).toString()
+                else -> installedIn?.singleOrNull()?.toString()
+            }
+            val userName = installUserName(installUser, userList).takeIf { installUser != null } ?: t("offline_how_none")
+            val howName = when (how) {
+                "beside" -> t("offline_beside")
+                "replace" -> t("offline_replace")
+                else -> t("offline_how_none")
+            }
             // What each ticked address becomes, as OfflineBuild writes it.
             val ports = Inject.ports(info.packageName, fitting.map { it.origin })
             val changes = ports.mapValues { (origin, port) -> Redirect.target(origin, port = port) }
@@ -447,12 +480,9 @@ fun OfflineDialog(
                             style = MaterialTheme.typography.bodyMedium,
                         )
                         Text(t("sign_test_warning"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Column(Modifier.weight(1f)) {
-                                Text(t("offline_beside"), style = MaterialTheme.typography.bodyLarge)
-                                Text(t("offline_beside_d"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                            Switch(checked = beside, onCheckedChange = { beside = it })
+                        ZoneRow(t("offline_how"), howName, onClick = { choosingHow = true })
+                        if (users != null && userList.size > 1) {
+                            ZoneRow(t("ap_user"), userName, onClick = { choosingUser = true })
                         }
                         if (beside) {
                             OutlinedTextField(
@@ -468,30 +498,52 @@ fun OfflineDialog(
                                 },
                                 modifier = Modifier.fillMaxWidth(),
                             )
-                        } else {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(t("offline_uninstall"), style = MaterialTheme.typography.bodyLarge)
-                                    Text(t("offline_uninstall_d"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                                Switch(checked = uninstallFirst, onCheckedChange = { uninstallFirst = it })
-                            }
                         }
                         Text(t("try_commands"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                        SelectionContainer {
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                OfflineInstall.plan(host, if (set) parts.map { Path.of("<offline game>", it.fileName) } else listOf(Path.of("<offline game>")), installedName, uninstallFirst && !beside).forEach {
-                                    Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                        if (how != null && installUser != null) {
+                            Text(t("offline_plan", howName, userName), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            SelectionContainer {
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    OfflineInstall.plan(host, if (set) parts.map { Path.of("<offline game>", it.fileName) } else listOf(Path.of("<offline game>")), installedName, uninstallFirst, installUser).forEach {
+                                        Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                                    }
                                 }
                             }
+                        }
+                        // The Install page's choice of the user: each user by id, then all.
+                        // https://github.com/213YaZ786/GutapK/blob/c688863/src/main/kotlin/io/gutapk/features/device/InstallPage.kt#installUserName
+                        if (choosingHow) {
+                            ChoiceDialog(
+                                title = t("offline_how"),
+                                options = listOf<Pair<String?, String>>("beside" to t("offline_beside") + "\n" + t("offline_beside_d"), "replace" to t("offline_replace") + "\n" + t("offline_replace_d")),
+                                current = how,
+                                onPick = {
+                                    how = it
+                                    choosingHow = false
+                                },
+                                onDismiss = { choosingHow = false },
+                            )
+                        }
+                        if (choosingUser) {
+                            ChoiceDialog(
+                                title = t("ap_user"),
+                                options = userList.map<User, Pair<String?, String>> { u -> u.id.toString() to installUserName(u.id.toString(), userList) } + ("all" to installUserName("all", userList)),
+                                current = installUser,
+                                onPick = {
+                                    user = it
+                                    choosingUser = false
+                                },
+                                onDismiss = { choosingUser = false },
+                            )
                         }
                     }
                 },
                 confirmButton = {
                     TextButton(
-                        enabled = ready && refusal == null,
+                        enabled = ready && refusal == null && how != null && installUser != null,
                         onClick = {
-                            val remove = uninstallFirst && !beside
+                            val remove = uninstallFirst
+                            val onUser = installUser
                             val installing = installedName
                             val renaming = if (beside) installedName else null
                             val servers = fitting
@@ -521,7 +573,7 @@ fun OfflineDialog(
                                     OfflineBuild.run(original, servers, dex, strings, dir.resolve("work-offline"), out, TestKey.load(), info.minSdk, version, job, codecs, OfflineBuild.recordings(dir), refusing, skipping, signing, learnt, renaming)
                                 }
                                 signed = out
-                                OfflineInstall.run(f.adb, phone, Parts.apks(out), installing, remove, job, { job.cancelRequested }, first = 2, steps = 3)
+                                OfflineInstall.run(f.adb, phone, Parts.apks(out), installing, remove, job, { job.cancelRequested }, first = 2, steps = 3, user = onUser)
                                 finished = true
                                 job.result = out.toString()
                             }

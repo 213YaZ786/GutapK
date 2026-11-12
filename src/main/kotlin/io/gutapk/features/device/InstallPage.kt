@@ -263,7 +263,7 @@ private fun ConfirmInstall(serial: String, item: Installable, user: String?, use
 
 // The user a --user value names, in words.
 @Composable
-private fun installUserName(user: String?, users: List<User>): String = when (user) {
+internal fun installUserName(user: String?, users: List<User>): String = when (user) {
     null -> t("in_user_default")
     "all" -> t("in_user_all")
     "current" -> t("in_user_current")

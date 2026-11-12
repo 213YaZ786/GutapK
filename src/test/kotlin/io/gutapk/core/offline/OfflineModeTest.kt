@@ -134,6 +134,36 @@ class OfflineModeTest {
         assertEquals(plain[1], removing[3])
     }
 
+    // Same style as the plan test above.
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/test/kotlin/io/gutapk/core/offline/ServerPackTest.kt
+    @Test
+    fun theUserIsInTheInstallTheUninstallAndTheLaunch() {
+        val game = Path.of("/r/out/bim.app-1-offline-test.apk")
+        val plan = OfflineInstall.plan("X1", game, "bim.app", uninstallFirst = true, user = "12")
+        assertEquals("adb -s X1 install -r --user 12 /r/out/bim.app-1-offline-test.apk", plan[0])
+        assertEquals("INSTALL_FAILED_UPDATE_INCOMPATIBLE: adb -s X1 shell pm uninstall --user 12 'bim.app'", plan[1])
+        assertEquals("INSTALL_FAILED_UPDATE_INCOMPATIBLE: adb -s X1 install -r --user 12 /r/out/bim.app-1-offline-test.apk", plan[2])
+        assertTrue(plan[3].startsWith("adb -s X1 shell am start --user 12 "))
+        assertTrue(plan[3].endsWith("-p 'bim.app'"))
+        assertTrue(OfflineInstall.plan("X1", game, "bim.app", false, "all")[1].contains("am start --user current "))
+        assertFailsWith<IllegalArgumentException> { OfflineInstall.plan("X1", game, "bim.app", false, "1; reboot") }
+    }
+
+    // The uid lines are the shape pm prints, user = uid / 100000 (UserHandle.getUserId).
+    // https://github.com/213YaZ786/GutapK/blob/10ee6c7/src/test/kotlin/io/gutapk/core/offline/ServerPackTest.kt
+    @Test
+    fun theUsersWithTheGameComeFromItsUids() {
+        val out = """
+            package:com.supercell.clashroyale.offline uid:1010186
+            package:com.supercell.clashroyale uid:1210186
+            package:com.supercell.clashroyale uid:10186,1110186
+        """.trimIndent()
+        assertEquals(listOf(0, 11, 12), OfflineInstall.usersWith(out, "com.supercell.clashroyale"))
+        assertEquals(listOf(10), OfflineInstall.usersWith(out, "com.supercell.clashroyale.offline"))
+        assertEquals(emptyList(), OfflineInstall.usersWith(out, "com.supercell"))
+        assertEquals(listOf(12), OfflineInstall.usersWith("package:a.b uid:1210186\n", "a.b"))
+    }
+
     @Test
     fun theOfflineFileSitsBesideTheSignedOne() {
         val out = output(Path.of("/r/packages/bim.app-ab12"), "bim.app", "1.7.0", KeyChoice.TEST)
